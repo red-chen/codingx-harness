@@ -20,7 +20,7 @@ Rust 只在一种情况下值得：TUI 成为独立产品，且实测 Node 的�
 
 参考核心结构，不复制认证、配置、app-server 和全部外围功能：
 
-- 全屏 + 底部固定：上方 transcript，下方状态行、composer、footer。
+- 全屏 + 底部固定：上方 transcript，下方状态行、composer、底部 meta。
 - 两级 transcript：已完成的 `HistoryCell` 是不可变、可按宽度重渲染的源；正在流式的 active cell 可变，只重绘尾部。
 - 流式按行提交：完整换行/块边界才从 tail 提升为 stable；表格整块 holdback。
 - 统一 selection list：审批、`/resume`、帮助都复用同一套列表状态机。
@@ -37,7 +37,7 @@ src/tui/
 │   ├── input.ts        // CSI / SS3 / paste / resize
 │   └── width.ts        // grapheme / string-width
 ├── layout/             // Rect / split / constraints
-├── widgets/            // welcome / transcript / composer / status / footer
+├── widgets/            // welcome / transcript / composer / status / meta
 ├── text/               // wrap / truncate / grapheme
 ├── markdown/           // AST → styled lines
 ├── diff/               // unified diff → lines
@@ -72,7 +72,7 @@ interface Cell {
 
 - 比较 `front` / `back`，按行合并连续变化区间，输出 `MoveTo + SGR + Print`，跳过未变化的 cell。
 - 每帧用 synchronized output（`\x1b[?2026h` ... `\x1b[?2026l`）包住，减少 tearing。
-- 光标位置独立于 cell 内容：composer 的 cursor 由布局层给出，renderer 在帧末设置。
+- 光标位置独立于 cell 内容：composer 的 cursor 由布局层给出，renderer 在帧末显示硬件光标并设置 CUP；中文输入法候选窗因此锚定在插入点。overlay/transcript 模式隐藏硬件光标。
 - 颜色能力分 truecolor / 256 / 16 / `NO_COLOR`；不支持的颜色降级，不输出空 SGR。
 
 ### 输入
@@ -127,6 +127,7 @@ TUI 不持久化任何配置；所有颜色、键位、布局都是固定行为�
 │                                                  │
 │ model:     model-name                            │
 │ directory: ~/work/codingx                        │
+│ session:   550e8400-e29b-41d4-…                  │
 ╰──────────────────────────────────────────────────╯
 
 › 把 session 状态做成跨终端可查的
@@ -139,14 +140,26 @@ TUI 不持久化任何配置；所有颜色、键位、布局都是固定行为�
 • Working (12s • esc to interrupt)
 
 › Ask codingx to do anything
-  ? for shortcuts                     72% context left
+model · cwd · session title
 ```
 
-- 全屏，不做外框；只有 welcome 卡、选择和审批使用边框/底色。
+- 全屏，不做外框；只有 welcome 卡、选择和审批使用边框/底色。welcome 卡展示 version、model、cwd 与当前 session id，内容左右各 1 列内边距。
 - 2 列 gutter：用户 `› `、助手 `• `、工具 `└ ` / `│ `，续行 2 空格。
 - 消息间空一行；用户消息使用低对比背景，助手消息透明。
-- composer 固定底部，1–8 行；状态行在 composer 上；footer 固定 1 行。
-- 窄于 60 列收窄卡片、折叠 footer；窄于 40 列只保留输入与最简状态。
+- composer 固定底部，3–8 行，内容上下各留 1 行 padding 并垂直居中，使用独立的 `composerBg` 整块背景。
+- transcript 与状态行之间、状态行与 composer 之间各留 1 行空白；终端高度 <8 行时自动折叠这两条间隔。
+- composer 下方固定一行 meta：模型、cwd、当前会话标题（取首条用户消息，resume 时从 rollout 恢复）。
+- 最底部固定 1 行 meta，不再显示快捷键行；cwd 在 home 目录下显示为 `~/...`，用户消息使用独立的 `userBg` 整块背景。
+- 每个 turn 完成后追加一行 TurnSummary：完成时间、耗时、in/out/cache tokens。
+- 状态行显示 `turn N · step M`，右侧显示 `ctx used/window · tok total`，默认窗口 1M tokens。
+- exec 命令显示工具耗时；turn 摘要显示 `total/llm/tools` 耗时与 Token，LLM 耗时不再重复挂在 assistant 内容末尾。
+- 向上滚动按历史内容 clamp；内容不足一屏时保持停在底部，不会出现空白。
+- welcome 卡作为 transcript 的第一个历史块保留，不会在首条消息后消失；滚动上限包含它。
+- resume 时从 rollout 重建 user/assistant/tool/plan/turn 摘要，历史 transcript 直接可见。
+- 支持鼠标滚轮（SGR mouse wheel）与 PgUp/PgDn、Shift+Up/Down。
+- `/copy` 默认复制完整 transcript；`/copy status|input|meta|screen` 分别复制 StatusRow/Composer/MetaBar/整屏；`/copy all` 复制全部区域（带分区标题），`/copy last` 复制最后一条 assistant 输出。Ctrl+Y 等同 `/copy all`。
+- 鼠标拖选时 TUI 用反色高亮选区，释放后自动复制选中文本；可跨 transcript/status/composer/meta 选择。剪贴板优先 OSC52 并回退 pbcopy/clip/wl-copy/xclip。
+- 窄于 60 列收窄卡片；窄于 40 列隐藏 meta，只保留输入与最简状态。
 
 ## Widgets
 
@@ -154,14 +167,14 @@ TUI 不持久化任何配置；所有颜色、键位、布局都是固定行为�
 TuiApp
 ├── TranscriptViewport        // 虚拟化，只渲染可见 cell
 │   ├── WelcomeCard
-│   ├── UserCell / AssistantCell
+│   ├── UserCell / AssistantCell / TurnSummary
 │   ├── ExecCell / DiffCell / PlanCell / NoticeCell
 │   └── ActiveCell            // 流式尾部
 ├── BottomPane
 │   ├── StatusRow             // spinner / elapsed / interrupt
 │   ├── QueuePreview
-│   ├── Composer              // 多行编辑器 + slash 补全
-│   └── Footer
+│   ├── Composer              // 多行编辑器 + slash 补全，独立背景
+│   └── MetaBar               // model · cwd · session title（最底部）
 └── OverlayHost
     ├── ApprovalView
     ├── TranscriptOverlay
@@ -244,7 +257,7 @@ Slash 补全浮在 composer 上方，最多 8 行；命令 + 一句描述，支�
 
 ## 颜色与终端
 
-- 语义色：`accent`、`muted`、`success`、`warning`、`error`、`userBg`、`planBg`、`diffAdd`、`diffDel`、`border`；组件不写死颜色。
+- 语义色：`accent`、`muted`、`success`、`warning`、`error`、`userBg`、`composerBg`、`planBg`、`diffAdd`、`diffDel`、`border`；组件不写死颜色。
 - 通过 OSC 11 查询背景色，失败按暗色；支持 truecolor / 256 / 16 / `NO_COLOR`。
 - Unicode 为主；宽字符、emoji、CJK 由 `string-width` + `Intl.Segmenter` 处理。
 - 不做主题选择器，不读主题配置；颜色只由终端能力与内置语义表决定。
@@ -267,7 +280,7 @@ Slash 补全浮在 composer 上方，最多 8 行；命令 + 一句描述，支�
 ## 里程碑
 
 - **TUI 1**：terminal 生命周期、cell buffer、diff renderer、输入解析、layout、resize、异常恢复。
-- **TUI 2**：welcome、transcript、composer、status/footer、流式 markdown、exec/diff/plan、slash、审批、queue。
+- **TUI 2**：welcome、transcript、composer、status/meta、流式 markdown、exec/diff/plan、slash、审批、queue。
 - **TUI 3**：transcript overlay、session picker、help、复制、外部编辑器、CJK/emoji 打磨。
 - **集成**：接 `UiEvent`/`UiCommand`；`--plain` 保持纯文本；TUI 不引入 auth/config。
 

@@ -63,12 +63,12 @@
 
 ```json
 → {"jsonrpc":"2.0","id":7,"method":"session.list","params":{"limit":20}}
-← {"jsonrpc":"2.0","id":7,"result":{"sessions":[{"id":"a1b2c3d4e5f6","status":"running","cwd":"/Users/red/work/api","model":"model-name","clients":1,"updatedAt":"2026-10-25T02:41:09Z"}]}}
+← {"jsonrpc":"2.0","id":7,"result":{"sessions":[{"id":"550e8400-e29b-41d4-a716-446655440000","status":"running","cwd":"/Users/red/work/api","model":"model-name","clients":1,"updatedAt":"2026-10-25T02:41:09Z"}]}}
 ```
 
 ## 会话模型
 
-- 会话 ID 为 12 位 base36 小写字母与数字（约 62 bit），例如 `a1b2c3d4e5f6`；命令接受唯一前缀。
+- 新会话 ID 为 UUID v4，例如 `550e8400-e29b-41d4-a716-446655440000`；命令接受唯一前缀。旧的 12 位 base36 ID 仍可读取。
 - 文件名为 `<timestamp>_<id>.jsonl`，时间戳中的 `:` 替换为 `-`；首行是 daemon 写入的 `session.start`。
 - `sessions/index.json` 是元数据缓存，启动时按文件头与尾部事件校验，损坏或缺失时从 JSONL 重建；JSONL 永远是事实来源。
 - 旧版本没有 `session.start` 头的文件仍可读：daemon 用文件名与首个事件补全内存元数据，不修改旧文件，后续事件继续追加。
@@ -151,14 +151,14 @@ codingx
 
 # 终端 B：查询、观察终端 A 的会话
 codingx sessions list
-codingx sessions show a1b2c3d4e5f6
-codingx sessions watch a1b2c3d4e5f6
+codingx sessions show 550e8400-e29b-41d4-a716-446655440000
+codingx sessions watch 550e8400-e29b-41d4-a716-446655440000
 
 # 接管一个空闲会话；运行中的会话会拒绝
-codingx resume a1b2c3d4e5f6 --takeover
+codingx resume 550e8400-e29b-41d4-a716-446655440000 --takeover
 
 # 回放任意历史会话；直接读 JSONL，不依赖 daemon
-codingx log --session a1b2c3d4e5f6
+codingx log --session 550e8400-e29b-41d4-a716-446655440000
 ```
 
 - `sessions list` 默认显示最近 20 个未结束会话，列：ID、状态、cwd、模型、更新时间、客户端数；`--all` 包含已结束，`--json` 输出机器可读结果。

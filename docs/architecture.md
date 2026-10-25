@@ -115,7 +115,7 @@ Provider 适配器只负责协议转换（Anthropic Messages / OpenAI Responses�
 
 - 客户端：`SessionStore` 接口（`create` / `attach` / `append` / `replay` / `subscribe` / `fork` / `end`），实现走 sessiond IPC
 - rollout 编解码：事件信封、`seq`、脱敏规则；`index.json` 只是缓存，JSONL 是事实来源
-- 每个会话一个文件：`~/.codingx/sessions/<timestamp>_<id>.jsonl`，时间戳中的 `:` 替换为 `-`（如 `2026-10-24T15-20-01_a1b2c3d4e5f6.jsonl`）
+- 每个会话一个文件：`~/.codingx/sessions/<timestamp>_<id>.jsonl`，时间戳中的 `:` 替换为 `-`（如 `2026-10-24T15-20-01_550e8400-e29b-41d4-a716-446655440000.jsonl`）
 - `resume` 通过 replay 重建消息历史；`fork` 由 sessiond 在分叉点复制并写新头
 - CLI 不直接持有 rollout 写句柄；离线只读命令（`log`、`sessions list --offline`）可绕过 daemon 扫描文件
 

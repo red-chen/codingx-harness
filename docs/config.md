@@ -207,7 +207,7 @@ args = ["-y", "@modelcontextprotocol/server-github"]
 │   └── sessiond.log
 ├── sessions/
 │   ├── index.json       # 元数据缓存，可重建
-│   ├── 2026-10-24T15-20-01_a1b2c3d4e5f6.jsonl
+│   ├── 2026-10-24T15-20-01_550e8400-e29b-41d4-a716-446655440000.jsonl
 │   └── ...
 └── tools/               # 自定义工具（需 allow_custom）
 ```

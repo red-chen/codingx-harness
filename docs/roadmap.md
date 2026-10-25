@@ -2,7 +2,7 @@
 
 原则：每个里程碑结束时都应是**可运行、可验证**的，不做「只有骨架」的交付。
 
-## M0 · 设计对齐（当前）
+## M0 · 设计对齐（已完成）
 
 - [x] 架构、Agent 循环、工具、安全、配置、会话管理、TUI 文档
 - [x] 确定默认 Provider 协议：Anthropic Messages；预留 OpenAI Responses；模型名由配置提供
@@ -11,39 +11,51 @@
 - [x] 确定 sessiond 边界：单写者会话存储 + 跨 CLI 查询，不执行模型与工具
 - [x] 确定 TUI 选型：Node + 自研 Terminal；Rust 仅作为性能兜底
 
-**完成标志**：文档评审通过，接口定义无重大争议。当前文档已对齐，等待评审确认。
+**完成标志**：文档评审通过，接口定义无重大争议。设计文档已作为 M1 实现基础。
 
-## M1 · 最小可用循环
+## M1 · 最小可用循环（已完成）
 
 目标：能在一个真实仓库里完成「读文件 → 改文件 → 跑测试」的闭环。
 
-- 项目脚手架：TypeScript strict、ESM、tsup 构建、Vitest、`bin/codingx.js`
-- `Provider` 接口 + Anthropic Messages 实现（流式、tool use、prompt caching）
-- `ProviderRouter` 单目标实现，为后续多 Provider 路由留接口
-- Agent 循环（单 turn、串行工具、无压缩）
-- 工具：`read_file`、`list_dir`、`edit_file`、`shell`
-- 纯文本输出（`--plain`），无 TUI
-- `SessionStore` 接口 + 进程内实现，rollout 写入 JSONL（单写者）
+- [x] 项目脚手架：TypeScript strict、ESM、tsup 构建、Vitest、`bin/codingx.js`
+- [x] `Provider` 接口 + Anthropic Messages 实现（流式、tool use、prompt caching）
+- [x] `ProviderRouter` 单目标实现，为后续多 Provider 路由留接口
+- [x] Agent 循环（单 turn、串行工具、无压缩）
+- [x] 工具：`read_file`、`list_dir`、`edit_file`、`shell`
+- [x] 纯文本输出（`--plain`），无 TUI
+- [x] `SessionStore` 接口 + 进程内实现，rollout 写入 JSONL（单写者）
+- [x] 额外交付：逐行交互模式、`--json` 事件流、`codingx log` 离线回放
 
 **验收**：`codingx exec "把 src/util.ts 里的 foo 重命名为 bar 并跑测试"` 能端到端完成，rollout 可回放。
 
-## M2 · 交互体验
+自动化验收已通过：本地假 Anthropic SSE 服务驱动 read_file → edit_file → shell → 最终回答，验证文件修改、退出码、JSON 事件流与 rollout 回放。真实 Provider 需要配置 API Key 后手工冒烟，未纳入 CI。
+
+**M1 实现偏差**（接口已留出，后续里程碑补齐）：
+
+- Sessiond 未实现，M1 使用带文件锁的进程内 JSONL 存储；`sessiond.enabled = true` 会告警并退回嵌入式存储。
+- 多目标路由未实现；M1 要求 route 收敛到单个 target，多目标配置会明确报错而不是静默忽略。
+- 审批与 OS 沙箱属于 M3；M1 的 `shell` 以当前用户权限运行，仅做 workspace 路径约束。
+- TUI、上下文压缩、resume/fork 属于 M2；M1 提供逐行纯文本与 `codingx log`。
+- MCP、web_fetch、自定义工具、OpenAI Responses 属于 M4；相关配置会被忽略并告警。
+
+## M2 · 交互体验（核心与验收完成；mention/session picker/表格 holdback/背压列为 M2.1）
 
 目标：日常可用。
 
-- 自研 Terminal：alt screen / raw mode、cell buffer、ANSI 差分、输入解析、resize、异常恢复
-- 布局与 widgets：welcome、transcript viewport、composer、status/footer、固定键位
-- 消息单元：user/assistant、exec、diff、plan、notice；流式 markdown、表格 holdback 与 30fps 节流
-- 交互：slash/mention、审批、排队、transcript overlay、session picker；无认证/配置
-- CJK/emoji、宽字符与 80x24 / 120x40 布局
-- 上下文压缩（截断 → 丢弃 → 摘要 三级）
-- 会话 resume / fork
-- sessiond 常驻进程：Unix socket + JSON-RPC、写租约、会话索引
-- 跨 CLI 查询：`codingx sessions list/show/watch`
-- 工具：`glob`、`grep`、`write_file`、`apply_patch`、`update_plan`
-- 中断与取消（`Esc` / `Ctrl+C` 首次中断；`Ctrl+C` 双击退出）
+- [x] 自研 Terminal：alt screen / raw mode、cell buffer、ANSI 差分、输入解析、resize、异常恢复
+- [x] 布局与 widgets：welcome、transcript viewport、composer、status/footer、固定键位（CLI 接入在 E6）
+- [ ] 消息单元：user/assistant、exec、diff、plan、notice；流式 markdown/diff 已完成，表格 holdback 与 30fps 节流待补
+- [ ] 交互：排队/transcript overlay/slash 补全已完成；mention、审批、session picker 待补
+- [x] CJK/emoji、宽字符与 80x24 / 120x40 布局（PTY 冒烟通过）
+- [x] 上下文压缩：截断 → 丢弃 → 模型摘要（三级已完成）
+- [x] 会话 resume / fork（sessiond 启用时通过 IPC/租约）
+- [x] sessiond 常驻进程：Unix socket + JSON-RPC、写租约、会话索引、client、自动拉起、空闲退出
+- [x] 跨 CLI 查询：`codingx sessions list/show/watch/prune`
+- [x] 工具：`glob`、`grep`、`write_file`、`apply_patch`、`update_plan`
+- [x] CLI 中断与取消（`Ctrl+C` 首次中断；双击退出；`--continue` 续接）
+- [x] TUI 中断键位（`Esc` / `Ctrl+C`）
 
-**验收**：连续进行 30 轮以上对话不因上下文超限中断；中途 `Ctrl+C` 后 `--continue` 能接上；两个终端能看到同一会话状态且写租约互斥；80x24 / 120x40 核心流程可用，流式不闪烁，resize 后锚点稳定。
+**验收**：连续进行 30 轮以上对话不因上下文超限中断；中途 `Ctrl+C` 后 `--continue` 能接上；两个终端能看到同一会话状态且写租约互斥；80x24 / 120x40 核心流程可用，流式不闪烁，resize 后锚点稳定。当前 30 轮压缩、Ctrl+C 续接、双 CLI 租约、TUI 帧/按键预算均有自动测试；80x24/120x40 + CJK/emoji + resize 有 PTY 冒烟。
 
 ## M3 · 安全
 
@@ -53,9 +65,9 @@
 - sessiond 本地 IPC 加固（0700 / 0600、peer UID、项目配置禁改 socket、事件二次脱敏）
 - TUI 不可信输出脱敏（ANSI / OSC / 控制字符）与审批弹层防伪造
 - macOS Seatbelt 沙箱；Linux Landlock 沙箱
-- 环境变量白名单、凭证脱敏
+- [x] 环境变量白名单、凭证脱敏（M1 已提前实现）
 - `--full-auto` / `--yolo` 与降级告警
-- 审计视图：`codingx log --session <id>`
+- [x] 审计视图：`codingx log --session <id>`（M1 已提前实现）
 
 **验收**：默认配置下，模型尝试写 workspace 外文件或访问网络时被拦截，且拦截原因对模型可见。
 
@@ -65,7 +77,7 @@
 - 自定义工具加载（`~/.codingx/tools/`）
 - 联网工具 `web_fetch`（默认关闭，`[web]` 域名白名单 + 仅 https）
 - 第二个 Provider：OpenAI Responses 协议
-- `AGENTS.md` 多层级加载
+- [x] `AGENTS.md` 多层级加载（M1 已提前实现）
 - 配置热重载（仅限非会话中）
 - TUI 打磨：复制/导出、transcript raw 模式、性能优化、可访问性
 
