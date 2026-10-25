@@ -51,7 +51,8 @@ export const globTool: ToolDef<typeof schema> = {
     'Use this to discover file names and locations; use Grep instead to search file contents. ' +
     'Results are one workspace-relative path per line, sorted by modification time (newest first) with path as the tie-breaker. ' +
     'The root .gitignore and .git/node_modules/dist/build/coverage directories are ignored. ' +
-    'Results are capped at 500 files with an explicit truncation footer; narrow the pattern or path when truncated.',
+    'Results are capped at 500 files with an explicit truncation footer; narrow the pattern or path when truncated. ' +
+    'If the pattern finds nothing, try a broader glob before concluding the file does not exist.',
   schema,
   parallelSafe: true,
   approval: 'none',

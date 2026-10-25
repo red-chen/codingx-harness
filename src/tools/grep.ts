@@ -584,7 +584,9 @@ export const grepTool: ToolDef<typeof schema> = {
     'use Glob to discover files by their names. ripgrep is preferred and a built-in scanner is used when rg is unavailable. ' +
     'path may be a file or directory; the glob filter narrows the files searched and context includes surrounding lines. ' +
     'Output is file:line:content and is capped at 100 matches with an explicit truncation marker. ' +
-    'Invalid regular expressions and search failures are reported as errors so the pattern can be fixed.',
+    'Invalid regular expressions and search failures are reported as errors so the pattern can be fixed. ' +
+    'If a search returns no matches, widen the pattern or check the path before concluding the code is absent; ' +
+    'do not fall back to shell grep.',
   schema,
   parallelSafe: true,
   approval: 'none',

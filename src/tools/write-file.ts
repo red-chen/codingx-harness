@@ -36,7 +36,8 @@ export const writeFileTool: ToolDef<typeof schema> = {
     'Create or completely overwrite a UTF-8 text file inside the workspace or an --add-dir root. Parent directories are created automatically. ' +
     'Overwriting an existing file requires that file to have been read with ReadFile in this session first; otherwise the write is refused. ' +
     'Directories, binary/non-UTF-8 files and files larger than 10 MiB are rejected. ' +
-    'Use WriteFile for new files or full rewrites, and EditFile for targeted replacements in an existing file.',
+    'Use WriteFile for new files or full rewrites, and EditFile for targeted replacements in an existing file. ' +
+    'If an existing file only needs a few changes, use EditFile instead: a full overwrite destroys content you have not seen.',
   schema,
   parallelSafe: false,
   approval: 'on-write',

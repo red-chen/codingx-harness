@@ -54,7 +54,7 @@ export interface ToolContext {
 
 约定：
 
-- `description` 是模型选工具的唯一依据，必须写清楚边界。宁长勿短。
+- `description` 是模型选工具的唯一依据，必须写清楚边界。宁长勿短。除了「做什么」，还要写「什么时候不要用这个工具」和「调用被拒绝或失败后该怎么办」——否则模型容易原样重试同一次调用。
 - 入参用 zod 定义，JSON Schema 由 `zod-to-json-schema` 生成，避免两份定义漂移。
 - `approval` 只是 M2 的默认粒度：`none` 无需审批（只读），`on-write` 仅在写时询问，`always` 每次询问。M3 起由 `Action` + Permission profile + Approval policy 统一判定，见 [permissions.md](permissions.md)。
 - `execute` 不抛异常处理「业务失败」（文件不存在、命令非零退出），统一走 `isError: true` 回填；只有真正的程序错误才 throw。

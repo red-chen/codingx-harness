@@ -556,3 +556,23 @@ describe('Shell', () => {
     expect(result.meta).toMatchObject({ truncated: true });
   });
 });
+describe('tool descriptions', () => {
+  const descriptions = new Map(createBuiltinTools().map((tool) => [tool.name, tool.description]));
+
+  it('tells the model what to do when a call is refused or fails', () => {
+    expect(descriptions.get('ReadFile')).toContain('Prefer ReadFile over Shell commands');
+    expect(descriptions.get('EditFile')).toContain('re-read that region');
+    expect(descriptions.get('EditFile')).toContain('do not repeat the identical call');
+    expect(descriptions.get('WriteFile')).toContain('use EditFile instead');
+    expect(descriptions.get('Shell')).toContain('change the command instead of repeating it unchanged');
+    expect(descriptions.get('Shell')).toContain('wait for input');
+    expect(descriptions.get('Grep')).toContain('widen the pattern');
+    expect(descriptions.get('Glob')).toContain('broader glob');
+  });
+
+  it('keeps every builtin description long enough to state its boundaries', () => {
+    for (const tool of createBuiltinTools()) {
+      expect(tool.description.length, tool.name).toBeGreaterThan(80);
+    }
+  });
+});

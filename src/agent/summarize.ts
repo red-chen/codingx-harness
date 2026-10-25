@@ -3,15 +3,36 @@ import { EMPTY_USAGE, addUsage } from '../providers/types.js';
 import { abortError, describeError, isAbortError } from '../util/errors.js';
 import { truncateMiddle } from '../util/tokens.js';
 
-/** System prompt for the level-3 compression request. */
+/**
+ * System prompt for the level-3 compression request.
+ *
+ * The summary is appended to the system prompt (see AgentLoop) and is the only
+ * record of everything dropped, so it has to keep the facts that later steps
+ * depend on: commands, paths, errors, decisions and any safety constraint the
+ * user stated. The request carries no tools; saying so explicitly keeps a model
+ * from spending the single turn on a tool call.
+ */
 export const SUMMARY_SYSTEM_PROMPT = [
-  'You compress conversation history for a coding agent.',
-  'Produce a compact structured summary of the excerpt using exactly these markdown sections:',
+  'You compress conversation history for a coding agent that must keep working from this summary alone.',
+  'Output plain text only. Do not call tools: this request has no tools and a tool call would be rejected.',
+  '',
+  'Use exactly these markdown sections, in this order:',
   '## Completed',
+  '- What was done and what was verified, including the command or test that proved it.',
   '## Key files',
+  '- Workspace-relative paths, one per line, each with a short note on why it matters.',
+  '## Decisions',
+  '- Choices already made and why, so they are not re-litigated later.',
   '## Open questions',
-  'Preserve concrete file paths, commands, errors, decisions and unresolved problems. Do not invent facts.',
-  'Output only the summary; no preamble.',
+  '- What is still unknown, blocked or unverified.',
+  '',
+  'Rules:',
+  '- Keep file paths, commands, error messages, identifiers and numbers verbatim; do not paraphrase them.',
+  '- Preserve any user constraint about safety, credentials or destructive operations word for word: ' +
+    'it must keep applying after compaction.',
+  '- Keep the original user request, shortened only where its wording is not load-bearing.',
+  '- Do not invent facts, files or results; put anything unknown under Open questions.',
+  '- Output only the summary: no preamble and no closing remarks.',
 ].join('\n');
 
 export interface SummarizeDroppedOptions {

@@ -1,5 +1,7 @@
 export {
+  STABLE_RULES_TOKEN_BUDGET,
   buildSystemPrompt,
+  buildSystemPromptSections,
   createContextSnapshot,
 } from './system-prompt.js';
 export type {
@@ -8,6 +10,7 @@ export type {
   ContextSnapshot,
   CreateContextSnapshotOptions,
   GitInfo,
+  SystemPromptSections,
 } from './system-prompt.js';
 export { buildModelRequest, estimateRequestTokens, mergeConsecutiveUserMessages } from './context.js';
 export type { BuildRequestOptions } from './context.js';

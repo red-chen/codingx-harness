@@ -4,13 +4,16 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  STABLE_RULES_TOKEN_BUDGET,
   buildModelRequest,
   buildSystemPrompt,
+  buildSystemPromptSections,
   createContextSnapshot,
   estimateRequestTokens,
   mergeConsecutiveUserMessages,
   type ContextSnapshot,
 } from '../src/agent/index.js';
+import { estimateTokens } from '../src/util/tokens.js';
 
 let root: string;
 let cwd: string;
@@ -131,6 +134,48 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('untrusted data');
     expect(prompt).toContain('ReadFile before editing');
     expect(prompt).toContain('# Project instructions');
+  });
+
+  it('states the operating rules the agent loop depends on', () => {
+    const prompt = buildSystemPrompt(snapshot());
+    expect(prompt).toContain('blocked by the permission layer');
+    expect(prompt).toContain('never retry the same call unchanged');
+    expect(prompt).toContain('matches its surroundings');
+    expect(prompt).toContain('When you have enough information to act');
+    expect(prompt).toContain('# Compacted context');
+    expect(prompt).toContain('Report outcomes faithfully');
+    expect(prompt).toContain('path:line');
+  });
+
+  it('keeps the fixed rules in a stable prefix and the session snapshot in the tail', () => {
+    const options = { permissionProfile: ':workspace', approvalPolicy: 'on-request' };
+    const sections = buildSystemPromptSections(
+      snapshot({
+        git: { branch: 'main', dirty: false, root: '/work/repo' },
+        agentsMd: { files: ['AGENTS.md'], content: 'Use pnpm.', truncated: false },
+      }),
+      options,
+    );
+    expect(sections.stable).not.toContain('/work/repo');
+    expect(sections.stable).not.toContain('Use pnpm.');
+    expect(sections.stable).not.toContain('Permission profile');
+    expect(sections.dynamic).toContain('- cwd: /work/repo');
+    expect(sections.dynamic).toContain('Use pnpm.');
+    expect(sections.dynamic).toContain('Permission profile: :workspace; approval policy: on-request.');
+    expect(
+      buildSystemPrompt(
+        snapshot({
+          git: { branch: 'main', dirty: false, root: '/work/repo' },
+          agentsMd: { files: ['AGENTS.md'], content: 'Use pnpm.', truncated: false },
+        }),
+        options,
+      ),
+    ).toBe(sections.stable + '\n\n' + sections.dynamic);
+  });
+
+  it('keeps the fixed rules inside the token budget', () => {
+    const { stable } = buildSystemPromptSections(snapshot());
+    expect(estimateTokens(stable)).toBeLessThanOrEqual(STABLE_RULES_TOKEN_BUDGET);
   });
 
   it('lists additional writable directories when provided', () => {

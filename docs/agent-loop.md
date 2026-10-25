@@ -64,6 +64,13 @@ CLI 打开或 resume 会话时，通过 sessiond 获取写租约；租约随连�
 3. **历史消息**：按时间顺序的 user / assistant / tool_result
 4. **当前输入**
 
+系统提示本身分两段，顺序固定：
+
+- **固定规则**（`buildSystemPromptSections().stable`）：角色、Harness 约定、工作方式、汇报要求与压缩说明。这段逐字节稳定、所有会话共用，改它等于改全局行为，因此有 token 预算 `STABLE_RULES_TOKEN_BUDGET`，超出会让测试失败。
+- **会话快照**（`.dynamic`）：权限 profile 与会话范围、环境、技能目录、项目约定。每个会话只取一次，固定在尾部。
+
+这样切分是为了保住 provider 的 prompt cache：稳定前缀在前，可能变化的内容（以及 AgentLoop 追加的压缩摘要 `# Compacted context`）在后。新增规则进固定段；只在部分会话成立的内容（`--add-dir`、`--yolo`、权限 profile）进动态段。
+
 ### 环境上下文注入
 
 `AGENTS.md`（或 `CODINGX.md`）在仓库根目录被读取，作为项目级约定注入系统提示。多个层级时按「根目录 → 当前目录」的顺序拼接，越近的越靠后（模型的近因偏好）。
@@ -90,6 +97,8 @@ CLI 打开或 resume 会话时，通过 sessiond 获取写租约；租约随连�
 3. **摘要**：调用一次模型，把被丢弃的段落压成结构化摘要（已完成事项 / 关键文件 / 未决问题），作为一条 `system` 消息保留。
 
 压缩结果通过 sessiond 写入 rollout 的 `context.compacted` 事件，保留原始消息，只在内存视图中替换——这样 resume 时可以还原完整历史。
+
+摘要会在后续请求中以 `# Compacted context` 追加到系统提示末尾。固定规则里已经提前告诉模型「历史可能被摘要、变短是预期行为」，避免它把压缩误判成上下文丢失而急着收尾；摘要固定在尾部，也不会打散前面的缓存前缀。
 
 ## 工具执行
 

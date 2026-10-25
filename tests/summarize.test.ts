@@ -167,3 +167,17 @@ describe('summarizeDroppedMessages', () => {
     ).rejects.toMatchObject({ code: 'ABORTED' });
   });
 });
+
+describe('SUMMARY_SYSTEM_PROMPT', () => {
+  it('asks for the four sections the agent loop appends to the system prompt', () => {
+    for (const section of ['## Completed', '## Key files', '## Decisions', '## Open questions']) {
+      expect(SUMMARY_SYSTEM_PROMPT).toContain(section);
+    }
+  });
+
+  it('forbids tool calls and requires facts and user constraints to survive verbatim', () => {
+    expect(SUMMARY_SYSTEM_PROMPT).toContain('Do not call tools');
+    expect(SUMMARY_SYSTEM_PROMPT).toContain('verbatim');
+    expect(SUMMARY_SYSTEM_PROMPT).toContain('safety, credentials or destructive operations');
+  });
+});

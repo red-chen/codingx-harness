@@ -33,7 +33,10 @@ export const shellTool: ToolDef<typeof schema> = {
     'Run a shell command inside the workspace (or an --add-dir root) and return stdout, stderr and the exit code. ' +
     'Commands run through bash -lc in their own process group; the working directory must stay inside an allowed root. ' +
     'Use this to run tests, builds, linters and git commands. Long output is truncated with an explicit marker. ' +
-    'A non-zero exit code is reported as an error result; read the output before deciding what to do next.',
+    'A non-zero exit code is reported as an error result; read the output before deciding what to do next. ' +
+    'Do not use Shell to read, search or edit files when ReadFile, Grep, Glob or EditFile fits. ' +
+    'Do not run commands that wait for input (editors, pagers, prompts); they block until the timeout. ' +
+    'When a command fails, read the error and change the command instead of repeating it unchanged.',
   schema,
   parallelSafe: false,
   approval: 'always',

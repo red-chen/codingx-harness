@@ -19,7 +19,9 @@ export const editFileTool: ToolDef<typeof schema> = {
     'Replace an exact string in an existing UTF-8 file. By default old_string must appear exactly once; ' +
     'otherwise use replace_all. The file must have been read with ReadFile in this session first. ' +
     'Include enough surrounding context in old_string to make it unique. Use this for targeted edits; ' +
-    'do not rewrite unrelated content.',
+    'do not rewrite unrelated content. ' +
+    'If the edit is rejected because old_string is missing or matches more than once, re-read that region and ' +
+    'retry with more context; do not rewrite the whole file around a failed match, and do not repeat the identical call.',
   schema,
   parallelSafe: false,
   approval: 'on-write',
