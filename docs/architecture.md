@@ -67,7 +67,7 @@ export type ModelEvent =
   | { type: 'stop'; reason: 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal' };
 ```
 
-默认实现 Anthropic Messages 协议（原生 tool use + prompt caching）；后续增加 OpenAI Responses 协议，两者都映射到同一套 `ModelEvent`。Provider 只负责协议转换，不做重试——重试在 Agent 层统一处理，保证行为一致。厂商凭证名不进入配置，统一使用 `API_KEY` 与 `ENDPOINT`。
+默认实现 Anthropic Messages 协议（原生 tool use + prompt caching）；后续增加 OpenAI Responses 协议，两者都映射到同一套 `ModelEvent`。`Provider.id` 是配置键，可并存多个 Provider；一次 session 只选择一个，不做自动路由或故障转移。Provider 只负责协议转换，不做重试——重试在 Agent 层统一处理，保证行为一致。厂商凭证名不进入配置，统一使用 `API_KEY` 与 `ENDPOINT`。
 
 ### `tools/`
 

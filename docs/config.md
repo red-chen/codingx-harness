@@ -36,6 +36,12 @@ protocol = "anthropic-messages"
 endpoint = "https://api.example.com"
 api_key_env = "API_KEY"
 
+# 可按 id 配置多个 Provider；一次会话只激活一个
+# [provider.secondary]
+# protocol = "openai-responses"
+# endpoint = "https://api.example.com"
+# api_key_env = "SECONDARY_API_KEY"
+
 [approval]
 mode = "on-request"          # on-request | never | always-ask
 # 会话内批准过的同类操作不再重复询问
@@ -97,6 +103,14 @@ servers = []
 
 `provider.<id>.protocol` 默认 `anthropic-messages`，后续支持 `openai-responses`；协议只决定 wire 格式，`ENDPOINT` 与 `API_KEY` 保持通用配置。
 
+## 多 Provider
+
+`[provider.<id>]` 是按 id 索引的表，可以配置多个 Provider（如 `primary`、`secondary`、`local`）。每个 Provider 有独立的 `protocol`、`endpoint`、`api_key_env`；但一次会话只激活一个，不做自动路由或故障转移。
+
+选择顺序：`--provider` > `CODINGX_PROVIDER` > `[model] provider`。`[model] name` 对应当前选中的 Provider；切换 Provider 时用 `--model` 指定该 Provider 的模型名，不做自动映射。
+
+M1 只实现 Anthropic Messages；OpenAI Responses 在 M4 加入，届时通过 `protocol = "openai-responses"` 显式选择，不改变默认值。
+
 ## 项目配置
 
 `<workspace>/.codingx/config.toml` 通常只写与团队约定相关的部分：
@@ -120,8 +134,8 @@ args = ["-y", "@modelcontextprotocol/server-github"]
 
 | 变量 | 作用 |
 | --- | --- |
-| `CODINGX_MODEL` | 覆盖模型名 |
-| `CODINGX_PROVIDER` | 覆盖 Provider |
+| `CODINGX_MODEL` | 覆盖当前 Provider 的模型名 |
+| `CODINGX_PROVIDER` | 覆盖 Provider id |
 | `CODINGX_APPROVAL` | 覆盖审批模式 |
 | `CODINGX_HOME` | 覆盖 `~/.codingx` 目录 |
 | `CODINGX_SESSIOND` | 设为 `0` 关闭 sessiond（退回进程内存储，无跨 CLI） |
@@ -178,7 +192,7 @@ rollout 文件为 append-only JSONL，每行一个事件，默认由 sessiond �
 codingx [options] [prompt]
 
   -m, --model <name>        指定模型
-  -p, --provider <id>       指定 Provider
+  -p, --provider <id>       指定 Provider id
   -C, --cd <path>           指定工作目录
       --full-auto           跳过审批询问（沙箱仍生效）
       --yolo                关闭审批与沙箱（危险）
