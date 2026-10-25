@@ -29,6 +29,8 @@ context_window = 200000
 max_steps = 64               # 单 turn 最多模型往返次数，避免无进展循环
 
 [provider.primary]
+# 默认协议；后续可切 openai-responses
+protocol = "anthropic-messages"
 # 通用的 ENDPOINT 与 API_KEY；也可用 ENDPOINT / API_KEY 环境变量覆盖
 # 凭证优先从 `codingx login` 的 auth.json 读取
 endpoint = "https://api.example.com"
@@ -92,6 +94,8 @@ servers = []
 - `always-ask`：任何工具调用都询问，包括只读工具
 
 `web_fetch` 仅在 `web.enabled = true` 时注册；请求只允许 https，域名必须命中 `allowed_domains`，重定向目标同样校验，解析到私网 / 回环地址的域名一律拒绝。
+
+`provider.<id>.protocol` 默认 `anthropic-messages`，后续支持 `openai-responses`；协议只决定 wire 格式，`ENDPOINT` 与 `API_KEY` 保持通用配置。
 
 ## 项目配置
 

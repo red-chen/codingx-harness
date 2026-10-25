@@ -83,6 +83,7 @@ export ENDPOINT=https://api.example.com
 | --- | --- | --- |
 | 运行时 | Node.js ≥ 20（ESM） | 原生 fetch、AbortController、稳定的 async 语义 |
 | 语言 | TypeScript strict | 工具入参、事件类型、Provider 接口都靠类型收敛 |
+| Provider 协议 | Anthropic Messages（默认）/ OpenAI Responses（后续） | 统一 ModelEvent，协议差异收敛在 providers/ |
 | TUI | 自研 Terminal（TypeScript） | 自己管理 cell buffer、ANSI 差分、输入与 alt screen，不依赖 Ink |
 | CLI 解析 | commander | 子命令 + 选项足够，生态成熟 |
 | 会话进程 | sessiond + Unix socket / 命名管道（JSON-RPC 2.0） | 单写者落盘、跨 CLI 查询，不暴露 TCP 端口 |
@@ -100,7 +101,7 @@ codingx-harness/
 │   ├── cli/                # 参数解析、子命令、退出码
 │   ├── tui/                # Terminal、cell buffer、布局、widgets、输入、overlay
 │   ├── agent/              # 主循环、turn 编排、上下文组装
-│   ├── providers/          # 模型适配（原生协议 / 兼容端点）
+│   ├── providers/          # 模型适配（Anthropic Messages / OpenAI Responses）
 │   ├── tools/              # 工具实现与注册表
 │   ├── policy/             # 审批策略、命令判定
 │   ├── sandbox/            # 平台沙箱适配（seatbelt / landlock）
