@@ -146,7 +146,7 @@ describe('turn summary', () => {
     expect(screenText(app.frame())).toContain('tok 3.2k');
   });
 
-  it('appends a summary cell and shows ctx tokens with a 200K default window', () => {
+  it('appends a summary cell and shows ctx tokens with a 1M default window', () => {
     const now = new Date(2026, 0, 2, 12, 34, 56).getTime();
     const app = new TuiApp({
       session: { sessionId: 's1', cwd: '/tmp/work', model: 'glm-5.3' },
@@ -156,8 +156,8 @@ describe('turn summary', () => {
       now: () => now,
     });
     expect(app.state.contextUsedTokens).toBe(0);
-    expect(app.state.contextWindowTokens).toBe(200_000);
-    expect(screenText(app.frame())).toContain('ctx 0/200k');
+    expect(app.state.contextWindowTokens).toBe(1_000_000);
+    expect(screenText(app.frame())).toContain('ctx 0/1m');
 
     app.handleEvent({ type: 'turn.started', turnId: 't1' });
     app.handleEvent({ type: 'text.delta', turnId: 't1', text: 'done text' });

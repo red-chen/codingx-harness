@@ -364,14 +364,14 @@ describe('AgentLoop happy path', () => {
     expect(finished).toMatchObject({ type: 'turn.finished', status: 'done' });
   });
 
-  it('defaults to the 200K context window', async () => {
+  it('defaults to the 1M context window', async () => {
     const session = new RecordingSession();
     const ui: UiEvent[] = [];
     const client = new ScriptedClient([textStep('ok')]);
     const loop = createLoop(client, session, ui);
     expect((await loop.runTurn('hello')).status).toBe('done');
     const context = ui.find((event) => event.type === 'context.updated');
-    expect(context).toMatchObject({ windowTokens: 200_000 });
+    expect(context).toMatchObject({ windowTokens: 1_000_000 });
   });
 
   it('records provider selection when the router exposes it', async () => {

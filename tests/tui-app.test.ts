@@ -546,7 +546,7 @@ describe('TuiApp modes, scrolling and frames', () => {
     expect(text).toContain('✓ turn done');
     expect(app.lastAssistantText()).toBe('final answer');
     expect(app.copyText('status')).toContain('Ready');
-    expect(app.copyText('status')).toContain('ctx 0/200k');
+    expect(app.copyText('status')).toContain('ctx 0/1m');
     expect(app.copyText('meta')).toContain('test-model');
     expect(app.copyText('meta')).toContain('/tmp/work');
     typeText(app, 'draft input');

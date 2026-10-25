@@ -124,7 +124,7 @@ Wave F（sessiond）依赖 A 的续接语义，可与 D/E 并行
 - 测试：48 个文件、499 项通过；新增 `tests/tui-bottom.test.ts`、`tests/tui-turn-summary.test.ts`、`tests/tui-restore.test.ts`，覆盖背景、MetaBar、turn 摘要、上下文/累计 Token、LLM/工具耗时、turn/step 与 resume transcript 重建。
 - IME 候选窗定位：每帧把硬件光标显示并移动到 composer 实际插入点（含 CJK 宽字符、多行、slash 菜单）；overlay/transcript 模式隐藏。
 - 完成摘要：`turn.finished` 后在 transcript 追加完成时间、耗时、in/out/cache tokens。
-- 上下文用量：StatusRow 显示 `ctx used/window · tok total`，TUI 与 AgentLoop 默认窗口 200,000 tokens（配置 `model.context_window` 可覆盖）。
+- 上下文用量：StatusRow 显示 `ctx used/window · tok total`，TUI 与 AgentLoop 默认窗口 1,000,000 tokens（配置 `model.context_window` 可覆盖）。
 - 耗时：exec 命令显示工具耗时；turn 摘要显示 `total/llm/tools` 与 Token；assistant 末尾不再重复 `llm Xs`。
 - 工具调用合并：相邻且工具/目标相同的调用渲染为一个 Exec 块（`• Ran <command> ×N`，耗时求和），各次输出依次预览，完全相同的重复输出只显示一次；分组与滚动高度共用同一套块模型，resume 重建的 transcript 同样生效。新增 `buildExecGroupLines` 与 viewport 分组测试。
 - StatusRow 同时显示 `turn N · step M`；滚动 offset clamp 到内容高度，短会话上滚不会清空历史。

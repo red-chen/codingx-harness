@@ -98,7 +98,7 @@ export interface Provider extends ModelClient {
 }
 
 /** Default model context window used when config does not override it. */
-export const DEFAULT_CONTEXT_WINDOW = 200_000;
+export const DEFAULT_CONTEXT_WINDOW = 1_000_000;
 
 export const EMPTY_USAGE: TokenUsage = Object.freeze({
   inputTokens: 0,

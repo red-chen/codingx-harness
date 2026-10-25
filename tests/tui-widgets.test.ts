@@ -621,7 +621,7 @@ describe('frame composition', () => {
     expect(screenText(frame)).toContain('model: test-model');
     expect(rowText(frame, 17)).toBe('');
     expect(rowText(frame, 18)).toContain('• Ready');
-    expect(rowText(frame, 18)).toContain('ctx 0/200k');
+    expect(rowText(frame, 18)).toContain('ctx 0/1m');
     expect(rowText(frame, 19)).toBe('');
     expect(rowText(frame, 21)).toContain('› Ask codingx to do anything');
     expect(rowText(frame, 23)).toContain('test-model');
@@ -703,11 +703,11 @@ describe('frame composition', () => {
     const frame = app.renderFrame();
     expect(rowText(frame, 0)).toMatch(/^╭─+╮$/u);
     expect(rowText(frame, 34)).toContain('• Ready');
-    expect(rowText(frame, 34)).toContain('ctx 0/200k');
+    expect(rowText(frame, 34)).toContain('ctx 0/1m');
     expect(rowText(frame, 37)).toContain('› Ask codingx to do anything');
     expect(rowText(frame, 39)).toContain('test-model');
     expect(rowText(frame, 39)).toContain('New session');
-    expect(rowText(frame, 34)).toContain('ctx 0/200k');
+    expect(rowText(frame, 34)).toContain('ctx 0/1m');
     expect(displayWidth(rowText(frame, 39))).toBeLessThanOrEqual(120);
   });
 
@@ -720,7 +720,7 @@ describe('frame composition', () => {
     const forty = composeFrame(makeApp(40, 24).state, { width: 40, height: 24, now: 1000 });
     expect(rowText(forty, 23)).toContain('test-model');
     expect(rowText(forty, 18)).toContain('• Ready');
-    expect(rowText(forty, 18)).toContain('ctx 0/200k');
+    expect(rowText(forty, 18)).toContain('ctx 0/1m');
     expect(screenText(forty)).not.toContain('? for shortcuts');
 
     const thirtyNine = composeFrame(makeApp(39, 24).state, { width: 39, height: 24, now: 1000 });

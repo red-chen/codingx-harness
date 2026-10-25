@@ -162,7 +162,7 @@ model · cwd · session title
 - composer 下方固定一行 meta：模型、cwd、当前会话标题（取首条用户消息，resume 时从 rollout 恢复）；固定只有这三项，不显示 effort、permission profile 或 approval policy。
 - 最底部固定 1 行 meta，不再显示快捷键行；cwd 在 home 目录下显示为 `~/...`，用户消息使用独立的 `userBg` 整块背景。
 - 每个 turn 完成后追加一行 TurnSummary：完成时间、耗时、in/out/cache tokens。
-- 状态行显示 `turn N · step M`，右侧显示 `ctx used/window · tok total`，默认窗口 200K tokens。
+- 状态行显示 `turn N · step M`，右侧显示 `ctx used/window · tok total`，默认窗口 1M tokens。
 - exec 命令显示工具耗时；turn 摘要显示 `total/llm/tools` 耗时与 Token，LLM 耗时不再重复挂在 assistant 内容末尾。
 - 相邻且工具/目标相同的调用（例如同一批次里多次 `ReadFile` 同一文件）合并为一个 Exec 块：标题只出现一次并带 `×N`，各次输出按顺序预览，组内不再额外空行；完全相同的输出只渲染一次。
 - 向上滚动按历史内容 clamp；内容不足一屏时保持停在底部，不会出现空白。
