@@ -11,13 +11,15 @@ idle ──user.input──► assembling ──► streaming ──┬─ end_t
                         └─────────tool_result 回填◄──────────────────────────┘
 ```
 
-状态机是显式的，每个状态迁移都写入 rollout 事件，方便事后复现。
+状态机是显式的，每个状态迁移都通过 sessiond 写入 rollout 事件，方便事后复现。
 
 ## 循环伪码
 
 ```ts
 async function runTurn(input: string, ctx: TurnContext): Promise<TurnResult> {
   ctx.messages.push({ role: 'user', content: input });
+  await ctx.session.append({ type: 'turn.start', turnId: ctx.turnId });
+  await ctx.session.append({ type: 'user.message', text: input });
 
   for (let step = 0; step < ctx.limits.maxSteps; step++) {
     const request = await buildRequest(ctx);       // 含压缩决策
@@ -33,7 +35,7 @@ async function runTurn(input: string, ctx: TurnContext): Promise<TurnResult> {
     }
 
     ctx.messages.push(assistantMessage(text.join(''), calls));
-    ctx.session.append({ type: 'assistant.message', text: text.join(''), calls });
+    await ctx.session.append({ type: 'assistant.message', text: text.join(''), calls });
 
     if (calls.length === 0) return { status: 'done' };
 
@@ -46,6 +48,12 @@ async function runTurn(input: string, ctx: TurnContext): Promise<TurnResult> {
 ```
 
 `maxSteps` 默认 64（可用 `agent.max_steps` 覆盖），防止模型陷入无进展的循环。达到上限时向用户报告当前状态，而不是静默截断。
+
+## 会话与租约
+
+CLI 打开或 resume 会话时，通过 sessiond 获取写租约；租约随连接存在，一个会话同一时刻只有一个 writer。turn 的状态用 `turn.start` / `turn.status` / `turn.end` / `turn.aborted` 上报，sessiond 据此生成跨 CLI 可见的 `running` / `awaiting_approval` / `idle` 等状态。
+
+审批交互只属于持有写租约的 CLI；其他终端可以用 `sessions watch` 看到 `awaiting_approval`，但不能代为批准。CLI 崩溃或被 SIGKILL 时，daemon 释放租约、追加 `session.interrupted`；resume 时按 `seq` 回放，不自动续跑未完成的 turn。协议与状态机见 [session-manager.md](session-manager.md)。
 
 ## 上下文组装
 
@@ -77,7 +85,7 @@ async function runTurn(input: string, ctx: TurnContext): Promise<TurnResult> {
 2. **丢弃中间对话**：保留系统提示、最近 K 轮、以及所有「用户原始需求」消息。
 3. **摘要**：调用一次模型，把被丢弃的段落压成结构化摘要（已完成事项 / 关键文件 / 未决问题），作为一条 `system` 消息保留。
 
-压缩结果写入 rollout 的 `context.compacted` 事件，保留原始消息，只在内存视图中替换——这样 resume 时可以还原完整历史。
+压缩结果通过 sessiond 写入 rollout 的 `context.compacted` 事件，保留原始消息，只在内存视图中替换——这样 resume 时可以还原完整历史。
 
 ## 工具执行
 
@@ -96,7 +104,7 @@ async function executeTools(calls: ToolCall[], ctx: TurnContext): Promise<ToolRe
 }
 ```
 
-`runOne` 内部顺序：查表 → 参数校验（zod）→ 审批 → 沙箱执行 → 结果裁剪 → 写 rollout。任何一步失败都转换成 `is_error: true` 的 `tool_result` 回填，让模型自己看到错误并纠正，而不是让整个 turn 崩掉。
+`runOne` 内部顺序：查表 → 参数校验（zod）→ 审批 → 沙箱执行 → 结果裁剪 → 追加事件到 sessiond。任何一步失败都转换成 `is_error: true` 的 `tool_result` 回填，让模型自己看到错误并纠正，而不是让整个 turn 崩掉。
 
 ## 模型请求的重试
 
@@ -119,8 +127,8 @@ async function withRetry<T>(fn: () => Promise<T>, signal: AbortSignal): Promise<
 
 ## 用量与成本
 
-每个 turn 结束写一条 `turn.end` 事件，包含输入 / 输出 / 缓存命中 token 数。TUI 状态栏展示本会话累计用量与估算成本；`codingx exec` 在结束时打印到 stderr，不污染 stdout 的机器可读输出。
+每个 turn 结束通过 sessiond 写一条 `turn.end` 事件，包含输入 / 输出 / 缓存命中 token 数。TUI 状态栏展示本会话累计用量与估算成本；`codingx exec` 在结束时打印到 stderr，不污染 stdout 的机器可读输出。
 
 ## 子 Agent（后续）
 
-`task` 工具可以派发一个独立上下文的子 Agent，用于大范围搜索或独立验证。子 Agent 有自己的 turn 循环与工具集，结果以摘要形式返回父 Agent，避免污染主上下文。该能力放在 M5，先保证主循环正确。
+`task` 工具可以派发一个独立上下文的子 Agent，用于大范围搜索或独立验证。子 Agent 有自己的 turn 循环与工具集，结果以摘要形式返回父 Agent，避免污染主上下文。子 Agent 使用独立的 session（`parent_id` 指向父会话），同样由 sessiond 管理。该能力放在 M5，先保证主循环正确。

@@ -18,11 +18,14 @@
 
 **依赖方向自上而下，禁止反向依赖。** 上层通过接口调用下层，下层不感知上层的存在。例如 `agent` 只依赖 `Provider` 与 `Tool` 接口，不 import 具体的 Anthropic SDK 或 Ink 组件——这让 Agent 循环可以在测试里用假 Provider 驱动。
 
+`sessiond` 不在这张分层图内：它是独立进程，通过本机 IPC 为 `session/` 提供单写者存储；CLI 默认不再直接写 rollout，只有 `sessiond.enabled = false` 的嵌入式模式例外。见 [session-manager.md](session-manager.md)。
+
 ## 模块职责
 
 ### `cli/`
 
-- 子命令：`codingx`（交互）、`codingx exec`（单次执行）、`codingx resume` / `--continue`、`codingx login`、`codingx config`、`codingx sessions list|prune`、`codingx log --session <id>`
+- 会话命令：`codingx sessions list|show|watch|prune`、`codingx log --session <id>`、`codingx sessiond start|stop|status|restart`
+- 其余命令：`codingx`（交互）、`codingx exec`（单次执行）、`codingx resume` / `--continue`、`codingx login`、`codingx config`
 - 参数与配置文件的合并顺序：命令行 > 环境变量 > 项目配置 > 全局配置 > 默认值
 - 退出码约定：`0` 成功，`1` 任务失败，`2` 参数错误，`130` 用户中断
 
@@ -81,15 +84,24 @@ export type ModelEvent =
 - MCP 客户端（stdio / SSE），连接配置中的外部 Server，并把工具注册进 `ToolRegistry`
 - 单个 Server 连接失败只影响它自己的工具，不阻断启动；会话结束统一关闭
 
+### `sessiond/`
+
+- 独立进程入口：`codingx sessiond run --daemon`，单实例锁、socket 生命周期、空闲退出与版本握手
+- 注册表与租约：会话元数据、客户端、写租约、状态推导；启动时扫描 rollout 重建
+- 追加与广播：分配 `seq`、脱敏、fsync、通知订阅者；保留事件只能由 daemon 写入
+- 不调用模型与工具，不读取凭证；协议与边界见 [session-manager.md](session-manager.md)
+
 ### `session/`
 
-- 每个会话一个文件：`~/.codingx/sessions/<timestamp>_<id>.jsonl`，时间戳中的 `:` 替换为 `-`（如 `2026-10-24T15-20-01_a1b2c3.jsonl`）
-- append-only，写入即 flush；进程崩溃后仍可恢复到最后一个完整事件
-- `resume` 读取 rollout 重建消息历史；`fork` 复制到新文件并追加分叉点
+- 客户端：`SessionStore` 接口（`create` / `attach` / `append` / `replay` / `subscribe` / `fork` / `end`），实现走 sessiond IPC
+- rollout 编解码：事件信封、`seq`、脱敏规则；`index.json` 只是缓存，JSONL 是事实来源
+- 每个会话一个文件：`~/.codingx/sessions/<timestamp>_<id>.jsonl`，时间戳中的 `:` 替换为 `-`（如 `2026-10-24T15-20-01_a1b2c3d4e5f6.jsonl`）
+- `resume` 通过 replay 重建消息历史；`fork` 由 sessiond 在分叉点复制并写新头
+- CLI 不直接持有 rollout 写句柄；离线只读命令（`log`、`sessions list --offline`）可绕过 daemon 扫描文件
 
 ### `config/`
 
-配置来自四层，后者覆盖前者：全局 `~/.codingx/config.toml` → 项目 `.codingx/config.toml` → 环境变量 → 命令行。详见 [config.md](config.md)。
+配置来自四层，后者覆盖前者：全局 `~/.codingx/config.toml` → 项目 `.codingx/config.toml` → 环境变量 → 命令行。`[sessiond]` 整段以及 `session.dir` / `retention_days` 只能来自全局配置或环境变量，项目配置不得覆盖。详见 [config.md](config.md)。
 
 ## 一次 Turn 的数据流
 
@@ -110,7 +122,7 @@ policy.evaluate()           # allow / deny / ask
 sandbox.wrap() + exec()     # 在隔离环境执行
    │
    ▼
-session.append()            # 写入 tool.call / tool.result
+sessiond.append()           # 写入 user / assistant / tool 事件（单写者）
    │
    ▼
 回填 tool_result → 再次 provider.stream()（循环）
@@ -122,6 +134,7 @@ stop: end_turn              # 本轮结束，等待下一次用户输入
 ## 并发与取消
 
 - 一次 turn 只有一个 `AbortController`，用户按 `Esc` / `Ctrl+C` 触发 abort，向下传导到模型流与子进程
+- 一个会话同一时刻只有一个写租约，绑定 CLI 连接；其他 CLI 只能 observe。接管仅允许空闲会话，daemon 在租约丢失时把进行中的 turn 标记为 `interrupted`
 - 工具调用默认串行执行；只读工具（`read_file`、`grep`、`glob`）可标记 `parallelSafe`，同批并发，写工具强制串行
 - 子进程用 `spawn` 而非 `exec`，绑定 `detached: true` 以便超时时整组 kill
 
@@ -133,6 +146,9 @@ stop: end_turn              # 本轮结束，等待下一次用户输入
 | 上下文超限 | 触发压缩，压缩后重试一次；仍失败则中止并提示 |
 | 工具执行失败 | 不抛出，作为 `tool_result` 的 `is_error` 回填给模型自纠 |
 | 用户中断 | 写入 `turn.aborted` 事件，保留已完成部分 |
+| 与 sessiond 断开 | 中止当前 turn，不本地续写；重连后按 `seq` 回放，会话标记 `interrupted` |
+| 会话被其他 CLI 占用 | 返回 `SESSION_BUSY`，提示 `sessions show/watch` 或空闲时 `--takeover` |
+| sessiond 不可用 | 自动拉起；仍失败则报错退出，不回退到隐式双写 |
 | 未捕获异常 | 写入 rollout 后退出，退出码 1 |
 
 ## 可测试性
@@ -140,3 +156,4 @@ stop: end_turn              # 本轮结束，等待下一次用户输入
 - Agent 循环对 Provider 和 Tool 都是接口依赖，单元测试用脚本化的假 Provider 即可覆盖完整 turn
 - 沙箱与审批层可替换为空实现（`--yolo` 仅用于测试环境），保证 CI 无需交互
 - TUI 组件通过 Ink 的 `ink-testing-library` 做快照测试
+- sessiond 用临时 `CODINGX_HOME` 与脚本化客户端覆盖协议、租约、崩溃恢复与多客户端并发

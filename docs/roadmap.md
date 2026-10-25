@@ -4,9 +4,10 @@
 
 ## M0 · 设计对齐（当前）
 
-- [x] 架构、Agent 循环、工具、安全、配置文档
+- [x] 架构、Agent 循环、工具、安全、配置、会话管理文档
 - [x] 确定首个 Provider 与默认模型：Anthropic Messages API，默认 `claude-opus-4-7`
 - [x] 确定沙箱在 macOS / Linux 上的降级行为：Seatbelt / Landlock，内核能力缺失时降级并告警，其他平台禁用 `--full-auto`
+- [x] 确定 sessiond 边界：单写者会话存储 + 跨 CLI 查询，不执行模型与工具
 
 **完成标志**：文档评审通过，接口定义无重大争议。当前文档已对齐，等待评审确认。
 
@@ -19,7 +20,7 @@
 - Agent 循环（单 turn、串行工具、无压缩）
 - 工具：`read_file`、`list_dir`、`edit_file`、`shell`
 - 纯文本输出（`--plain`），无 TUI
-- rollout 写入 JSONL
+- `SessionStore` 接口 + 进程内实现，rollout 写入 JSONL（单写者）
 
 **验收**：`codingx exec "把 src/util.ts 里的 foo 重命名为 bar 并跑测试"` 能端到端完成，rollout 可回放。
 
@@ -31,16 +32,19 @@
 - 流式增量渲染与节流
 - 上下文压缩（截断 → 丢弃 → 摘要 三级）
 - 会话 resume / fork
+- sessiond 常驻进程：Unix socket + JSON-RPC、写租约、会话索引
+- 跨 CLI 查询：`codingx sessions list/show/watch`
 - 工具：`glob`、`grep`、`write_file`、`apply_patch`、`update_plan`
 - 中断与取消（`Esc` / `Ctrl+C` 传导到子进程）
 
-**验收**：连续进行 30 轮以上对话不因上下文超限中断；中途 `Ctrl+C` 后 `--continue` 能接上。
+**验收**：连续进行 30 轮以上对话不因上下文超限中断；中途 `Ctrl+C` 后 `--continue` 能接上；两个终端能看到同一会话状态且写租约互斥。
 
 ## M3 · 安全
 
 目标：可以放心在真实项目上跑。
 
 - 审批策略引擎（规范化动作 + 规则匹配 + 会话记忆）
+- sessiond 本地 IPC 加固（0700 / 0600、peer UID、项目配置禁改 socket、事件二次脱敏）
 - macOS Seatbelt 沙箱；Linux Landlock 沙箱
 - 环境变量白名单、凭证脱敏
 - `--full-auto` / `--yolo` 与降级告警
@@ -69,6 +73,7 @@
 
 - npm 发布，`npx codingx` 可用
 - 单文件 bundle 与启动耗时优化（目标 < 300ms 冷启动）
+- sessiond 随单文件 bundle 分发与自动拉起
 - 安装脚本、Homebrew formula
 - CI 集成示例（GitHub Actions）
 
@@ -83,3 +88,4 @@
 | 自研模型路由与调度 | Harness 层不承担 |
 | 插件市场 | 先有 MCP 与本地工具 |
 | 跨会话长期记忆 | 先把单会话上下文做扎实 |
+| 远程会话同步 / 多机共享 | sessiond 只服务本机单用户 |

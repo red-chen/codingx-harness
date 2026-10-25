@@ -98,12 +98,27 @@ export interface SandboxPolicy {
 
 - 可写：workspace 根、`$TMPDIR`
 - 可读：workspace 根、`/usr`、`/bin`、`/lib`、Node 安装路径
-- 不可读：`~/.ssh`、`~/.aws`、`~/.config/gh`、`.env` 系列（除非显式加入白名单）
+- 不可读：`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.codingx`、`session.dir`、`.env` 系列（除非显式加入白名单）
 - 网络：默认 `none`；需要联网的命令（`npm install`、`git push`）由用户在审批时单次放行
 
 ### 环境变量
 
 子进程默认只继承白名单内的变量（`PATH`、`HOME`、`LANG`、`TERM` 等）。`ANTHROPIC_API_KEY` 之类的凭证**不传给子进程**——否则一条 `env` 命令就能把密钥写进 rollout 和模型上下文。
+
+## Session Manager
+
+sessiond 是本地受信进程，但不因此放宽边界：
+
+- 只监听 Unix domain socket（Windows 命名管道），从不监听 TCP；目录 `0700`、socket / `sessiond.json` / 会话文件 / `index.json` 均为 `0600`
+- 连接时校验对端 UID（Linux `SO_PEERCRED`、macOS `LOCAL_PEERCRED`）；Windows 由命名管道 ACL 限制当前用户；Unix 下连接前检查 socket 属主与权限
+- 启动时清空凭证类环境变量，不读取 `auth.json`、不加载项目配置、不执行仓库代码；模型与工具始终在 CLI 内
+- 事件在 daemon 落盘前再做一次脱敏，作为「凭证永不落盘」的最后写边界；CLI 发送前已脱敏一次
+- 项目配置不得覆盖整个 `[sessiond]` 段，避免克隆仓库把 CLI 指向恶意 socket 或改写存储位置
+- 沙箱默认把 `~/.codingx`、`session.dir` 与 sessiond 实际 socket 目录列为不可读；工具子进程不继承 `CODINGX_SESSIOND_SOCKET`，避免模型诱导工具读取历史或操作 socket
+- daemon 日志只记录连接、租约与 append 元数据，不记录 prompt、工具输出或文件内容
+- 同 UID 进程视为可信：peer 校验只隔离其他用户，不防御本用户下已执行的恶意代码
+
+协议、权限与资源上限见 [session-manager.md](session-manager.md)。
 
 ## 提示注入
 
@@ -120,8 +135,8 @@ export interface SandboxPolicy {
 
 - `codingx login` 走 OAuth 流程，token 存 `~/.codingx/auth.json`，权限 `0600`
 - 也支持从环境变量读取 API Key（CI 场景）；密钥不写入 `config.toml`
-- 凭证永不写入 rollout 文件；rollout 写入前对已知模式（`sk-`、`ghp_`、AWS key 格式）做脱敏扫描
+- 凭证永不写入 rollout 文件；CLI 发送前与 sessiond 落盘前各做一次已知模式（`sk-`、`ghp_`、AWS key 格式）的脱敏扫描
 
 ## 审计
 
-rollout 是完整的审计日志，包含：每次模型请求的 token 用量、每次工具调用的规范化参数、审批决策与决策者（策略 / 用户）、执行耗时与退出码。`codingx log --session <id>` 可读回任意历史会话。
+rollout 是完整的审计日志，包含：每次模型请求的 token 用量、每次工具调用的规范化参数、审批决策与决策者（策略 / 用户）、执行耗时与退出码。`codingx log --session <id>` 可读回任意历史会话。sessiond 自身日志只记录连接、租约与追加元数据，不记录 prompt 与工具输出。

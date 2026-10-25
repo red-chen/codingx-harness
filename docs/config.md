@@ -10,7 +10,7 @@
 4. 全局配置 `~/.codingx/config.toml`
 5. 内置默认值
 
-项目配置只允许覆盖**行为类**设置（模型、审批、工具开关、MCP、联网），不允许覆盖凭证——避免从远程仓库克隆来的项目配置窃取本地密钥。凭证只从 `codingx login` 的 `auth.json` 或环境变量读取，不写入 `config.toml`。
+项目配置只允许覆盖**行为类**设置（模型、审批、工具开关、MCP、联网），不允许覆盖凭证——避免从远程仓库克隆来的项目配置窃取本地密钥。凭证只从 `codingx login` 的 `auth.json` 或环境变量读取，不写入 `config.toml`。整个 `[sessiond]` 段与 `session.dir` / `retention_days` 是例外：只允许来自全局配置或环境变量，项目配置不得覆盖。
 
 ## 完整示例
 
@@ -67,6 +67,13 @@ allowed_domains = []         # 仅 https；为空表示不允许任何域名
 dir = "~/.codingx/sessions"
 retention_days = 30
 
+[sessiond]
+enabled = true               # false 时退回进程内存储，无跨 CLI 查询
+socket = "~/.codingx/run/sessiond.sock"
+autostart = true
+idle_timeout_seconds = 1800  # 无连接且无租约时退出；0 表示常驻
+log = "~/.codingx/logs/sessiond.log"
+
 [mcp]
 # 外部工具服务器
 servers = []
@@ -113,6 +120,8 @@ args = ["-y", "@modelcontextprotocol/server-github"]
 | `CODINGX_PROVIDER` | 覆盖 Provider |
 | `CODINGX_APPROVAL` | 覆盖审批模式 |
 | `CODINGX_HOME` | 覆盖 `~/.codingx` 目录 |
+| `CODINGX_SESSIOND` | 设为 `0` 关闭 sessiond（退回进程内存储，无跨 CLI） |
+| `CODINGX_SESSIOND_SOCKET` | 覆盖 sessiond socket 路径 |
 | `CODINGX_LOG` | 设为 `debug` 输出详细日志到 stderr |
 | `ANTHROPIC_API_KEY` | API Key（`api_key_env` 指向的变量名） |
 
@@ -143,13 +152,20 @@ args = ["-y", "@modelcontextprotocol/server-github"]
 ~/.codingx/
 ├── config.toml
 ├── auth.json            # 0600
+├── run/
+│   ├── sessiond.sock    # 0600
+│   ├── sessiond.json    # pid / socket / protocol
+│   └── sessiond.lock
+├── logs/
+│   └── sessiond.log
 ├── sessions/
-│   ├── 2026-10-24T15-20-01_a1b2c3.jsonl
+│   ├── index.json       # 元数据缓存，可重建
+│   ├── 2026-10-24T15-20-01_a1b2c3d4e5f6.jsonl
 │   └── ...
 └── tools/               # 自定义工具（需 allow_custom）
 ```
 
-rollout 文件为 append-only JSONL，每行一个事件。清理策略：`retention_days` 之后自动删除，`codingx sessions prune` 可手动触发。
+rollout 文件为 append-only JSONL，每行一个事件，默认由 sessiond 单写者追加（`enabled = false` 的嵌入式模式除外）；`index.json` 是元数据缓存，删除后可从 JSONL 重建。清理策略：`retention_days` 之后由 sessiond 自动删除已结束 / 已中断会话，`codingx sessions prune` 可手动触发，活动会话永不清理。协议、租约与崩溃恢复见 [session-manager.md](session-manager.md)。
 
 ## 命令行选项
 
@@ -165,15 +181,20 @@ codingx [options] [prompt]
       --json                事件流以 JSON Lines 输出到 stdout
   -c, --continue            继续最近的会话
       --resume <id>         恢复指定会话
+      --takeover            接管空闲会话的写租约（有活动 turn 时拒绝）
       --fork <id>           从指定会话分叉
+      --offline             只读扫描本地 JSONL，不连接 sessiond
 
 codingx exec <prompt>     单次执行，非交互
 codingx resume <id>       恢复会话
 codingx login             凭证登录
 codingx config            打开配置文件
-codingx sessions list     列出历史会话
+codingx sessions list     列出所有终端的会话
+codingx sessions show <id>   查看会话状态与最近事件
+codingx sessions watch <id>  只读观察实时事件
 codingx sessions prune    清理过期会话
+codingx sessiond start|stop|status|restart  管理本地会话进程
 codingx log --session <id>  回放会话的审计事件
 ```
 
-`--json` 与 `exec` 组合时，stdout 只输出机器可读事件，人类可读信息走 stderr——保证可以安全地接入管道。
+`--json` 与 `exec` 组合时，stdout 只输出机器可读事件，人类可读信息走 stderr——保证可以安全地接入管道。`sessions list/show/watch` 与 `sessiond status` 同样支持 `--json`；前者在 daemon 未运行且 `sessiond.enabled = true` 时会先尝试自动拉起。`sessions list --offline` 只读扫描 JSONL，`codingx log` 始终直接读 JSONL，两者都不依赖 daemon 且没有实时状态。`sessiond stop` 默认拒绝在有活动租约时退出，`--force` 会把进行中的 turn 标记为 `interrupted`。
