@@ -87,7 +87,7 @@ describe('TuiApp state transitions', () => {
     expect(app.state.session).toEqual({ sessionId: 'zzzzzzzzzzzz', cwd: '/repo', model: 'other-model' });
   });
 
-  it('updates model and effort for the meta row and preserves them on clear', () => {
+  it('updates model and effort state and preserves them on clear', () => {
     const app = makeApp();
     app.setModel('next-model', 'high');
     expect(app.state.session).toMatchObject({ model: 'next-model', reasoningEffort: 'high' });
@@ -546,7 +546,7 @@ describe('TuiApp modes, scrolling and frames', () => {
     expect(text).toContain('✓ turn done');
     expect(app.lastAssistantText()).toBe('final answer');
     expect(app.copyText('status')).toContain('Ready');
-    expect(app.copyText('status')).toContain('ctx 0/1m');
+    expect(app.copyText('status')).toContain('ctx 0/200k');
     expect(app.copyText('meta')).toContain('test-model');
     expect(app.copyText('meta')).toContain('/tmp/work');
     typeText(app, 'draft input');

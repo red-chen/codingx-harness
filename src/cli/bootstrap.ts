@@ -214,6 +214,11 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
       env,
     });
     store = new SessiondStore({ client: ensured.client });
+    if (ensured.replacedStale === true) {
+      warnings.push(
+        'sessiond was running an older build; it was restarted to match this codingx binary.',
+      );
+    }
   } else {
     store = new EmbeddedSessionStore({ directory: loaded.config.session.dir });
   }

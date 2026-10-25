@@ -364,6 +364,16 @@ describe('AgentLoop happy path', () => {
     expect(finished).toMatchObject({ type: 'turn.finished', status: 'done' });
   });
 
+  it('defaults to the 200K context window', async () => {
+    const session = new RecordingSession();
+    const ui: UiEvent[] = [];
+    const client = new ScriptedClient([textStep('ok')]);
+    const loop = createLoop(client, session, ui);
+    expect((await loop.runTurn('hello')).status).toBe('done');
+    const context = ui.find((event) => event.type === 'context.updated');
+    expect(context).toMatchObject({ windowTokens: 200_000 });
+  });
+
   it('records provider selection when the router exposes it', async () => {
     const session = new RecordingSession();
     const ui: UiEvent[] = [];
@@ -511,6 +521,75 @@ describe('AgentLoop tool execution', () => {
     expect(eventsOf(session, 'context.compacted').length).toBeGreaterThan(0);
     const lastRequest = client.requests.at(-1);
     expect(lastRequest?.messages.length ?? 999).toBeLessThanOrEqual(30);
+  });
+
+  it('forces one compaction and retries when the provider rejects the prompt size', async () => {
+    const session = new RecordingSession();
+    const ui: UiEvent[] = [];
+    const initialMessages: Message[] = [
+      { role: 'user', content: [{ type: 'text', text: 'one' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'two' }] },
+      { role: 'user', content: [{ type: 'text', text: 'three' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'four' }] },
+      { role: 'user', content: [{ type: 'text', text: 'five' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'six' }] },
+    ];
+    const overflow = new ProviderError('prompt is too long', {
+      category: 'context_overflow',
+      retryable: false,
+    });
+    const summary = '## Completed\n- old work';
+    const client = new ScriptedClient([
+      { events: [], error: overflow },
+      textStep(summary),
+      textStep('recovered'),
+    ]);
+    const loop = createLoop(client, session, ui, {
+      initialMessages,
+      contextWindow: 1_000,
+      compression: { keepRecentMessages: 1, summaryMaxTokens: 100 },
+    });
+
+    const result = await loop.runTurn('new request');
+    expect(result.status).toBe('done');
+    expect(client.attempts).toBe(3);
+    expect(client.requests[1]?.system).toMatch(/You compress conversation history/);
+    expect(client.requests[2]?.system).toContain(summary);
+    const compacted = eventsOf(session, 'context.compacted');
+    expect(compacted).toHaveLength(1);
+    expect(compacted[0]).toMatchObject({ levels: ['drop'], droppedMessages: 5, summary });
+  });
+
+  it('does not re-summarize the same dropped messages on every turn', async () => {
+    const session = new RecordingSession();
+    const ui: UiEvent[] = [];
+    const initialMessages: Message[] = Array.from({ length: 30 }, (_, index) => ({
+      role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+      content: [{ type: 'text' as const, text: 'history ' + index + ' ' + 'x'.repeat(80) }],
+    }));
+    const summary = '## Completed\n- summarized';
+    const client = new ScriptedClient([
+      textStep(summary),
+      textStep('first answer'),
+      textStep('second answer'),
+    ]);
+    const loop = createLoop(client, session, ui, {
+      initialMessages,
+      contextWindow: 1_000,
+      compression: { keepRecentMessages: 4, summaryMaxTokens: 100 },
+    });
+
+    await loop.runTurn('first');
+    const attemptsAfterFirst = client.attempts;
+    await loop.runTurn('second');
+    expect(attemptsAfterFirst).toBe(2);
+    // The second turn only has the new user/assistant pair, and that tiny drop
+    // is carried verbatim instead of paying for another summarization call.
+    expect(client.attempts).toBe(3);
+    const summaryRequests = client.requests.filter((request) => request.system.includes('You compress conversation history'));
+    expect(summaryRequests).toHaveLength(1);
+    expect(client.requests.at(-1)?.system).toContain(summary);
+    expect(client.requests.at(-1)?.system).toContain('Additional omitted messages');
   });
 
   it('summarizes dropped history with the model and injects the summary into the request', async () => {

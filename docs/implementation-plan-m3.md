@@ -11,7 +11,7 @@
 - 非交互（`exec`、CI）没有审批 UI 时 fail closed；需要审批的动作返回 `APPROVAL_REQUIRED`，不会被静默执行。
 - `--yolo` / `--allow-dangerously-skip-permissions` 关闭审批与沙箱并打印警告；exec policy 的 `forbidden` 仍然生效。
 - 沙箱能力缺失的平台会显式降级并强制审批，`--yolo` 拒绝启动，不能静默变成无沙箱。
-- 现有 609 项测试全部通过；新增策略、审批、沙箱与 PTY/E2E 测试，CI 不依赖外网。
+- 现有 630 项测试全部通过；新增策略、审批、沙箱与 PTY/E2E 测试，CI 不依赖外网。
 
 ## 不变量
 

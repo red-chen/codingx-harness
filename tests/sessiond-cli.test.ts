@@ -136,6 +136,7 @@ model = "test-model"
 
 [session]
 dir = "${sessionDir}"
+retention_days = 0
 
 [sessiond]
 enabled = true
@@ -225,6 +226,35 @@ describe('CLI over sessiond', () => {
     expect(JSON.parse(pruneOut.value.trim()).pruned).toContain(sessionId);
     const afterPrune = await client.list({ limit: 10 });
     expect(afterPrune.sessions.map((session) => session.id)).not.toContain(sessionId);
+  });
+
+  it('uses session.retention_days when --older-than is omitted', async () => {
+    const { home, workspace } = await setup();
+    const execOut = new MemorySink();
+    const execErr = new MemorySink();
+    expect(
+      await runCli(['--cd', workspace, 'exec', '--json', 'say hi'], {
+        env: envFor(home, workspace),
+        stdout: execOut,
+        stderr: execErr,
+      }),
+    ).toBe(0);
+    const info = execOut.value
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .find((event) => event.type === 'session.info');
+    const sessionId = info.session.sessionId as string;
+
+    const dryOut = new MemorySink();
+    const dryErr = new MemorySink();
+    const dryCode = await runCli(['--cd', workspace, 'sessions', 'prune', '--dry-run', '--json'], {
+      env: envFor(home, workspace),
+      stdout: dryOut,
+      stderr: dryErr,
+    });
+    expect(dryCode).toBe(0);
+    expect(JSON.parse(dryOut.value.trim()).pruned).toContain(sessionId);
   });
 
   it('reports and stops the daemon through the CLI', async () => {

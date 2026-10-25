@@ -72,6 +72,17 @@ function isInsideAny(roots: readonly string[], absolute: string): boolean {
   return roots.some((root) => isPathInside(root, absolute));
 }
 
+/** Heuristic used only to decide whether an argv token needs a path check. */
+function isPathLikeArg(value: string): boolean {
+  return (
+    value.startsWith('/') ||
+    value.startsWith('~') ||
+    value.startsWith('.') ||
+    value.includes('/') ||
+    value.includes(path.sep)
+  );
+}
+
 function domainMatches(pattern: string, host: string): boolean {
   const normalized = host.toLowerCase();
   const rule = pattern.toLowerCase();
@@ -392,13 +403,13 @@ class Runtime implements PolicyRuntime {
       for (const arg of segment.args) {
         if (arg.startsWith('-') || arg.length === 0 || arg.includes('://')) continue;
         const value = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg;
-        if (value.length === 0 || value.startsWith('-')) continue;
+        if (value.length === 0 || value.startsWith('-') || !isPathLikeArg(value)) continue;
         const candidate = await canonicalizePath(normalizeCommandPath(value, segmentCwd, this.env));
         if (this.isPathDenied(candidate)) {
           deniedArg = arg;
           break;
         }
-        if (path.isAbsolute(value) && !isInsideAny(this.readRoots, candidate)) {
+        if (!isInsideAny(this.readRoots, candidate)) {
           outsideArg = arg;
         }
       }
@@ -476,7 +487,22 @@ class Runtime implements PolicyRuntime {
         }
       }
       for (const redirect of segment.redirects) {
+        // 2>&1-style descriptor duplication and /dev/null are not file writes.
+        if (redirect.path.startsWith('&')) continue;
         const target = await canonicalizePath(normalizeCommandPath(redirect.path, segmentCwd, this.env));
+        if (target === '/dev/null' || target === 'NUL') continue;
+        if (this.isPathDenied(target)) {
+          consider(
+            denied(
+              action,
+              'Shell redirection references a denied path: ' + redirect.path + '.',
+              'profile.deny',
+              'PERMISSION_DENIED',
+              'high',
+            ),
+          );
+          continue;
+        }
         if (redirect.operator === '<') {
           if (!isInsideAny(this.readRoots, target)) {
             consider(

@@ -16,9 +16,19 @@ const ESC = 0x1b;
 const BEL = 0x07;
 const ST = 0x9c;
 
+function isAscii(text: string): boolean {
+  for (let index = 0; index < text.length; index++) {
+    if (text.charCodeAt(index) > 0x7f) return false;
+  }
+  return true;
+}
+
 /** Split text into Unicode grapheme clusters using Intl.Segmenter. */
 export function graphemeSegments(text: string): string[] {
   if (text.length === 0) return [];
+  // ASCII has no combining clusters; avoid Segmenter overhead on the hot
+  // markdown/streaming path where most lines are pure ASCII.
+  if (isAscii(text)) return Array.from(text);
   return Array.from(segmenter.segment(text), (part) => part.segment);
 }
 
@@ -28,6 +38,9 @@ export function graphemeSegments(text: string): string[] {
  * The result is never negative.
  */
 export function graphemeWidth(grapheme: string): number {
+  const code = grapheme.codePointAt(0);
+  if (code !== undefined && code >= 0x20 && code <= 0x7e) return 1;
+  if (code === 0x09 || code === 0x0a || code === 0x0d) return 0;
   return Math.max(0, stringWidth(grapheme, { ambiguousIsNarrow: true }));
 }
 
@@ -36,6 +49,19 @@ export function graphemeWidth(grapheme: string): number {
  * grapheme cluster is measured independently. Newline and tab have width 0.
  */
 export function displayWidth(text: string): number {
+  // Printable ASCII is one column per code unit and has no combining clusters.
+  // Control bytes are stripped by the general path, so only take this shortcut
+  // when the string contains no ESC/C0 controls at all.
+  if (isAscii(text) && !text.includes('\x1b')) {
+    let width = 0;
+    let controls = false;
+    for (let index = 0; index < text.length; index++) {
+      const code = text.charCodeAt(index);
+      if (code >= 0x20 && code <= 0x7e) width += 1;
+      else if (code !== 0x09 && code !== 0x0a && code !== 0x0d) controls = true;
+    }
+    if (!controls) return width;
+  }
   const clean = stripControlSequences(text);
   let width = 0;
   for (const grapheme of graphemeSegments(clean)) {

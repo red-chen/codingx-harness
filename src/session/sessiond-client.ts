@@ -82,6 +82,8 @@ export class SessiondClient {
   private readonly peer: JsonRpcPeer;
   private readonly listeners = new Map<string, Set<SessionNotificationListener>>();
   private readonly requestTimeoutMs: number;
+  /** Methods advertised by the daemon during initialize; empty for old builds. */
+  private methods: ReadonlySet<string> = new Set();
   private closed = false;
 
   private constructor(socket: Socket, options: SessiondClientOptions) {
@@ -111,10 +113,26 @@ export class SessiondClient {
   }
 
   async initialize(name = 'codingx-cli', version = '0.1.0'): Promise<InitializeResult> {
-    return this.request<InitializeResult>('initialize', {
+    const result = await this.request<InitializeResult>('initialize', {
       protocol: SESSIOND_PROTOCOL_VERSION,
       client: { name, version, pid: process.pid },
     });
+    this.methods = new Set(result.methods ?? []);
+    return result;
+  }
+
+  /**
+   * Whether the connected daemon advertised a method. Daemons from older
+   * builds send no method list, so every method reads as unsupported and the
+   * caller can restart them instead of failing on `Unknown method`.
+   */
+  supports(method: string): boolean {
+    return this.methods.has(method);
+  }
+
+  /** Methods from `required` that the daemon did not advertise. */
+  missingMethods(required: readonly string[]): string[] {
+    return required.filter((method) => !this.methods.has(method));
   }
 
   async status(): Promise<DaemonStatusResult> {

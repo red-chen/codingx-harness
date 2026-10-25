@@ -39,6 +39,8 @@ function splitWords(piece: string): { words: string[]; parseError?: string; subs
       continue;
     }
     if (quote === '"') {
+      if (char === '$' && piece[index + 1] === '(') substitution = true;
+      if (char === BACKTICK) substitution = true;
       if (char === '\\') {
         escaped = true;
         continue;
@@ -151,6 +153,11 @@ export function parseShellCommand(command: string, initialCwd: string): ParsedSh
       continue;
     }
     if (quote === '"') {
+      // Bash expands command substitution and backticks inside double quotes.
+      // They are not parsed as separate commands here, but must still be
+      // flagged so the policy never treats the segment as a simple command.
+      if (char === '$' && command[index + 1] === '(') unsafe = true;
+      if (char === BACKTICK) unsafe = true;
       piece += char;
       if (char === '\\') {
         escaped = true;
@@ -200,6 +207,18 @@ export function parseShellCommand(command: string, initialCwd: string): ParsedSh
     if (char === '&' && command[index + 1] === '&') {
       endPiece();
       index += 1;
+      continue;
+    }
+    if (char === '&') {
+      // A single ampersand starts a background command. Redirection forms
+      // such as 2>&1 and &>file are not split; &> is marked unsafe.
+      const previous = index > 0 ? command[index - 1] : '';
+      if (previous === '>' || command[index + 1] === '>') {
+        if (command[index + 1] === '>') unsafe = true;
+        piece += char;
+        continue;
+      }
+      endPiece();
       continue;
     }
     if (char === '|' && command[index + 1] === '|') {

@@ -98,14 +98,16 @@ describe('TUI bottom surfaces', () => {
     expect(meta).toContain('Fix parser regression');
   });
 
-  it('shows reasoning effort after the model and drops it when cleared', () => {
+  it('shows only model, cwd and title in the meta row', () => {
     const app = makeApp('Task');
     app.setModel('glm-5.3', 'high');
+    app.setPermission(':read-only', 'on-request');
     const layout = computeFrameLayout(app.state, 80, 24);
-    expect(rowText(app.renderFrame(), layout.meta.y)).toContain('effort high');
-
-    app.setModel('glm-5.3');
-    expect(rowText(app.renderFrame(), layout.meta.y)).not.toContain('effort');
+    const meta = rowText(app.renderFrame(), layout.meta.y);
+    expect(meta).toBe('glm-5.3 · /tmp/work · Task');
+    expect(meta).not.toContain('effort');
+    expect(meta).not.toContain('profile');
+    expect(meta).not.toContain('approval');
   });
 
   it('derives the title from the first submitted prompt and keeps it on session.info', () => {

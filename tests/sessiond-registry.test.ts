@@ -334,6 +334,21 @@ describe('SessiondRegistry sessions and leases', () => {
     await expect(registry.replay({ sessionId: ended.sessionId })).rejects.toThrow();
   });
 
+  it('prunes old idle sessions after the writer detaches', async () => {
+    const idle = await registry.create('client-a', createParams);
+    await registry.append('client-a', {
+      sessionId: idle.sessionId,
+      leaseId: idle.leaseId,
+      events: [{ type: 'user.message', text: 'idle but old' }],
+    });
+    await registry.detach('client-a', idle.sessionId, idle.leaseId);
+
+    const dry = await registry.prune({ olderThanDays: 0, dryRun: true });
+    expect(dry.pruned).toContain(idle.sessionId);
+    const pruned = await registry.prune({ olderThanDays: 0 });
+    expect(pruned.pruned).toContain(idle.sessionId);
+  });
+
   it('rejects shutdown with active leases unless forced', async () => {
     await registry.create('client-a', createParams);
     await expect(registry.shutdown()).rejects.toMatchObject({ kind: 'SESSION_BUSY' });

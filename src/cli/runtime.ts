@@ -1,6 +1,6 @@
 import { AgentLoop, type UiEvent } from '../agent/index.js';
 import type { ApprovalHandler } from '../policy/types.js';
-import type { Message, ReasoningEffort } from '../providers/types.js';
+import { DEFAULT_CONTEXT_WINDOW, type Message, type ReasoningEffort } from '../providers/types.js';
 import type { SessionHandle } from '../session/index.js';
 import type { AskHandler, PlanStep, ReadFileTracker } from '../tools/index.js';
 import type { CliApp } from './bootstrap.js';
@@ -35,7 +35,7 @@ export function createLoop(
     maxSteps: app.config.agent.maxSteps,
     maxOutputTokens: app.config.model.maxOutputTokens,
     temperature: app.config.model.temperature,
-    contextWindow: app.config.model.contextWindow ?? 1_000_000,
+    contextWindow: app.config.model.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     sessionId: session.id,
     cwd: app.cwd,
     maxOutputChars: app.config.tools.maxOutputChars,

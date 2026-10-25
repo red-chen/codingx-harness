@@ -10,6 +10,7 @@ export {
   RESERVED_EVENT_TYPES,
   deriveSessionStatus,
   metaFromHeader,
+  nextSessionStatus,
 } from './types.js';
 export type {
   AppendEventInput,

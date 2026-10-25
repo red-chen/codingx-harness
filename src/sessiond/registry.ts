@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   deriveSessionStatus,
+  nextSessionStatus,
   type ForkSessionOptions,
   type RolloutEvent,
   type SessionHandle,
@@ -312,12 +313,15 @@ export class SessiondRegistry {
         throw new SessiondRpcError('SESSION_BUSY', 'Session ' + record.id + ' has ended.');
       }
       if (!record.handle) throw new SessiondRpcError('INTERNAL', 'Session has no write handle.');
+      const previousLastSeq = record.lastSeq;
       const appended = await record.handle.append(params.events);
-      const events = await record.handle.replay();
-      record.lastSeq = lastSeq(events);
-      record.eventCount = events.length;
-      record.status = deriveSessionStatus(events);
-      this.publishEvent(record, appended);
+      const newEvents = appended.filter((event) => event.seq > previousLastSeq);
+      if (newEvents.length > 0) {
+        record.lastSeq = newEvents[newEvents.length - 1]?.seq ?? record.lastSeq;
+        record.eventCount += newEvents.length;
+        for (const event of newEvents) record.status = nextSessionStatus(record.status, event);
+      }
+      this.publishEvent(record, newEvents);
       this.publishStatus(record);
       return {
         appended: appended.map((event) => ({ seq: event.seq, eventId: event.eventId })),
@@ -476,7 +480,8 @@ export class SessiondRegistry {
         const status = record?.status ?? summary.status;
         const updated = Date.parse(summary.updatedAt);
         if (
-          status !== 'ended' ||
+          status === 'running' ||
+          status === 'awaiting_approval' ||
           !Number.isFinite(updated) ||
           updated > cutoff ||
           record?.writer !== undefined ||

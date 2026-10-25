@@ -247,18 +247,18 @@ export async function runCli(argv: string[], io: Partial<CliIo> = {}): Promise<n
 
   sessions
     .command('prune')
-    .description('delete ended sessions older than a cutoff')
-    .option('--older-than <days>', 'retention in days', '30')
+    .description('delete sessions older than a cutoff')
+    .option('--older-than <days>', 'retention in days (defaults to session.retention_days)')
     .option('--dry-run', 'list candidates without deleting')
-    .action(async (commandOptions: { olderThan: string; dryRun?: boolean }) => {
+    .action(async (commandOptions: { olderThan?: string; dryRun?: boolean }) => {
       const options = program.opts();
       const cwd = await resolveCwd(options.cd as string | undefined);
+      const parsedDays =
+        commandOptions.olderThan === undefined ? undefined : Number.parseInt(commandOptions.olderThan, 10);
       exitCode = await runSessionsCommand({
         action: 'prune',
         cwd,
-        olderThanDays: Number.isFinite(Number.parseInt(commandOptions.olderThan, 10))
-          ? Number.parseInt(commandOptions.olderThan, 10)
-          : 30,
+        ...(parsedDays !== undefined && Number.isFinite(parsedDays) ? { olderThanDays: parsedDays } : {}),
         ...(commandOptions.dryRun ? { dryRun: true } : {}),
         json: Boolean(options.json),
         env,

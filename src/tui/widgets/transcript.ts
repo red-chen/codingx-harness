@@ -112,20 +112,59 @@ export function buildAssistantCellLines(cell: AssistantCell, width: number): Sty
   return buildAssistantTextLines(cell.text, width);
 }
 
-export function buildExecCellLines(cell: ExecCell, width: number): StyledTextLine[] {
-  const duration = cell.durationMs === undefined ? '' : ' · ' + formatElapsed(cell.durationMs);
-  const commandWidth = Math.max(1, width - displayWidth('• Ran ') - displayWidth(duration));
+/**
+ * Consecutive calls of the same tool on the same target share one header:
+ *
+ *   • Ran ReadFile src/a.ts ×2 · 1s
+ *     │ first preview
+ *     │ second preview
+ *
+ * Identical repeated outputs are shown once; the `×N` count still reports how
+ * many calls ran.
+ */
+export function buildExecGroupLines(cells: readonly ExecCell[], width: number): StyledTextLine[] {
+  const first = cells[0];
+  if (first === undefined) return [];
+  const countLabel = cells.length > 1 ? ' ×' + cells.length : '';
+  const totalMs = cells.reduce((sum, cell) => sum + (cell.durationMs ?? 0), 0);
+  const hasDuration = cells.some((cell) => cell.durationMs !== undefined);
+  const duration = hasDuration ? ' · ' + formatElapsed(totalMs) : '';
+  const commandWidth = Math.max(
+    1,
+    width - displayWidth('• Ran ') - displayWidth(countLabel) - displayWidth(duration),
+  );
   const lines: StyledTextLine[] = [
     {
       segments: [
         { text: '• ', style: ACCENT },
         { text: 'Ran ', style: MUTED },
-        { text: truncateToWidth(cell.command, commandWidth), style: PLAIN },
+        { text: truncateToWidth(first.command, commandWidth), style: PLAIN },
+        ...(countLabel.length > 0 ? [{ text: countLabel, style: MUTED }] : []),
         ...(duration.length > 0 ? [{ text: duration, style: MUTED }] : []),
       ],
     },
   ];
 
+  const previews: ExecCell[] = [];
+  for (const cell of cells) {
+    const previous = previews[previews.length - 1];
+    if (previous !== undefined && previous.output === cell.output && previous.isError === cell.isError) continue;
+    previews.push(cell);
+  }
+  for (let index = 0; index < previews.length; index++) {
+    const cell = previews[index];
+    if (cell === undefined) continue;
+    lines.push(...execOutputLines(cell, width, index === previews.length - 1));
+  }
+  return lines;
+}
+
+export function buildExecCellLines(cell: ExecCell, width: number): StyledTextLine[] {
+  return buildExecGroupLines([cell], width);
+}
+
+function execOutputLines(cell: ExecCell, width: number, terminal: boolean): StyledTextLine[] {
+  const lines: StyledTextLine[] = [];
   const output = cell.output.replace(/\r\n?/gu, '\n');
   const rawLines = output.split('\n');
   while (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
@@ -134,7 +173,7 @@ export function buildExecCellLines(cell: ExecCell, width: number): StyledTextLin
   const gutterWidth = displayWidth('  │ ');
 
   for (let index = 0; index < shown.length; index++) {
-    const isLast = index === shown.length - 1 && omitted === 0;
+    const isLast = terminal && index === shown.length - 1 && omitted === 0;
     const gutter = isLast ? '  └ ' : '  │ ';
     const raw = shown[index] ?? '';
     const outputStyle = cell.isError
@@ -162,6 +201,31 @@ export function buildExecCellLines(cell: ExecCell, width: number): StyledTextLin
   if (omitted > 0) {
     lines.push({ segments: [{ text: '    … +' + omitted + ' lines', style: MUTED }] });
   }
+  return lines;
+}
+
+interface ExecGroupCacheEntry {
+  readonly width: number;
+  readonly cells: readonly ExecCell[];
+  readonly lines: readonly StyledTextLine[];
+}
+
+const execGroupCache = new WeakMap<ExecCell, ExecGroupCacheEntry>();
+
+function execGroupLines(cells: readonly ExecCell[], width: number): readonly StyledTextLine[] {
+  const last = cells[cells.length - 1];
+  if (last === undefined) return [];
+  const hit = execGroupCache.get(last);
+  if (
+    hit !== undefined &&
+    hit.width === width &&
+    hit.cells.length === cells.length &&
+    hit.cells.every((cell, index) => cell === cells[index])
+  ) {
+    return hit.lines;
+  }
+  const lines = buildExecGroupLines(cells, width);
+  execGroupCache.set(last, { width, cells: [...cells], lines });
   return lines;
 }
 
@@ -259,35 +323,53 @@ export function buildTranscriptCellLines(cell: TranscriptCell, width: number): r
   });
 }
 
-function blockCount(options: TranscriptViewportOptions): number {
-  const hasActive = options.active !== null && options.active !== undefined && options.active.text.length > 0;
-  const welcome = options.welcome !== null && options.welcome !== undefined ? 1 : 0;
-  return welcome + options.cells.length + (hasActive ? 1 : 0);
+function hasActiveAssistant(options: TranscriptViewportOptions): boolean {
+  return options.active !== null && options.active !== undefined && options.active.text.length > 0;
 }
 
-function linesForBlock(options: TranscriptViewportOptions, width: number, index: number): readonly StyledTextLine[] {
-  const welcomeOffset = options.welcome !== null && options.welcome !== undefined ? 1 : 0;
-  if (welcomeOffset === 1 && index === 0 && options.welcome !== null && options.welcome !== undefined) {
-    return welcomeCardStyledLines(options.welcome, width);
-  }
-  const cellIndex = index - welcomeOffset;
-  if (cellIndex >= 0 && cellIndex < options.cells.length) {
-    return buildTranscriptCellLines(options.cells[cellIndex] as TranscriptCell, width);
-  }
+function activeLines(options: TranscriptViewportOptions, width: number): readonly StyledTextLine[] {
   const active = options.active;
   if (active === null || active === undefined) return [];
-  return cachedLines(active, width, () =>
-    buildAssistantCellLines(
-      {
-        type: 'assistant',
-        id: active.id,
-        turnId: active.turnId,
-        text: active.text,
-        ...(active.durationMs === undefined ? {} : { durationMs: active.durationMs }),
-      },
-      width,
-    ),
+  return cachedLines(active, width, () => buildAssistantTextLines(active.text, width));
+}
+
+/** Adjacent exec cells merge into one block when tool and rendered target match. */
+function sameExecGroup(previous: TranscriptCell | undefined, cell: TranscriptCell): boolean {
+  return (
+    previous !== undefined &&
+    previous.type === 'exec' &&
+    cell.type === 'exec' &&
+    previous.name === cell.name &&
+    previous.command === cell.command
   );
+}
+
+function groupStart(cells: readonly TranscriptCell[], end: number): number {
+  const last = cells[end];
+  if (last?.type !== 'exec') return end;
+  let start = end;
+  while (start > 0 && sameExecGroup(cells[start - 1], last)) start--;
+  return start;
+}
+
+function groupEnd(cells: readonly TranscriptCell[], start: number): number {
+  const first = cells[start];
+  if (first?.type !== 'exec') return start;
+  let end = start;
+  while (end + 1 < cells.length && sameExecGroup(first, cells[end + 1] as TranscriptCell)) end++;
+  return end;
+}
+
+function blockLines(
+  options: TranscriptViewportOptions,
+  width: number,
+  start: number,
+  end: number,
+): readonly StyledTextLine[] {
+  const cell = options.cells[end];
+  if (cell === undefined) return [];
+  if (start === end) return buildTranscriptCellLines(cell, width);
+  return execGroupLines(options.cells.slice(start, end + 1) as ExecCell[], width);
 }
 
 function emptyStats(scrollOffset: number): TranscriptRenderStats {
@@ -300,9 +382,11 @@ function collectVisible(
   height: number,
   allowFallback: boolean,
 ): TranscriptLayout {
-  const total = blockCount(options);
+  const cells = options.cells;
+  const welcome = options.welcome ?? null;
   const requestedOffset = Math.max(0, Math.floor(options.scrollOffset ?? 0));
-  if (width <= 0 || height <= 0 || total === 0) {
+  const hasActive = hasActiveAssistant(options);
+  if (width <= 0 || height <= 0 || (welcome === null && cells.length === 0 && !hasActive)) {
     return { lines: [], stats: emptyStats(requestedOffset) };
   }
 
@@ -313,27 +397,37 @@ function collectVisible(
   let cellsRendered = 0;
   let topBlock = -1;
 
-  for (let index = total - 1; index >= 0 && remaining > 0; index--) {
-    const lines = linesForBlock(options, width, index);
+  const emit = (lines: readonly StyledTextLine[], lead: number, block: number): void => {
     cellsVisited++;
-    const lead = index > 0 ? 1 : 0;
-    const blockHeight = lines.length + lead;
-    if (skip >= blockHeight) {
-      skip -= blockHeight;
-      continue;
+    const blockRows: readonly StyledTextLine[] = lead === 1 ? [EMPTY_LINE, ...lines] : lines;
+    if (blockRows.length === 0) return;
+    if (skip >= blockRows.length) {
+      skip -= blockRows.length;
+      return;
     }
 
-    const blockRows: readonly StyledTextLine[] = lead === 1 ? [EMPTY_LINE, ...lines] : lines;
-    const end = blockHeight - skip;
+    const end = blockRows.length - skip;
     const start = Math.max(0, end - remaining);
     const slice = blockRows.slice(start, end);
     if (slice.length > 0) {
       chunks.unshift([...slice]);
       cellsRendered++;
-      topBlock = index;
+      topBlock = block;
       remaining -= slice.length;
     }
     skip = 0;
+  };
+
+  if (hasActive) {
+    emit(activeLines(options, width), welcome !== null || cells.length > 0 ? 1 : 0, cells.length);
+  }
+  for (let end = cells.length - 1; end >= 0 && remaining > 0;) {
+    const start = groupStart(cells, end);
+    emit(blockLines(options, width, start, end), welcome !== null || start > 0 ? 1 : 0, start);
+    end = start - 1;
+  }
+  if (welcome !== null && remaining > 0) {
+    emit(welcomeCardStyledLines(welcome, width), 0, -1);
   }
 
   const lines = chunks.flat();
@@ -382,12 +476,17 @@ export function renderTranscript(
 
 /** Total wrapped row count. Used by widgets that need a preferred height. */
 export function transcriptHeight(options: TranscriptViewportOptions, width: number): number {
-  const total = blockCount(options);
-  if (width <= 0 || total === 0) return 0;
-  let height = 0;
-  for (let index = 0; index < total; index++) {
-    height += linesForBlock(options, width, index).length;
-    if (index > 0) height += 1;
+  const cells = options.cells;
+  const welcome = options.welcome ?? null;
+  if (width <= 0 || (welcome === null && cells.length === 0 && !hasActiveAssistant(options))) return 0;
+  let height = welcome === null ? 0 : welcomeCardStyledLines(welcome, width).length;
+  for (let start = 0; start < cells.length;) {
+    const end = groupEnd(cells, start);
+    height += (welcome !== null || start > 0 ? 1 : 0) + blockLines(options, width, start, end).length;
+    start = end + 1;
+  }
+  if (hasActiveAssistant(options)) {
+    height += (welcome !== null || cells.length > 0 ? 1 : 0) + activeLines(options, width).length;
   }
   return height;
 }

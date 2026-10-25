@@ -108,6 +108,13 @@ export const METHOD = {
 
 export type SessiondMethod = (typeof METHOD)[keyof typeof METHOD];
 
+/**
+ * Every RPC method this build implements. The daemon advertises this list
+ * during initialize so a freshly upgraded CLI can detect a long-lived daemon
+ * that predates new methods (for example `session.clear`) and restart it.
+ */
+export const SESSIOND_METHODS: readonly SessiondMethod[] = Object.values(METHOD);
+
 export const NOTIFICATION = {
   event: 'session.event',
   status: 'session.status',
@@ -129,6 +136,12 @@ export interface InitializeResult {
   pid: number;
   startedAt: string;
   sessionCount: number;
+  /**
+   * Methods implemented by the daemon. Optional because daemons from older
+   * builds do not send it; a missing list means "unknown" and is treated as
+   * outdated by clients that know which methods they require.
+   */
+  methods?: readonly SessiondMethod[];
 }
 
 export interface DaemonStatusResult {

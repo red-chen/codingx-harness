@@ -84,6 +84,9 @@ describe('SessiondServer', () => {
       pid: process.pid,
       sessionCount: 0,
     });
+    expect((initialized as { methods?: string[] }).methods).toEqual(
+      expect.arrayContaining(['initialize', 'session.clear', 'session.fork']),
+    );
 
     const status = await client.peer.request('daemon.status');
     expect(status).toMatchObject({

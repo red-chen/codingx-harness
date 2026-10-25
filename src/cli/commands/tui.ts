@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { buildSystemPrompt, latestModelSelection, rebuildHistory, restoreReadTracker } from '../../agent/index.js';
-import type { Message, ReasoningEffort, TokenUsage } from '../../providers/types.js';
+import { DEFAULT_CONTEXT_WINDOW, type Message, type ReasoningEffort, type TokenUsage } from '../../providers/types.js';
 import {
   type SessionHandle,
   type SessionStoreApi,
@@ -10,7 +10,7 @@ import { createPolicyRuntime } from '../../policy/index.js';
 import { ReadFileTracker, type PlanStep } from '../../tools/index.js';
 import { SessionError } from '../../util/errors.js';
 import { isPathInside } from '../../util/paths.js';
-import { createProcessTerminalIO, restoreTranscript, TuiApp } from '../../tui/index.js';
+import { createProcessTerminalIO, restoreTranscript, TuiApp, type TranscriptCell } from '../../tui/index.js';
 import type { TextSink } from '../../ui/plain.js';
 import { VERSION } from '../../version.js';
 import type { InteractiveCommandOptions } from './interactive.js';
@@ -153,6 +153,52 @@ async function replayResumed(
 }
 
 /** Full-screen interactive mode. Falls back to the line UI only via the caller. */
+export interface TuiResumeView {
+  readonly title?: string;
+  readonly turnCount?: number;
+  readonly usage?: TokenUsage;
+  readonly transcript?: readonly TranscriptCell[];
+  readonly reasoningEffort?: ReasoningEffort;
+}
+
+export interface CreateTuiAppOptions {
+  readonly sessionId: string;
+  readonly cwd: string;
+  readonly model: string;
+  readonly home?: string;
+  readonly permissionProfile: string;
+  readonly approvalPolicy: string;
+  readonly contextWindow: number;
+  readonly version: string;
+  readonly width: number;
+  readonly height: number;
+  readonly resumed: TuiResumeView;
+}
+
+/** Build the TUI state with resumed transcript/counters in their correct slots. */
+export function createTuiAppForSession(options: CreateTuiAppOptions): TuiApp {
+  const resumed = options.resumed;
+  return new TuiApp({
+    session: {
+      sessionId: options.sessionId,
+      cwd: options.cwd,
+      model: options.model,
+      ...(resumed.reasoningEffort ? { reasoningEffort: resumed.reasoningEffort } : {}),
+      ...(options.home ? { home: options.home } : {}),
+      ...(resumed.title ? { title: resumed.title } : {}),
+      permissionProfile: options.permissionProfile,
+      approvalPolicy: options.approvalPolicy,
+    },
+    version: options.version,
+    width: options.width,
+    height: options.height,
+    contextWindowTokens: options.contextWindow,
+    ...(resumed.turnCount ? { initialTurnNumber: resumed.turnCount } : {}),
+    ...(resumed.usage ? { initialUsage: resumed.usage } : {}),
+    ...(resumed.transcript ? { initialTranscript: resumed.transcript } : {}),
+  });
+}
+
 export async function runTuiInteractive(options: InteractiveCommandOptions): Promise<number> {
   const env = options.env ?? process.env;
   const stderr = options.stderr ?? process.stderr;
@@ -181,23 +227,18 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
       : {};
     if (resumed.model && !options.model) app.router.setModel(resumed.model);
 
-    const tuiApp = new TuiApp({
-      session: {
-        sessionId: session.id,
-        cwd: app.cwd,
-        model: app.router.selection.model,
-        ...(resumed.reasoningEffort ? { reasoningEffort: resumed.reasoningEffort } : {}),
-        ...(env.HOME ? { home: env.HOME } : {}),
-        ...(resumed.title ? { title: resumed.title } : {}),
-        permissionProfile: app.policy.profileName,
-        approvalPolicy: app.policy.approvalPolicy,
-        ...(resumed.turnCount ? { initialTurnNumber: resumed.turnCount } : {}),
-        ...(resumed.usage ? { initialUsage: resumed.usage } : {}),
-        ...(resumed.transcript ? { initialTranscript: resumed.transcript } : {}),
-      },
+    const tuiApp = createTuiAppForSession({
+      sessionId: session.id,
+      cwd: app.cwd,
+      model: app.router.selection.model,
+      ...(env.HOME ? { home: env.HOME } : {}),
+      permissionProfile: app.policy.profileName,
+      approvalPolicy: app.policy.approvalPolicy,
+      contextWindow: app.config.model.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
       version: VERSION,
       width: process.stdout.columns ?? 80,
       height: process.stdout.rows ?? 24,
+      resumed,
     });
 
     let controller: TuiSession | undefined;

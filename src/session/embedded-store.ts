@@ -468,6 +468,10 @@ export interface SessionStoreOptions {
 /** Process-local store with a single-writer file lock. Replaced by sessiond in M2. */
 export class EmbeddedSessionStore {
   readonly directory: string;
+  private readonly summaryCache = new Map<
+    string,
+    { size: number; mtimeMs: number; summary: SessionSummary }
+  >();
 
   constructor(options: SessionStoreOptions) {
     this.directory = path.resolve(options.directory);
@@ -649,6 +653,7 @@ export class EmbeddedSessionStore {
     const lock = await acquireLock(filePath);
     try {
       await unlink(filePath);
+      this.summaryCache.delete(filePath);
     } finally {
       await lock.release().catch(() => undefined);
     }
@@ -659,6 +664,12 @@ export class EmbeddedSessionStore {
     const summaries: SessionSummary[] = [];
     for (const file of files) {
       try {
+        const info = await stat(file.filePath);
+        const cached = this.summaryCache.get(file.filePath);
+        if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs) {
+          summaries.push(cached.summary);
+          continue;
+        }
         const loaded = await loadSessionFile(file.filePath);
         const last = loaded.events[loaded.events.length - 1];
         const summary: SessionSummary = {
@@ -672,6 +683,7 @@ export class EmbeddedSessionStore {
           eventCount: loaded.events.length,
         };
         if (loaded.meta.provider) summary.provider = loaded.meta.provider;
+        this.summaryCache.set(file.filePath, { size: info.size, mtimeMs: info.mtimeMs, summary });
         summaries.push(summary);
       } catch {
         // A corrupt session must not make the whole list unusable.

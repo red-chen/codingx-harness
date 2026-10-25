@@ -33,6 +33,7 @@ export class TuiRuntime {
   private readonly options: TuiRuntimeOptions;
   private front: CellBuffer | undefined;
   private timer: NodeJS.Timeout | undefined;
+  private renderTimer: NodeJS.Timeout | undefined;
   private running = false;
   private stopped = false;
   private lastRender = 0;
@@ -87,6 +88,10 @@ export class TuiRuntime {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
+    }
+    if (this.renderTimer) {
+      clearTimeout(this.renderTimer);
+      this.renderTimer = undefined;
     }
     this.session.exit();
     this.stopped = true;
@@ -177,7 +182,24 @@ export class TuiRuntime {
   render(force = false): void {
     if (!this.running) return;
     const now = Date.now();
-    if (!force && now - this.lastRender < 16) return;
+    const elapsed = now - this.lastRender;
+    if (!force && elapsed < 16) {
+      // Coalesce bursts (SSE text deltas, resize, key events) into one frame.
+      // A trailing timer guarantees the latest state is painted even when no
+      // further event arrives to trigger the next render.
+      if (this.renderTimer === undefined) {
+        this.renderTimer = setTimeout(() => {
+          this.renderTimer = undefined;
+          this.render(true);
+        }, Math.max(1, 16 - elapsed));
+        this.renderTimer.unref?.();
+      }
+      return;
+    }
+    if (this.renderTimer) {
+      clearTimeout(this.renderTimer);
+      this.renderTimer = undefined;
+    }
     this.lastRender = now;
     const { frame, cursor } = this.app.frameWithCursor();
     // A size mismatch is intentional state: renderDiff emits a clear and full
@@ -200,7 +222,7 @@ export class TuiRuntime {
       (this.app.status.state === 'working' || this.app.status.state === 'awaiting') &&
       Date.now() - this.lastRender >= 100
     ) {
-      this.render(true);
+      this.render();
     }
   }
 }

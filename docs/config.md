@@ -21,7 +21,7 @@
 route = "default"            # 选择 route；也可用 --route / CODINGX_ROUTE
 max_output_tokens = 8192
 temperature = 0
-# 上下文窗口上限，用于触发压缩；留空则按模型默认值
+# 上下文窗口上限，用于触发压缩；留空默认 200000
 context_window = 200000
 
 [agent]

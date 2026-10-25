@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { generateTurnId } from '../util/ids.js';
 import {
   abortError,
@@ -8,9 +9,9 @@ import {
   StepLimitError,
 } from '../util/errors.js';
 import type { Message, ModelClient, ReasoningEffort, StopReason, TokenUsage, ToolCall, ToolSchema } from '../providers/types.js';
-import { assistantMessage, toolResultsMessage } from '../providers/types.js';
-import { estimateToolsTokens } from '../providers/tokens.js';
-import { estimateTokens } from '../util/tokens.js';
+import { assistantMessage, DEFAULT_CONTEXT_WINDOW, toolResultsMessage } from '../providers/types.js';
+import { estimateMessagesTokens, estimateToolsTokens } from '../providers/tokens.js';
+import { estimateTokens, truncateMiddle } from '../util/tokens.js';
 import type { ApprovalHandler, PolicyRuntime } from '../policy/types.js';
 import type { RouterSelection } from '../routing/router.js';
 import type { ToolRegistry } from '../tools/registry.js';
@@ -26,7 +27,7 @@ import type {
 import type { SessionHandle } from '../session/types.js';
 import { buildModelRequest, mergeConsecutiveUserMessages } from './context.js';
 import { compactMessages, type CompressionOptions, type CompressionResult } from './compression.js';
-import { summarizeDroppedMessages } from './summarize.js';
+import { serializeMessagesForSummary, summarizeDroppedMessages } from './summarize.js';
 import type { TurnErrorInfo, UiEvent } from './events.js';
 import { TurnState } from './turn.js';
 
@@ -82,6 +83,14 @@ export interface AgentLoopOptions {
   emit?: (event: UiEvent) => void;
 }
 
+const MAX_COMPACTION_SUMMARY_CHARS = 24_000;
+const MAX_RAW_FRESH_DROP_TOKENS = 500;
+const RAW_FRESH_DROP_CHARS = 2_000;
+
+function messageFingerprint(message: Message): string {
+  return createHash('sha256').update(JSON.stringify(message)).digest('hex');
+}
+
 export interface RunTurnOptions {
   signal?: AbortSignal;
 }
@@ -112,6 +121,10 @@ export class AgentLoop {
   private readonly summaryMaxTokens: number;
   private readonly summaryEnabled: boolean;
   private requestOverheadTokens: number;
+  /** Summaries of messages already dropped from requests, newest appended. */
+  private compactionSummary: string | undefined;
+  private readonly summarizedHashes = new Set<string>();
+  private readonly summaryFailedHashes = new Set<string>();
 
   constructor(options: AgentLoopOptions) {
     if (options.maxSteps < 1) throw new Error('maxSteps must be at least 1.');
@@ -120,7 +133,7 @@ export class AgentLoop {
     this.messages = options.initialMessages ? [...options.initialMessages] : [];
     this.planSteps = options.initialPlan ? options.initialPlan.map((step) => ({ ...step })) : [];
     this.toolSchemas = options.tools.toJsonSchemas();
-    this.contextWindow = options.contextWindow ?? 1_000_000;
+    this.contextWindow = options.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
     this.compression = options.compression ?? {};
     this.summaryMaxTokens = this.compression.summaryMaxTokens ?? 1_200;
     this.summaryEnabled = this.compression.summaryEnabled ?? true;
@@ -155,6 +168,9 @@ export class AgentLoop {
     this.messages.length = 0;
     this.planSteps = [];
     this.readTracker.clear();
+    this.compactionSummary = undefined;
+    this.summarizedHashes.clear();
+    this.summaryFailedHashes.clear();
   }
 
   get model(): string {
@@ -230,9 +246,7 @@ export class AgentLoop {
 
       if (signal?.aborted) throw abortError();
 
-      let summaryAttempted = false;
-      let turnSummary: string | undefined;
-      let summaryError: string | undefined;
+      this.summaryFailedHashes.clear();
 
       for (let step = 1; step <= this.options.maxSteps; step += 1) {
         if (signal?.aborted) throw abortError();
@@ -240,89 +254,153 @@ export class AgentLoop {
         state.transition('streaming');
         await this.options.session.append({ type: 'turn.status', turnId, status: 'streaming' });
 
-        const compaction = this.compactForRequest();
-        this.emit({
-          type: 'context.updated',
-          turnId,
-          usedTokens: Math.min(
-            this.contextWindow,
-            compaction.estimatedTokensAfter + this.requestOverheadTokens,
-          ),
-          windowTokens: this.contextWindow,
-          steps: state.steps,
-        });
-        if (this.summaryEnabled && !summaryAttempted && compaction.dropped.length > 0) {
-          summaryAttempted = true;
-          const outcome = await summarizeDroppedMessages({
-            router: this.options.router,
-            messages: compaction.dropped,
-            model: this.options.model,
-            sessionId: this.options.sessionId,
-            maxOutputTokens: this.summaryMaxTokens,
-            ...(signal ? { signal } : {}),
-          });
-          state.addUsage(outcome.usage);
-          if (outcome.summary) turnSummary = outcome.summary;
-          if (outcome.error) summaryError = outcome.error.message;
-        }
-
-        if (compaction.applied.length > 0) {
-          await this.options.session.append({
-            type: 'context.compacted',
-            turnId,
-            levels: compaction.applied,
-            droppedMessages: compaction.droppedMessages,
-            truncatedToolResults: compaction.truncatedToolResults,
-            estimatedTokensBefore: compaction.estimatedTokensBefore,
-            estimatedTokensAfter: compaction.estimatedTokensAfter,
-            ...(turnSummary ? { summary: turnSummary } : {}),
-            ...(summaryError ? { summaryError } : {}),
-          });
-        }
-
-        const requestSystem = turnSummary
-          ? this.options.systemPrompt +
-            '\n\n# Compacted context (summary of earlier conversation)\n' +
-            turnSummary
-          : this.options.systemPrompt;
-
-        const request = buildModelRequest({
-          model: this.options.model,
-          system: requestSystem,
-          messages: compaction.messages,
-          tools: this.toolSchemas,
-          maxOutputTokens: this.options.maxOutputTokens,
-          ...(this.options.temperature === undefined ? {} : { temperature: this.options.temperature }),
-          ...(this.options.reasoningEffort === undefined
-            ? {}
-            : { reasoningEffort: this.options.reasoningEffort }),
-          sessionId: this.options.sessionId,
-        });
-
         let text = '';
-        const calls: ToolCall[] = [];
+        let calls: ToolCall[] = [];
         let stopReason: StopReason = 'end_turn';
-        const llmStartedAt = Date.now();
-        for await (const event of this.options.router.stream(request, signal)) {
-          if (signal?.aborted) throw abortError();
-          switch (event.type) {
-            case 'text.delta':
-              text += event.text;
-              this.emit({ type: 'text.delta', turnId, text: event.text });
-              break;
-            case 'tool.call':
-              calls.push({ id: event.id, name: event.name, input: event.input });
-              break;
-            case 'usage':
-              state.addUsage(event);
-              break;
-            case 'stop':
-              stopReason = event.reason;
-              break;
-          }
-        }
+        let forcedCompaction = false;
+        let overflowRecoveryAttempted = false;
 
-        this.emit({ type: 'llm.finished', turnId, durationMs: Math.max(0, Date.now() - llmStartedAt) });
+        for (;;) {
+          const compaction = this.compactForRequest(forcedCompaction);
+          this.emit({
+            type: 'context.updated',
+            turnId,
+            usedTokens: Math.min(
+              this.contextWindow,
+              compaction.estimatedTokensAfter + this.requestOverheadTokens,
+            ),
+            windowTokens: this.contextWindow,
+            steps: state.steps,
+          });
+
+          let addedSummary: string | undefined;
+          let summaryError: string | undefined;
+          if (this.summaryEnabled && compaction.dropped.length > 0) {
+            const fresh = compaction.dropped.filter((message) => {
+              const fingerprint = messageFingerprint(message);
+              return !this.summarizedHashes.has(fingerprint) && !this.summaryFailedHashes.has(fingerprint);
+            });
+            if (fresh.length > 0) {
+              if (
+                this.compactionSummary !== undefined &&
+                estimateMessagesTokens(fresh) <= MAX_RAW_FRESH_DROP_TOKENS
+              ) {
+                // Once a real summary exists, tiny incremental drops are
+                // cheaper to carry verbatim than to send through the model.
+                const excerpt = serializeMessagesForSummary(fresh, RAW_FRESH_DROP_CHARS);
+                this.compactionSummary = truncateMiddle(
+                  this.compactionSummary +
+                    '\n\n## Additional omitted messages\n' +
+                    excerpt,
+                  MAX_COMPACTION_SUMMARY_CHARS,
+                  '\n[... older compacted context truncated ...]\n',
+                );
+                addedSummary = excerpt;
+                for (const message of fresh) this.summarizedHashes.add(messageFingerprint(message));
+              } else {
+                const outcome = await summarizeDroppedMessages({
+                  router: this.options.router,
+                  messages: fresh,
+                  model: this.options.model,
+                  sessionId: this.options.sessionId,
+                  maxOutputTokens: this.summaryMaxTokens,
+                  ...(signal ? { signal } : {}),
+                });
+                state.addUsage(outcome.usage);
+                if (outcome.summary) {
+                  this.compactionSummary = truncateMiddle(
+                    this.compactionSummary
+                      ? this.compactionSummary + '\n\n' + outcome.summary
+                      : outcome.summary,
+                    MAX_COMPACTION_SUMMARY_CHARS,
+                    '\n[... older compacted context truncated ...]\n',
+                  );
+                  addedSummary = outcome.summary;
+                  for (const message of fresh) this.summarizedHashes.add(messageFingerprint(message));
+                }
+                if (outcome.error) {
+                  summaryError = outcome.error.message;
+                  for (const message of fresh) this.summaryFailedHashes.add(messageFingerprint(message));
+                }
+              }
+            }
+          }
+
+          if (compaction.applied.length > 0) {
+            await this.options.session.append({
+              type: 'context.compacted',
+              turnId,
+              levels: compaction.applied,
+              droppedMessages: compaction.droppedMessages,
+              truncatedToolResults: compaction.truncatedToolResults,
+              estimatedTokensBefore: compaction.estimatedTokensBefore,
+              estimatedTokensAfter: compaction.estimatedTokensAfter,
+              ...(addedSummary ? { summary: addedSummary } : {}),
+              ...(summaryError ? { summaryError } : {}),
+            });
+          }
+
+          const requestSystem = this.compactionSummary
+            ? this.options.systemPrompt +
+              '\n\n# Compacted context (summary of earlier conversation)\n' +
+              this.compactionSummary
+            : this.options.systemPrompt;
+
+          const request = buildModelRequest({
+            model: this.options.model,
+            system: requestSystem,
+            messages: compaction.messages,
+            tools: this.toolSchemas,
+            maxOutputTokens: this.options.maxOutputTokens,
+            ...(this.options.temperature === undefined ? {} : { temperature: this.options.temperature }),
+            ...(this.options.reasoningEffort === undefined
+              ? {}
+              : { reasoningEffort: this.options.reasoningEffort }),
+            sessionId: this.options.sessionId,
+          });
+
+          text = '';
+          calls = [];
+          stopReason = 'end_turn';
+          const llmStartedAt = Date.now();
+          try {
+            for await (const event of this.options.router.stream(request, signal)) {
+              if (signal?.aborted) throw abortError();
+              switch (event.type) {
+                case 'text.delta':
+                  text += event.text;
+                  this.emit({ type: 'text.delta', turnId, text: event.text });
+                  break;
+                case 'tool.call':
+                  calls.push({ id: event.id, name: event.name, input: event.input });
+                  break;
+                case 'usage':
+                  state.addUsage(event);
+                  break;
+                case 'stop':
+                  stopReason = event.reason;
+                  break;
+              }
+            }
+          } catch (error) {
+            const canRecover =
+              !overflowRecoveryAttempted &&
+              signal?.aborted !== true &&
+              text.length === 0 &&
+              calls.length === 0 &&
+              error instanceof ProviderError &&
+              error.category === 'context_overflow';
+            if (!canRecover) throw error;
+            // The estimate can be below the provider's real window. Force a
+            // deterministic compaction and retry once before failing the turn.
+            overflowRecoveryAttempted = true;
+            forcedCompaction = true;
+            continue;
+          }
+
+          this.emit({ type: 'llm.finished', turnId, durationMs: Math.max(0, Date.now() - llmStartedAt) });
+          break;
+        }
 
         if (stopReason === 'max_tokens') {
           throw new ProviderError(
@@ -490,7 +568,7 @@ export class AgentLoop {
     }
   }
 
-  private compactForRequest(): CompressionResult {
+  private compactForRequest(force = false): CompressionResult {
     const normalized = mergeConsecutiveUserMessages(this.messages);
     const available = Math.max(1_000, this.contextWindow - this.requestOverheadTokens);
     const {
@@ -498,7 +576,17 @@ export class AgentLoop {
       summaryEnabled: _summaryEnabled,
       ...compressionOptions
     } = this.compression;
-    return compactMessages(normalized, { ...compressionOptions, contextWindow: available });
+    return compactMessages(normalized, {
+      ...compressionOptions,
+      contextWindow: available,
+      ...(force
+        ? {
+            thresholdRatio: 0,
+            keepRecentMessages: Math.min(compressionOptions.keepRecentMessages ?? 4, 4),
+            toolResultMaxChars: Math.min(compressionOptions.toolResultMaxChars ?? 2_000, 2_000),
+          }
+        : {}),
+    });
   }
 
   private async finishDone(state: TurnState, turnId: string): Promise<TurnResult> {

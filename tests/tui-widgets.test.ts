@@ -19,6 +19,7 @@ import type { StyledTextLine } from '../src/tui/widgets/welcome.js';
 import {
   buildAssistantCellLines,
   buildExecCellLines,
+  buildExecGroupLines,
   buildNoticeCellLines,
   buildPlanCellLines,
   buildUserCellLines,
@@ -196,6 +197,99 @@ describe('transcript cells', () => {
 
     const short = styledTexts(buildExecCellLines({ ...exec, output: 'only' }, 30));
     expect(short[1]).toBe('  └ only');
+  });
+
+  it('merges consecutive identical tool calls into one exec block', () => {
+    const read = (id: string, callId: string, output: string, durationMs: number): ExecCell => ({
+      type: 'exec',
+      id,
+      callId,
+      name: 'ReadFile',
+      command: 'ReadFile src/a.ts',
+      output,
+      isError: false,
+      running: false,
+      durationMs,
+    });
+    const lines = styledTexts(
+      buildExecGroupLines([read('e1', 'c1', 'one\ntwo', 400), read('e2', 'c2', 'three\nfour', 600)], 60),
+    );
+    expect(lines[0]).toBe('• Ran ReadFile src/a.ts ×2 · 1s');
+    expect(lines.slice(1)).toEqual(['  │ one', '  │ two', '  │ three', '  └ four']);
+
+    const repeated = styledTexts(
+      buildExecGroupLines([read('e1', 'c1', 'same', 10), read('e2', 'c2', 'same', 10)], 60),
+    );
+    expect(repeated[0]).toContain('×2');
+    expect(repeated.slice(1)).toEqual(['  └ same']);
+  });
+
+  it('groups adjacent identical exec cells in the viewport', () => {
+    const cells: TranscriptCell[] = [
+      {
+        type: 'exec',
+        id: 'e1',
+        callId: 'c1',
+        name: 'ReadFile',
+        command: 'ReadFile src/a.ts',
+        output: 'one',
+        isError: false,
+        running: false,
+      },
+      {
+        type: 'exec',
+        id: 'e2',
+        callId: 'c2',
+        name: 'ReadFile',
+        command: 'ReadFile src/a.ts',
+        output: 'two',
+        isError: false,
+        running: false,
+      },
+      {
+        type: 'exec',
+        id: 'e3',
+        callId: 'c3',
+        name: 'Shell',
+        command: 'npm test',
+        output: 'ok',
+        isError: false,
+        running: false,
+      },
+    ];
+    const buffer = new CellBuffer(80, 12);
+    renderTranscript(rect(0, 0, 80, 12), buffer, { cells, welcome: null });
+    const text = screenText(buffer);
+    expect(text).toContain('• Ran ReadFile src/a.ts ×2');
+    expect(text.match(/• Ran ReadFile src\/a\.ts/gu)).toHaveLength(1);
+    expect(text).toContain('│ one');
+    expect(text).toContain('└ two');
+    expect(text).toContain('• Ran npm test');
+    // Two blocks (3 + 2 rows) with one blank separator row, not one per call.
+    expect(transcriptHeight({ cells, welcome: null }, 80)).toBe(6);
+  });
+
+  it('rebuilds a grouped block when an earlier call finishes late', () => {
+    const make = (id: string, output: string, running: boolean): ExecCell => ({
+      type: 'exec',
+      id,
+      callId: id,
+      name: 'ReadFile',
+      command: 'ReadFile src/a.ts',
+      output,
+      isError: false,
+      running,
+    });
+    const first = make('e1', '', true);
+    const second = make('e2', '', true);
+    renderTranscript(rect(0, 0, 80, 8), new CellBuffer(80, 8), { cells: [first, second], welcome: null });
+
+    const buffer = new CellBuffer(80, 8);
+    renderTranscript(rect(0, 0, 80, 8), buffer, {
+      cells: [{ ...first, output: 'late output', running: false, durationMs: 5 }, second],
+      welcome: null,
+    });
+    expect(screenText(buffer)).toContain('│ late output');
   });
 
   it('renders plan markers and notice levels', () => {
@@ -527,11 +621,39 @@ describe('frame composition', () => {
     expect(screenText(frame)).toContain('model: test-model');
     expect(rowText(frame, 17)).toBe('');
     expect(rowText(frame, 18)).toContain('• Ready');
-    expect(rowText(frame, 18)).toContain('ctx 0/1m');
+    expect(rowText(frame, 18)).toContain('ctx 0/200k');
     expect(rowText(frame, 19)).toBe('');
     expect(rowText(frame, 21)).toContain('› Ask codingx to do anything');
     expect(rowText(frame, 23)).toContain('test-model');
     expect(rowText(frame, 23)).toContain('New session');
+  });
+
+  it('merges repeated ReadFile calls from one step into a ×N exec block', () => {
+    const app = makeApp(100, 30);
+    app.handleEvent({ type: 'turn.started', turnId: 't1' });
+    for (const [id, offset, output] of [
+      ['c1', 1, 'one'],
+      ['c2', 20, 'two'],
+    ] as const) {
+      app.handleEvent({
+        type: 'tool.started',
+        turnId: 't1',
+        call: { id, name: 'ReadFile', input: { path: 'src/a.ts', offset } },
+      });
+      app.handleEvent({
+        type: 'tool.finished',
+        turnId: 't1',
+        callId: id,
+        name: 'ReadFile',
+        result: { content: output, isError: false },
+        durationMs: 1,
+      });
+    }
+    const text = screenText(app.renderFrame());
+    expect(text.match(/• Ran ReadFile src\/a\.ts/gu)).toHaveLength(1);
+    expect(text).toContain('• Ran ReadFile src/a.ts ×2');
+    expect(text).toContain('│ one');
+    expect(text).toContain('└ two');
   });
 
   it('shows a completed conversation with exec and plan cells', () => {
@@ -581,11 +703,11 @@ describe('frame composition', () => {
     const frame = app.renderFrame();
     expect(rowText(frame, 0)).toMatch(/^╭─+╮$/u);
     expect(rowText(frame, 34)).toContain('• Ready');
-    expect(rowText(frame, 34)).toContain('ctx 0/1m');
+    expect(rowText(frame, 34)).toContain('ctx 0/200k');
     expect(rowText(frame, 37)).toContain('› Ask codingx to do anything');
     expect(rowText(frame, 39)).toContain('test-model');
     expect(rowText(frame, 39)).toContain('New session');
-    expect(rowText(frame, 34)).toContain('ctx 0/1m');
+    expect(rowText(frame, 34)).toContain('ctx 0/200k');
     expect(displayWidth(rowText(frame, 39))).toBeLessThanOrEqual(120);
   });
 
@@ -598,7 +720,7 @@ describe('frame composition', () => {
     const forty = composeFrame(makeApp(40, 24).state, { width: 40, height: 24, now: 1000 });
     expect(rowText(forty, 23)).toContain('test-model');
     expect(rowText(forty, 18)).toContain('• Ready');
-    expect(rowText(forty, 18)).toContain('ctx 0/1m');
+    expect(rowText(forty, 18)).toContain('ctx 0/200k');
     expect(screenText(forty)).not.toContain('? for shortcuts');
 
     const thirtyNine = composeFrame(makeApp(39, 24).state, { width: 39, height: 24, now: 1000 });

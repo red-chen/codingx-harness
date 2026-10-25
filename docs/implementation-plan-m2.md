@@ -124,8 +124,9 @@ Wave F（sessiond）依赖 A 的续接语义，可与 D/E 并行
 - 测试：48 个文件、499 项通过；新增 `tests/tui-bottom.test.ts`、`tests/tui-turn-summary.test.ts`、`tests/tui-restore.test.ts`，覆盖背景、MetaBar、turn 摘要、上下文/累计 Token、LLM/工具耗时、turn/step 与 resume transcript 重建。
 - IME 候选窗定位：每帧把硬件光标显示并移动到 composer 实际插入点（含 CJK 宽字符、多行、slash 菜单）；overlay/transcript 模式隐藏。
 - 完成摘要：`turn.finished` 后在 transcript 追加完成时间、耗时、in/out/cache tokens。
-- 上下文用量：StatusRow 显示 `ctx used/window · tok total`，TUI 与 AgentLoop 默认窗口 1,000,000 tokens（配置 `model.context_window` 可覆盖）。
+- 上下文用量：StatusRow 显示 `ctx used/window · tok total`，TUI 与 AgentLoop 默认窗口 200,000 tokens（配置 `model.context_window` 可覆盖）。
 - 耗时：exec 命令显示工具耗时；turn 摘要显示 `total/llm/tools` 与 Token；assistant 末尾不再重复 `llm Xs`。
+- 工具调用合并：相邻且工具/目标相同的调用渲染为一个 Exec 块（`• Ran <command> ×N`，耗时求和），各次输出依次预览，完全相同的重复输出只显示一次；分组与滚动高度共用同一套块模型，resume 重建的 transcript 同样生效。新增 `buildExecGroupLines` 与 viewport 分组测试。
 - StatusRow 同时显示 `turn N · step M`；滚动 offset clamp 到内容高度，短会话上滚不会清空历史。
 - 底部留白：transcript↔status、status↔composer 各 1 行，矮终端自动折叠。
 - welcome 卡展示当前 session id，卡片按内容收缩并保留左右 1 列内边距。
@@ -142,6 +143,7 @@ Wave F（sessiond）依赖 A 的续接语义，可与 D/E 并行
 - `/clear` 在 turn 运行中拒绝执行；只读或已结束的会话拒绝清理；sessiond 清理需要写租约并广播 `session.cleared`，`sessions watch` 会提示历史已重置。
 - 嵌入式 rollout 统一以 `ax`（append + exclusive）打开，保证 clear 后的 `truncate(0)` + 重写不会在旧偏移留下空洞；新事件从 `seq: 2` 继续。
 - 新增测试：session 清理/只读/已结束、sessiond registry/client 清理与租约校验、AgentLoop `clearHistory`、TuiApp `resetSession`、TuiSession `/clear` 与运行中拒绝、plain 交互清理后 JSONL 仅剩头事件。
+- **daemon 方法握手**：`initialize` 返回本构建的 `methods` 列表；`ensureSessiond` 发现长驻 daemon 缺少新方法（旧构建没有 `session.clear` 时 `/clear` 会报 `Unknown method`）会先非强制 shutdown 再拉起新 daemon。有活动租约或 `autostart = false` 时返回可执行的 `codingx sessiond restart` 提示；新增旧 daemon 替换与租约保护测试。
 
 ## 本轮结果（`--add-dir`）
 
@@ -153,7 +155,7 @@ Wave F（sessiond）依赖 A 的续接语义，可与 D/E 并行
 ## 本轮结果（`/model`）
 
 - 测试：52 个文件、564 项全部通过（typecheck 通过）。
-- **`/model`**：`/model` 查看；`/model <model>` 切模型并保留 effort；`/model <model> <effort>` 同时设置；`/model --effort <level>` 只改 effort；`default`/`off`/`none`/`auto` 清除覆盖。TUI 与 `--plain` 均支持，turn 运行中拒绝修改，TUI meta 行显示 `effort <level>`。
+- **`/model`**：`/model` 查看；`/model <model>` 切模型并保留 effort；`/model <model> <effort>` 同时设置；`/model --effort <level>` 只改 effort；`default`/`off`/`none`/`auto` 清除覆盖。TUI 与 `--plain` 均支持，turn 运行中拒绝修改；TUI 通过 notice 显示模型与 effort，meta 行固定只有 model · cwd · title。
 - **请求链路**：`ModelRequest.reasoningEffort` 由 `buildModelRequest` 透传；Anthropic Messages 映射为 `output_config.effort`（不发送时使用 provider 默认）。`AgentLoop.setModel` 同步更新 `ProviderRouter.selection`，下一 turn 与压缩摘要立即使用新模型。
 - **持久化与 resume**：每次变更写入 `model.changed`（含 model，可选 reasoningEffort）；`latestModelSelection` 在 TUI/plain 的 resume 前恢复模型与 effort；`codingx log` 可读该事件。
-- 新增测试：`/model` 解析、TUI/plain 命令与运行中拒绝、provider 请求体、router/AgentLoop 切换、resume 后请求恢复、meta 行与历史解析。
+- 新增测试：`/model` 解析、TUI/plain 命令与运行中拒绝、provider 请求体、router/AgentLoop 切换、resume 后请求恢复、模型/effort 状态与历史解析。

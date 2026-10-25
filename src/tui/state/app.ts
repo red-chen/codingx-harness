@@ -1,6 +1,12 @@
 import type { UiEvent } from '../../agent/events.js';
 import type { ToolCall } from '../../providers/types.js';
-import { EMPTY_USAGE, addUsage, type ReasoningEffort, type TokenUsage } from '../../providers/types.js';
+import {
+  DEFAULT_CONTEXT_WINDOW,
+  EMPTY_USAGE,
+  addUsage,
+  type ReasoningEffort,
+  type TokenUsage,
+} from '../../providers/types.js';
 import type { AskQuestion, PlanStep } from '../../tools/types.js';
 import type { CellBuffer } from '../terminal/buffer.js';
 import type { KeyEvent } from '../terminal/input.js';
@@ -221,7 +227,7 @@ export class TuiApp {
       contextUsedTokens: 0,
       contextWindowTokens: Number.isFinite(options.contextWindowTokens) && (options.contextWindowTokens ?? 0) > 0
         ? Math.floor(options.contextWindowTokens as number)
-        : 1_000_000,
+        : DEFAULT_CONTEXT_WINDOW,
       ...(options.contextPercent === undefined ? {} : { contextPercent: clampPercent(options.contextPercent) }),
     };
   }
@@ -563,7 +569,7 @@ export class TuiApp {
     });
   }
 
-  /** Update the model/effort shown in the meta row after /model. */
+  /** Update the model/effort session state after /model. */
   setModel(model: string, reasoningEffort?: ReasoningEffort): void {
     const session = this.current.session;
     this.patch({
@@ -580,7 +586,7 @@ export class TuiApp {
     });
   }
 
-  /** Update the permission profile shown in the meta row after /permissions. */
+  /** Record the active permission profile after /permissions. */
   setPermission(permissionProfile: string, approvalPolicy: string): void {
     this.patch({
       session: {

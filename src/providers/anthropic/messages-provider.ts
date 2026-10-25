@@ -372,10 +372,17 @@ export class AnthropicMessagesProvider implements Provider {
     if (signal?.aborted) throw abortError();
     const timeoutController = new AbortController();
     let timedOut = false;
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      timeoutController.abort();
-    }, this.requestTimeoutMs);
+    let timeoutTimer: NodeJS.Timeout | undefined;
+    // This is an idle timeout, not a wall-clock deadline: a long response may
+    // stream for many minutes as long as bytes keep arriving.
+    const armTimeout = (): void => {
+      if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
+      timeoutTimer = setTimeout(() => {
+        timedOut = true;
+        timeoutController.abort();
+      }, this.requestTimeoutMs);
+    };
+    armTimeout();
     const onAbort = (): void => timeoutController.abort();
     signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -410,6 +417,7 @@ export class AnthropicMessagesProvider implements Provider {
       if (!response.body) {
         throw new ProviderError('Anthropic response has no body.', { category: 'protocol' });
       }
+      armTimeout();
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -419,6 +427,7 @@ export class AnthropicMessagesProvider implements Provider {
         for (;;) {
           const chunk = await reader.read();
           if (chunk.done) break;
+          armTimeout();
           const text = decoder.decode(chunk.value, { stream: true });
           for (const sse of parser.push(text)) {
             for (const event of this.consumeSse(sse, state)) yield event;
@@ -447,7 +456,7 @@ export class AnthropicMessagesProvider implements Provider {
         await reader.cancel().catch(() => undefined);
       }
     } finally {
-      clearTimeout(timeoutTimer);
+      if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
       signal?.removeEventListener('abort', onAbort);
     }
   }
@@ -477,7 +486,7 @@ export class AnthropicMessagesProvider implements Provider {
   }
 
   private timeoutError(): ProviderError {
-    return new ProviderError('Anthropic request timed out after ' + this.requestTimeoutMs + 'ms.', {
+    return new ProviderError('Anthropic request was idle for ' + this.requestTimeoutMs + 'ms.', {
       category: 'timeout',
       retryable: true,
     });

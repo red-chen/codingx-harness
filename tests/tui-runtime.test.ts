@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { EMPTY_USAGE, type ReasoningEffort } from '../src/providers/types.js';
 import type { TurnResult } from '../src/agent/index.js';
 import type { SessionHandle } from '../src/session/index.js';
@@ -113,6 +113,27 @@ describe('TuiRuntime', () => {
     runtime.stop();
     expect(io.rawModes).toEqual([true, false]);
     expect(io.writes.join('')).toContain('\x1b[?1049l');
+  });
+
+  it('coalesces rapid render requests into one trailing frame', () => {
+    vi.useFakeTimers();
+    try {
+      const io = new FakeIO();
+      const app = makeApp();
+      const runtime = makeRuntime(app, io, [], []);
+      runtime.start();
+      const before = io.writes.length;
+      for (let index = 0; index < 20; index++) {
+        app.addNotice('rapid ' + index);
+        runtime.render();
+      }
+      expect(io.writes.length).toBe(before);
+      vi.advanceTimersByTime(20);
+      expect(io.writes.length).toBeGreaterThan(before);
+      runtime.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('shows and positions the hardware cursor at the composer insertion point', () => {
@@ -464,7 +485,7 @@ describe('TuiSession', () => {
     await expect(running).resolves.toBe(0);
   });
 
-  it('handles /model locally and updates the controller, meta row and efforts', async () => {
+  it('handles /model locally and updates the controller and session state', async () => {
     const io = new FakeIO();
     const app = makeApp();
     let selection: { model: string; reasoningEffort?: ReasoningEffort } = { model: 'm' };

@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
   METHOD,
   NOTIFICATION,
+  SESSIOND_METHODS,
   SESSIOND_PROTOCOL_VERSION,
   SessiondRpcError,
   type InitializeParams,
@@ -405,6 +406,7 @@ export class SessiondServer {
       pid: process.pid,
       startedAt: this.startedAt,
       sessionCount: await this.registry.countSessions(),
+      methods: SESSIOND_METHODS,
     };
   }
 

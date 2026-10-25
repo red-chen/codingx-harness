@@ -161,9 +161,9 @@ export interface TuiSessionState {
   readonly home?: string;
   /** Short derived title; defaults to the first user prompt. */
   readonly title?: string;
-  /** Active permission profile shown in the meta row. */
+  /** Active permission profile; reported by /permissions, not shown in the meta row. */
   readonly permissionProfile?: string;
-  /** Active approval policy shown in the meta row. */
+  /** Active approval policy; reported by /permissions, not shown in the meta row. */
   readonly approvalPolicy?: string;
 }
 

@@ -34,7 +34,8 @@
 
 - 传输：Unix domain socket，默认 `~/.codingx/run/sessiond.sock`；目录 `0700`，socket `0600`。Windows 使用命名管道（`\\.\pipe\codingx-sessiond-<hash>`），不使用 TCP。
 - 帧格式：NDJSON，每行一个 JSON-RPC 2.0 消息；单帧上限 8 MiB，单事件上限 1 MiB。
-- 握手：客户端先发 `initialize`，带上 `{ protocol: 1, client: { name, version, pid } }`；daemon 返回 `{ protocol, version, pid, startedAt, sessionCount }`。协议不匹配时返回 `PROTOCOL_MISMATCH`，客户端提示 `codingx sessiond restart`，不做静默降级。
+- 握手：客户端先发 `initialize`，带上 `{ protocol: 1, client: { name, version, pid } }`；daemon 返回 `{ protocol, version, pid, startedAt, sessionCount, methods }`。协议不匹配时返回 `PROTOCOL_MISMATCH`，客户端提示 `codingx sessiond restart`，不做静默降级。
+- 方法握手：`methods` 是本构建实现的 RPC 方法全集。CLI 连接后发现缺少自己需要的方法（典型场景：升级后在跑的长驻 daemon 还没有 `session.clear`），会先 `daemon.shutdown`（`force: false`）再拉起新 daemon，避免 `/clear` 直接报 `Unknown method`。有活动写租约或 `sessiond.autostart = false` 时不重启，给出 `codingx sessiond restart` 提示。
 - 认证：连接建立时校验对端 UID（Linux `SO_PEERCRED`、macOS `LOCAL_PEERCRED`）；Windows 由命名管道 ACL 限制当前用户；Unix 下连接前 lstat socket，要求属主为当前用户且权限为 `0600`。
 - 客户端超时：普通请求 10s；`session.append` / `session.clear` 30s；超时按可重试处理，事件带 `eventId` 保证幂等。
 
@@ -56,7 +57,7 @@
 | `session.subscribe` | 从 `fromSeq` 订阅实时事件与状态变化 |
 | `session.fork` | 在指定 `seq` 复制为新会话（`requestId` 幂等），写新的 `session.start` 头并向当前连接授予写租约；仅非 `running` / `awaiting_approval` 会话可 fork |
 | `session.end` | 显式结束会话，写 `session.end`；需要写租约，仅 `idle` / `interrupted` 可结束，结束后拒绝写租约 |
-| `session.prune` | 按保留期清理已结束 / 已中断会话，活动会话永不清理 |
+| `session.prune` | 按保留期清理已结束 / 已中断 / 已空闲会话；有 writer、observer 或活动 turn 的会话永不清理 |
 
 通知由 daemon 主动推送：`session.event`（新事件）、`session.status`（状态变化）、`session.cleared`（历史被重置，`lastSeq` 回到 1）、`session.lease_revoked`（租约被接管）、`session.lagged`（订阅积压断开）。
 

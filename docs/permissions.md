@@ -133,7 +133,7 @@ enabled = true               # 示例：仅此 profile 需要联网；默认是 
 
 ### 3.1 文件系统规则
 
-- 作用域支持：`:minimal`、`:root`、`:workspace_roots`、`:tmpdir`、`:slash_tmp`、绝对路径、`~/...`、glob（如 `**/*.pem`）。
+- 作用域支持：`:minimal`、`:root`、`:workspace_roots`、`:tmpdir`、`:slash_tmp`、绝对路径、`~/...`、glob（如 `**/*.pem`）。当前实现只接受 **deny** glob；read/write glob 会在启动时报配置错误，避免静默忽略。
 - 访问级别：`read` / `write` / `deny`。`write` 隐含 `read`。
 - 解析顺序：**更具体的路径覆盖更宽的路径；同级冲突时 deny 优先；显式 deny 永远优先于 allow**。
 - 默认拒绝读取：`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.codingx`、session 目录、`.env*`、私钥与常见凭证文件；除非用户在全局配置中显式放开。

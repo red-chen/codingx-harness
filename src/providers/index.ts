@@ -8,6 +8,7 @@ export type { ProviderFactoryOptions } from './factory.js';
 export {
   addUsage,
   assistantMessage,
+  DEFAULT_CONTEXT_WINDOW,
   EMPTY_USAGE,
   isReasoningEffort,
   messageText,

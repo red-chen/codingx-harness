@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RolloutEvent } from '../src/session/types.js';
 import { restoreTranscript, TuiApp } from '../src/tui/index.js';
+import { createTuiAppForSession } from '../src/cli/commands/tui.js';
 
 function event(seq: number, type: string, data: Record<string, unknown>): RolloutEvent {
   return {
@@ -103,5 +104,44 @@ describe('TuiApp restored transcript', () => {
     expect(text).toContain('restored answer');
     expect(text).toContain('_ codingx');
     expect(text).toContain('session: s1');
+  });
+});
+describe('TuiApp resume wiring', () => {
+  it('passes resumed transcript, usage, turn count and context window to TuiApp', () => {
+    const transcript = restoreTranscript([
+      event(1, 'user.message', { text: 'restored question' }),
+      event(2, 'assistant.message', { turnId: 't1', text: 'restored answer' }),
+      event(3, 'turn.end', {
+        status: 'done',
+        durationMs: 10,
+        usage: { inputTokens: 2, outputTokens: 1 },
+      }),
+    ]);
+    const usage = { inputTokens: 10, outputTokens: 4, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    const app = createTuiAppForSession({
+      sessionId: 's1',
+      cwd: '/w',
+      model: 'm',
+      permissionProfile: ':workspace',
+      approvalPolicy: 'on-request',
+      contextWindow: 200_000,
+      version: '0.1.0',
+      width: 80,
+      height: 24,
+      resumed: { transcript, usage, turnCount: 7, title: 'restored' },
+    });
+    expect(app.transcript).toHaveLength(3);
+    expect(app.state.totalUsage).toEqual(usage);
+    expect(app.state.turnNumber).toBe(7);
+    expect(app.state.contextWindowTokens).toBe(200_000);
+    expect(app.state.session.title).toBe('restored');
+    const frame = app.renderFrame();
+    let text = '';
+    for (let y = 0; y < frame.height; y++) {
+      for (let x = 0; x < frame.width; x++) text += frame.get(x, y)?.symbol ?? ' ';
+      text += '\n';
+    }
+    expect(text).toContain('restored question');
+    expect(text).toContain('restored answer');
   });
 });

@@ -21,7 +21,6 @@ const READ_ONLY_COMMANDS = new Set([
   'dir',
   'du',
   'echo',
-  'env',
   'file',
   'find',
   'git',
@@ -46,6 +45,19 @@ const READ_ONLY_COMMANDS = new Set([
 ]);
 
 const READ_ONLY_GIT_SUBCOMMANDS = new Set(['status', 'diff', 'log', 'show', 'rev-parse', 'ls-files']);
+
+/** find actions that write files or execute another program. */
+const FIND_UNSAFE_ACTIONS = new Set([
+  '-delete',
+  '-exec',
+  '-execdir',
+  '-ok',
+  '-okdir',
+  '-fprint',
+  '-fprint0',
+  '-fprintf',
+  '-fls',
+]);
 
 export const BUILTIN_PROFILES: Record<string, PermissionProfile> = {
   [READ_ONLY_PROFILE]: {
@@ -85,6 +97,9 @@ export function isReadOnlyProgram(program: string, args: readonly string[]): boo
   if (program === 'node' || program === 'npm') {
     // Version probes are harmless; arbitrary scripts are not read-only.
     return args.length === 1 && (args[0] === '--version' || args[0] === '-v');
+  }
+  if (program === 'find') {
+    return !args.some((arg) => FIND_UNSAFE_ACTIONS.has(arg));
   }
   return true;
 }
@@ -280,9 +295,18 @@ export async function resolveProfileRoots(
   for (const rule of profile.filesystem) {
     if (rule.scope === ':workspace_roots') {
       if (rule.subpath !== undefined && hasGlob(rule.subpath)) {
-        if (rule.access === 'deny') {
-          for (const root of workspaceRoots) denyGlobs.push({ base: root, pattern: rule.subpath });
+        if (rule.access !== 'deny') {
+          throw new ConfigError(
+            'Permission profile glob rules currently support deny access only; "' +
+              rule.scope +
+              '/' +
+              rule.subpath +
+              '" uses "' +
+              rule.access +
+              '". Use a concrete path or a deny glob.',
+          );
         }
+        for (const root of workspaceRoots) denyGlobs.push({ base: root, pattern: rule.subpath });
         continue;
       }
       const bases = rule.subpath === undefined ? workspaceRoots : workspaceRoots.map((root) => path.resolve(root, rule.subpath as string));
@@ -342,7 +366,17 @@ export async function resolveProfileRoots(
 
     const expanded = normalizeRulePath(rule.scope + (rule.subpath === undefined ? '' : '/' + rule.subpath), cwd, options.env);
     if (hasGlob(rule.scope) || (rule.subpath !== undefined && hasGlob(rule.subpath))) {
-      if (rule.access === 'deny') denyGlobs.push({ base: null, pattern: rule.scope + (rule.subpath === undefined ? '' : '/' + rule.subpath) });
+      if (rule.access !== 'deny') {
+        throw new ConfigError(
+          'Permission profile glob rules currently support deny access only; "' +
+            rule.scope +
+            (rule.subpath === undefined ? '' : '/' + rule.subpath) +
+            '" uses "' +
+            rule.access +
+            '". Use a concrete path or a deny glob.',
+        );
+      }
+      denyGlobs.push({ base: null, pattern: rule.scope + (rule.subpath === undefined ? '' : '/' + rule.subpath) });
       continue;
     }
     if (rule.access === 'write') {
@@ -375,6 +409,9 @@ export async function resolveProfileRoots(
       '.ssh',
       '.aws',
       '.gnupg',
+      '**/.git/config',
+      '**/.git/hooks/**',
+      '**/.git/modules/**/hooks/**',
       '**/*.env',
       '**/.env',
       '**/.env.*',

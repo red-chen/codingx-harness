@@ -139,6 +139,30 @@ describe('TuiSession approval and grants', () => {
     });
   });
 
+  it('does not keep a session grant after switching to a tighter profile', async () => {
+    let profile = ':workspace';
+    const permissions: TuiPermissionController = {
+      list: () => [':read-only', ':workspace'],
+      current: () => ({ profile, approvalPolicy: 'on-request' }),
+      set: async (name) => {
+        profile = name;
+      },
+    };
+    const { app, controller } = makeController(permissions);
+    const first = controller.approve(shellRequest());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.handleCommand({ type: 'approval', decision: { decision: 'allow', scope: 'session' } });
+    await expect(first).resolves.toEqual({ decision: 'allow', scope: 'session' });
+
+    controller.handleLocalCommand('/permissions :read-only');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const second = controller.approve(shellRequest());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(app.mode).toBe('approval');
+    controller.handleCommand({ type: 'approval', decision: { decision: 'deny' } });
+    await expect(second).resolves.toEqual({ decision: 'deny' });
+  });
+
   it('lists and switches permission profiles through /permissions', async () => {
     const calls: string[] = [];
     const permissions: TuiPermissionController = {

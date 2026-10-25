@@ -102,36 +102,34 @@ export const RESERVED_EVENT_TYPES = new Set([
   'session.resumed',
 ]);
 
+/** Apply one rollout event to a session status (used for incremental registry updates). */
+export function nextSessionStatus(status: SessionStatus, event: RolloutEvent): SessionStatus {
+  switch (event.type) {
+    case 'session.end':
+      return 'ended';
+    case 'session.interrupted':
+      return 'interrupted';
+    case 'session.resumed':
+      return 'idle';
+    case 'turn.start':
+      return 'running';
+    case 'turn.status': {
+      const value = event.status;
+      if (value === 'awaiting_approval') return 'awaiting_approval';
+      if (value === 'streaming' || value === 'executing' || value === 'running') return 'running';
+      return status;
+    }
+    case 'turn.end':
+    case 'turn.aborted':
+      return 'idle';
+    default:
+      return status;
+  }
+}
+
 export function deriveSessionStatus(events: readonly RolloutEvent[]): SessionStatus {
   let status: SessionStatus = 'idle';
-  for (const event of events) {
-    switch (event.type) {
-      case 'session.end':
-        status = 'ended';
-        break;
-      case 'session.interrupted':
-        status = 'interrupted';
-        break;
-      case 'session.resumed':
-        status = 'idle';
-        break;
-      case 'turn.start':
-        status = 'running';
-        break;
-      case 'turn.status': {
-        const value = event.status;
-        if (value === 'awaiting_approval') status = 'awaiting_approval';
-        else if (value === 'streaming' || value === 'executing' || value === 'running') status = 'running';
-        break;
-      }
-      case 'turn.end':
-      case 'turn.aborted':
-        status = 'idle';
-        break;
-      default:
-        break;
-    }
-  }
+  for (const event of events) status = nextSessionStatus(status, event);
   return status;
 }
 

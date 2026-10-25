@@ -172,11 +172,8 @@ export function composeFrameWithCursor(state: TuiAppState, options: ComposeFrame
   renderMetaBar(layout.meta, frame, {
     model: state.session.model,
     cwd: state.session.cwd,
-    ...(state.session.reasoningEffort ? { reasoningEffort: state.session.reasoningEffort } : {}),
     ...(state.session.home ? { home: state.session.home } : {}),
     ...(state.session.title ? { title: state.session.title } : {}),
-    ...(state.session.permissionProfile ? { permissionProfile: state.session.permissionProfile } : {}),
-    ...(state.session.approvalPolicy ? { approvalPolicy: state.session.approvalPolicy } : {}),
   });
   if (state.mode === 'help') renderHelpOverlay(frame, width, height);
   if (state.mode === 'approval' && state.approval !== undefined) {

@@ -126,7 +126,7 @@ type UiCommand =
 
 `ask` 模式由 `AskUserQuestion` 工具触发：core 通过 `AskHandler` 调用 `TuiSession.ask()`，TUI 打开提问面板并等待 `answer` / `cancel-ask`；`Esc` 取消，`Ctrl+C` 仍然中断整个 turn。
 
-`approval` 模式由权限策略触发：底部弹层展示工具、归一化命令/路径、cwd、网络目标、理由与风险，支持允许一次 / 本会话 / 命令前缀 / 拒绝 / 拒绝并说明原因 / Esc 取消；长命令在面板内换行展示。审批通过会写入 rollout，并在内存中建立会话/前缀授权。`/permissions` 是本地命令：不带参数列出当前 profile 与可选 profile，带参数切换；meta 行显示 profile 与 approval policy，Full Access 在启动时给出 warning notice。选择器 overlay 与长命令全屏视图仍待补。审批弹层由应用状态机绘制，模型输出不能伪造。完整语义见 [permissions.md](permissions.md)。
+`approval` 模式由权限策略触发：底部弹层展示工具、归一化命令/路径、cwd、网络目标、理由与风险，支持允许一次 / 本会话 / 命令前缀 / 拒绝 / 拒绝并说明原因 / Esc 取消；长命令在面板内换行展示。审批通过会写入 rollout，并在内存中建立会话/前缀授权。`/permissions` 是本地命令：不带参数列出当前 profile 与可选 profile，带参数切换；切换结果以 notice 显示，Full Access 在启动时给出 warning notice。选择器 overlay 与长命令全屏视图仍待补。审批弹层由应用状态机绘制，模型输出不能伪造。完整语义见 [permissions.md](permissions.md)。
 
 TUI 不持久化任何配置；所有颜色、键位、布局都是固定行为。模型与 cwd 只作为事件字段显示。终端渲染前对不可信文本做控制序列剥离，见 [security.md](security.md)。
 
@@ -159,11 +159,12 @@ model · cwd · session title
 - 消息间空一行；用户消息使用低对比背景，助手消息透明。
 - composer 固定底部，3–8 行，内容上下各留 1 行 padding 并垂直居中，使用独立的 `composerBg` 整块背景。
 - transcript 与状态行之间、状态行与 composer 之间各留 1 行空白；终端高度 <8 行时自动折叠这两条间隔。
-- composer 下方固定一行 meta：模型、cwd、当前会话标题（取首条用户消息，resume 时从 rollout 恢复）。
+- composer 下方固定一行 meta：模型、cwd、当前会话标题（取首条用户消息，resume 时从 rollout 恢复）；固定只有这三项，不显示 effort、permission profile 或 approval policy。
 - 最底部固定 1 行 meta，不再显示快捷键行；cwd 在 home 目录下显示为 `~/...`，用户消息使用独立的 `userBg` 整块背景。
 - 每个 turn 完成后追加一行 TurnSummary：完成时间、耗时、in/out/cache tokens。
-- 状态行显示 `turn N · step M`，右侧显示 `ctx used/window · tok total`，默认窗口 1M tokens。
+- 状态行显示 `turn N · step M`，右侧显示 `ctx used/window · tok total`，默认窗口 200K tokens。
 - exec 命令显示工具耗时；turn 摘要显示 `total/llm/tools` 耗时与 Token，LLM 耗时不再重复挂在 assistant 内容末尾。
+- 相邻且工具/目标相同的调用（例如同一批次里多次 `ReadFile` 同一文件）合并为一个 Exec 块：标题只出现一次并带 `×N`，各次输出按顺序预览，组内不再额外空行；完全相同的输出只渲染一次。
 - 向上滚动按历史内容 clamp；内容不足一屏时保持停在底部，不会出现空白。
 - welcome 卡作为 transcript 的第一个历史块保留，不会在首条消息后消失；滚动上限包含它。
 - resume 时从 rollout 重建 user/assistant/tool/plan/turn 摘要，历史 transcript 直接可见。
@@ -203,7 +204,7 @@ TuiApp
 | Welcome | 圆角边框，标题、model、directory；宽度上限约 60 列 |
 | User | `› ` + 低对比背景；保留换行，超宽 URL 强制拆分 |
 | Assistant | `• ` + markdown；标题、列表、引用、代码块、表格、链接 |
-| Exec | `• Ran <command>`；输出 `│`/`└`，前 5 行，超出 `… +N lines`；stderr 用 error tone |
+| Exec | `• Ran <command>`；相邻且工具/目标相同的调用合并为 `• Ran <command> ×N`，各次输出依次预览（每次前 5 行，超出 `… +N lines`；相同输出只显示一次）；stderr 用 error tone |
 | Diff | `• Edited N files (+a -b)`；文件分组、行号、gutter、add/del 颜色 |
 | Plan | `• Updated Plan`；说明 + `✔`/`□` 步骤 |
 | Notice | 单行/多行提示，不抢 composer |
@@ -276,7 +277,7 @@ Composer 空输入时 `↑/↓` 走历史；有内容时走光标；保留 `Ctrl
 
 ### Slash
 
-Slash 补全浮在 composer 上方，最多 8 行；命令 + 一句描述，支持过滤、↑/↓、enter、tab、esc、数字 1–9。命令只做本地动作（不发给模型）：`/resume`、`/diff`、`/model`、`/clear`、`/help`、`/quit`。`/model` 查看或设置模型与推理强度（`/model <model> [low|medium|high|xhigh|max|default]`、`/model --effort <level>`），写入 `model.changed` 并更新 meta 行；turn 运行中拒绝修改。`/clear` 重置当前会话的 UI、内存历史与 JSONL rollout（保留新的 `session.start` 头）；turn 运行中拒绝执行。
+Slash 补全浮在 composer 上方，最多 8 行；命令 + 一句描述，支持过滤、↑/↓、enter、tab、esc、数字 1–9。命令只做本地动作（不发给模型）：`/resume`、`/diff`、`/model`、`/clear`、`/help`、`/quit`。`/model` 查看或设置模型与推理强度（`/model <model> [low|medium|high|xhigh|max|default]`、`/model --effort <level>`），写入 `model.changed`，结果通过 notice 显示（meta 行固定 model · cwd · title）；turn 运行中拒绝修改。`/clear` 重置当前会话的 UI、内存历史与 JSONL rollout（保留新的 `session.start` 头）；turn 运行中拒绝执行。
 
 ### Transcript
 

@@ -55,7 +55,7 @@ export async function runExec(options: ExecCommandOptions): Promise<number> {
 
   for (const warning of app.warnings) stderr.write('warning: ' + warning + '\n');
 
-  const renderer = new PlainRenderer({ stdout, stderr, json, version: VERSION });
+  const renderer = new PlainRenderer({ stdout, stderr, json, finalOnly: true, version: VERSION });
   const session = await app.store.createSession({
     cwd: app.cwd,
     model: app.router.selection.model,

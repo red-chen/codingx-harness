@@ -106,7 +106,7 @@ export class TuiSession {
   }
 
   render(): void {
-    this.runtime.render(true);
+    this.runtime.render();
   }
 
   exit(code = 0): void {
@@ -431,6 +431,9 @@ export class TuiSession {
     this.changingPermission = true;
     try {
       await this.permissions.set(name);
+      // Grants are scoped to the permission profile that approved them. A
+      // tighter profile must not inherit a previously granted write/command.
+      this.grants.clear();
       const current = this.permissions.current();
       this.app.setPermission(current.profile, current.approvalPolicy);
       this.app.addNotice(

@@ -24,6 +24,7 @@ export interface SessionsCommandOptions {
 
 async function connect(options: SessionsCommandOptions): Promise<{
   client: SessiondClient;
+  retentionDays: number;
   close(): Promise<void>;
 }> {
   const loaded = await loadConfig({ cwd: options.cwd, env: options.env });
@@ -40,6 +41,7 @@ async function connect(options: SessionsCommandOptions): Promise<{
   });
   return {
     client: ensured.client,
+    retentionDays: loaded.config.session.retentionDays,
     close: async () => ensured.client.close(),
   };
 }
@@ -77,7 +79,7 @@ export async function runSessionsCommand(options: SessionsCommandOptions): Promi
   try {
     if (options.action === 'prune') {
       const result = await client.prune({
-        ...(options.olderThanDays === undefined ? {} : { olderThanDays: options.olderThanDays }),
+        olderThanDays: options.olderThanDays ?? connection.retentionDays,
         ...(options.dryRun ? { dryRun: true } : {}),
       });
       if (options.json) {

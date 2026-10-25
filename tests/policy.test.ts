@@ -73,6 +73,16 @@ describe('permission profiles', () => {
     expect(() => parsePermissions({}, ':nope')).toThrow(/Unknown default permission profile/);
   });
 
+  it('rejects unsupported allow-glob profile rules instead of silently ignoring them', async () => {
+    await expect(
+      runtime('glob-write', 'on-request', {
+        'glob-write': {
+          filesystem: { ':workspace_roots': { 'src/**': 'write' } },
+        },
+      }),
+    ).rejects.toThrow(/glob rules currently support deny/i);
+  });
+
   it('resolves custom roots and network policies', async () => {
     const extra = path.join(root, 'extra');
     await mkdir(extra, { recursive: true });
@@ -155,6 +165,40 @@ describe('policy evaluation', () => {
 
     const tmpRedirect = await policy.evaluate('Shell', { command: 'echo hi > ' + path.join(tmpdir, 'out.txt') });
     expect(tmpRedirect.verdict).toBe('allow');
+  });
+
+  it('does not let read-only or denied paths escape through shell syntax', async () => {
+    const readOnly = await runtime(':read-only', 'never');
+    for (const command of [
+      'env touch pwned',
+      'find . -delete',
+      'git status & touch pwned',
+      'echo "$(touch pwned)"',
+    ]) {
+      const decision = await readOnly.evaluate('Shell', { command });
+      expect(decision.verdict, command).toBe('deny');
+    }
+
+    const workspace = await runtime(':workspace', 'never');
+    for (const command of ['cat < .env', 'echo X > .env', 'cat ../../etc/passwd']) {
+      const decision = await workspace.evaluate('Shell', { command });
+      expect(decision.verdict, command).toBe('deny');
+    }
+
+    const devNull = await workspace.evaluate('Shell', { command: 'echo hi > /dev/null' });
+    expect(devNull.verdict).toBe('allow');
+
+    for (const file of ['.git/config', '.git/hooks/pre-commit']) {
+      const decision = await workspace.evaluate('WriteFile', { path: file, content: 'x' });
+      expect(decision.verdict, file).toBe('deny');
+    }
+  });
+
+  it('flags quoted command substitution and single ampersands', () => {
+    expect(parseShellCommand('echo "$(touch pwned)"', cwd).hasUnsafeConstruct).toBe(true);
+    expect(parseShellCommand('echo "$(touch pwned)"', cwd).hasSubstitution).toBe(true);
+    const parsed = parseShellCommand('git status & touch pwned', cwd);
+    expect(parsed.segments.map((segment) => segment.program)).toEqual(['git', 'touch']);
   });
 
   it('parses compound commands and tracks cd', async () => {

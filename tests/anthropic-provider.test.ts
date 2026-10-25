@@ -425,6 +425,56 @@ describe('AnthropicMessagesProvider streaming', () => {
     expect(error).toMatchObject({ category: 'timeout', retryable: true });
   });
 
+  it('resets the timeout while the stream keeps making progress', async () => {
+    let writes = 0;
+    const server = await startServer(async (res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(messageStart());
+      res.write(
+        sse('content_block_start', {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        }),
+      );
+      for (let index = 0; index < 4; index++) {
+        res.write(
+          sse('content_block_delta', {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'chunk' + index },
+          }),
+        );
+        writes += 1;
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+      res.write(sse('content_block_stop', { type: 'content_block_stop', index: 0 }));
+      res.write(
+        sse('message_delta', {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: { output_tokens: 4 },
+        }),
+      );
+      res.write(sse('message_stop', { type: 'message_stop' }));
+      res.end();
+    });
+    const provider = new AnthropicMessagesProvider({
+      id: 'primary',
+      endpoint: server.url,
+      apiKey: 'k',
+      requestTimeoutMs: 80,
+    });
+    const events = await collect(provider);
+    expect(writes).toBe(4);
+    expect(
+      events
+        .filter((event): event is Extract<ModelEvent, { type: 'text.delta' }> => event.type === 'text.delta')
+        .map((event) => event.text)
+        .join(''),
+    ).toBe('chunk0chunk1chunk2chunk3');
+  });
+
   it('maps network failures to retryable provider errors', async () => {
     const probe = await startServer((res) => {
       res.end();

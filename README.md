@@ -23,12 +23,12 @@ M2 本轮已落地：
 - **工具扩展**：`Glob`、`Grep`（优先 rg，缺失时内置回退）、`WriteFile`、`UpdatePlan`、`ApplyPatch`、`Skill`、`AskUserQuestion`
 - **额外工作目录**：`--add-dir <DIR>` 可重复，把主 workspace 之外的目录显式加入文件与 Shell 工具的允许根；当前只有 profile 的 `:workspace_roots` 允许写时才能追加，`:read-only` 会报错。仅对当前调用生效，`--continue`/`--resume` 需再次传入
 - **权限策略（M3.1）**：Permission profiles（`:read-only` / `:workspace` / `:danger-full-access` + 命名 profile）、`approval_policy`（`on-request` / `never`）、`--sandbox` / `--ask-for-approval` / `--permission-profile` 已接入文件工具；越界在非交互模式下返回 `APPROVAL_REQUIRED`/`PERMISSION_DENIED`，并写 `permission.decision` 审计事件
-- **审批交互（M3.2）**：TUI 底部审批弹层与 plain 交互提示；允许一次 / 本会话 / 命令前缀 / 拒绝并说明原因；授权仅存在内存，`/clear` 清除，resume 不继承；`/permissions` 可列出并切换 profile；meta 行显示 profile/approval policy；写 `approval.requested/decided`、`permission.granted`、`profile.changed`
+- **审批交互（M3.2）**：TUI 底部审批弹层与 plain 交互提示；允许一次 / 本会话 / 命令前缀 / 拒绝并说明原因；授权仅存在内存，`/clear` 清除，resume 不继承；`/permissions` 可列出并切换 profile；写 `approval.requested/decided`、`permission.granted`、`profile.changed`
 - **绕过权限检查**：`--yolo` / `--allow-dangerously-skip-permissions` 现在映射到 `:danger-full-access` + `never`，关闭文件工具策略并打印醒目告警。当前没有 OS 沙箱，因此它不能提供隔离；`exec policy` 的 `forbidden` 仍是尽力而为的硬拒绝。仅建议在一次性容器中使用
 - **运行时模型切换**：`/model` 查看或切换当前模型与推理强度（`low|medium|high|xhigh|max`，`default` 清除）；变更立即作用于后续请求，写入 `model.changed`，并在 resume 时恢复。Anthropic Messages 通过 `output_config.effort` 传递（需目标模型支持该参数）
-- **Terminal 与 TUI 层**：Terminal 内核 + TuiApp/TuiRuntime/TuiSession、独立背景 composer/用户消息、底部 meta（model · effort · cwd · session title）、硬件光标/IME 定位、resume transcript 重建、欢迎卡常驻历史顶部、`/copy` 按区域复制、`/clear` 重置会话（UI 与 JSONL rollout 一并清空）、Ctrl+Y 全量复制、终端原生拖选 + ⌘C 复制、markdown/code/diff 消息单元、turn 完成摘要（total/llm/tools 耗时、Token）、状态行上下文用量（默认 1M）、累计 Token 与 turn/step 信息、help/transcript overlay、slash 补全菜单；TTY 默认全屏 TUI，`--plain` 退化
+- **Terminal 与 TUI 层**：Terminal 内核 + TuiApp/TuiRuntime/TuiSession、独立背景 composer/用户消息、底部 meta（model · cwd · session title）、硬件光标/IME 定位、resume transcript 重建、欢迎卡常驻历史顶部、`/copy` 按区域复制、`/clear` 重置会话（UI 与 JSONL rollout 一并清空）、Ctrl+Y 全量复制、终端原生拖选 + ⌘C 复制、markdown/code/diff 消息单元、相邻同名工具调用合并为 `×N` 块、turn 完成摘要（total/llm/tools 耗时、Token）、状态行上下文用量（默认 200K）、累计 Token 与 turn/step 信息、help/transcript overlay、slash 补全菜单；TTY 默认全屏 TUI，`--plain` 退化
 - **Skills 与用户提问**：`~/.agents/skills`、`~/.codingx/skills` 与 `<project>/.codingx/skills` 的 `SKILL.md` 按需加载（系统提示只放目录）；TUI 底部提问面板支持单选/多选/自由文本，答案经 `tool.result` 入 rollout
-- **sessiond**：JSON-RPC/NDJSON、Unix socket server、注册表/写租约/heartbeat/崩溃恢复、typed client、remote SessionStore、自动拉起、空闲退出；CLI 默认通过 IPC 写入
+- **sessiond**：JSON-RPC/NDJSON、Unix socket server、注册表/写租约/heartbeat/崩溃恢复、typed client、remote SessionStore、自动拉起、空闲退出、方法握手（升级后自动替换缺少新方法的旧 daemon）；CLI 默认通过 IPC 写入
 - **跨 CLI**：`sessions list/show/watch/prune`、`sessiond start/stop/status/restart`；首次 CLI 运行会自动拉起 detached daemon
 
 尚未实现：TUI mention、session picker（M2.1）、审批选择器 overlay / 长命令全屏视图、OS 沙箱（Seatbelt/Landlock）、网络代理、exec policy 规则、自动审查、表格 holdback、慢订阅者背压、MCP、并行工具、多 Provider 路由、OpenAI Responses。权限 profile、拒绝原因与提权流程见 [docs/permissions.md](docs/permissions.md)；使用前请阅读 [当前实现边界](#当前实现边界)。
@@ -106,7 +106,7 @@ node bin/codingx.js --fork <id>         # 复制历史到新会话后继续
 node bin/codingx.js sessions list
 node bin/codingx.js sessions show <id>
 node bin/codingx.js sessions watch <id>
-node bin/codingx.js sessions prune --older-than 30 --dry-run
+node bin/codingx.js sessions prune --older-than 30 --dry-run  # 省略 --older-than 时用 [session] retention_days
 node bin/codingx.js sessiond status
 node bin/codingx.js sessiond stop
 ```
@@ -127,7 +127,7 @@ node bin/codingx.js sessiond stop
 ReadFile(src/util.ts) → EditFile(foo → bar) → Shell(grep 校验) → 最终回答
 ```
 
-测试同时断言 rollout 可回放、`--json` stdout 无人类文本、会话结束后写 `session.end`、续接/分叉历史、悬空工具调用修复与 30 轮压缩。当前 **55 个测试文件、609 项测试**全部通过；还覆盖真实 Ctrl+C 后 `--continue`、两个 CLI 的写租约互斥、TUI 帧/按键预算、slash 补全、`/clear` 重写 JSONL、`/model` 模型与推理强度切换、`--add-dir` 额外可写目录、`--yolo` 绕过 workspace 限制（含别名与告警）、Permission profile / `--sandbox` / `--ask-for-approval` / 非交互 fail closed / `permission.decision` 审计、TUI/plain 审批与拒绝理由 / 会话与前缀授权 / `/permissions` 切换 / `approval.*` 审计、`sessions prune`、composer/用户消息背景与底部 meta，以及“CLI → 自动拉起 sessiond → rollout → sessions list/show → status/stop”和 80x24/120x40 TUI PTY 冒烟。真实 Provider 的冒烟需要配置 `API_KEY` 后手工执行；CI 不访问外网。
+测试同时断言 rollout 可回放、`--json` stdout 无人类文本、会话结束后写 `session.end`、续接/分叉历史、悬空工具调用修复与 30 轮压缩。当前 **55 个测试文件、630 项测试**全部通过；还覆盖真实 Ctrl+C 后 `--continue`、两个 CLI 的写租约互斥、TUI 帧/按键预算、slash 补全、`/clear` 重写 JSONL、`/model` 模型与推理强度切换、`--add-dir` 额外可写目录、`--yolo` 绕过 workspace 限制（含别名与告警）、Permission profile / `--sandbox` / `--ask-for-approval` / 非交互 fail closed / `permission.decision` 审计、TUI/plain 审批与拒绝理由 / 会话与前缀授权 / `/permissions` 切换 / `approval.*` 审计、`sessions prune`、旧 daemon 方法握手与自动替换、composer/用户消息背景与底部 meta，以及“CLI → 自动拉起 sessiond → rollout → sessions list/show → status/stop”和 80x24/120x40 TUI PTY 冒烟。真实 Provider 的冒烟需要配置 `API_KEY` 后手工执行；CI 不访问外网。
 
 ## 当前实现边界
 

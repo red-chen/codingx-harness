@@ -67,6 +67,13 @@ describe('SessiondClient', () => {
     });
   });
 
+  it('records the methods advertised during initialize', () => {
+    expect(client.supports('session.clear')).toBe(true);
+    expect(client.supports('session.fork')).toBe(true);
+    expect(client.missingMethods(['session.clear', 'session.fork'])).toEqual([]);
+    expect(client.supports('session.does_not_exist')).toBe(false);
+  });
+
   it('receives session.event notifications through subscribe', async () => {
     const created = await remote.createSession(createParams);
     const notes: JsonRpcNotification[] = [];

@@ -10,6 +10,8 @@ export interface PlainRendererOptions {
   stderr: TextSink;
   /** Emit JSON Lines on stdout instead of human-readable text. */
   json?: boolean;
+  /** Buffer assistant text and write only the final answer (exec mode). */
+  finalOnly?: boolean;
   showBanner?: boolean;
   version?: string;
 }
@@ -56,14 +58,17 @@ export class PlainRenderer {
   private readonly stdout: TextSink;
   private readonly stderr: TextSink;
   private readonly json: boolean;
+  private readonly finalOnly: boolean;
   private readonly showBanner: boolean;
   private readonly version: string;
   private wroteText = false;
+  private finalText = '';
 
   constructor(options: PlainRendererOptions) {
     this.stdout = options.stdout;
     this.stderr = options.stderr;
     this.json = options.json ?? false;
+    this.finalOnly = options.finalOnly ?? false;
     this.showBanner = options.showBanner ?? false;
     this.version = options.version ?? '';
   }
@@ -84,13 +89,21 @@ export class PlainRenderer {
         break;
       case 'turn.started':
         this.wroteText = false;
+        this.finalText = '';
         break;
       case 'text.delta':
-        this.stdout.write(event.text);
-        this.wroteText = true;
+        if (this.finalOnly) {
+          this.finalText += event.text;
+        } else {
+          this.stdout.write(event.text);
+          this.wroteText = true;
+        }
         break;
       case 'tool.started':
-        if (this.wroteText) {
+        if (this.finalOnly) {
+          // Text before a tool call is progress narration, not the answer.
+          this.finalText = '';
+        } else if (this.wroteText) {
           this.stdout.write('\n');
           this.wroteText = false;
         }
@@ -113,7 +126,13 @@ export class PlainRenderer {
       case 'context.updated':
         break;
       case 'turn.finished':
-        if (this.wroteText) {
+        if (this.finalOnly) {
+          if (event.status === 'done' && this.finalText.length > 0) {
+            this.stdout.write(this.finalText);
+            if (!this.finalText.endsWith('\n')) this.stdout.write('\n');
+          }
+          this.finalText = '';
+        } else if (this.wroteText) {
           this.stdout.write('\n');
           this.wroteText = false;
         }
