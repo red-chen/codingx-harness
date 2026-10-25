@@ -16,7 +16,7 @@
 └──────────────────────────────────────────────────────┘
 ```
 
-**依赖方向自上而下，禁止反向依赖。** 上层通过接口调用下层，下层不感知上层的存在。例如 `agent` 只依赖 `Provider` 与 `Tool` 接口，不 import 具体的 Anthropic SDK 或 TUI 实现——这让 Agent 循环可以在测试里用假 Provider 驱动。
+**依赖方向自上而下，禁止反向依赖。** 上层通过接口调用下层，下层不感知上层的存在。例如 `agent` 只依赖 `Provider` 与 `Tool` 接口，不 import 具体的厂商 SDK 或 TUI 实现——这让 Agent 循环可以在测试里用假 Provider 驱动。
 
 `sessiond` 不在这张分层图内：它是独立进程，通过本机 IPC 为 `session/` 提供单写者存储；CLI 默认不再直接写 rollout，只有 `sessiond.enabled = false` 的嵌入式模式例外。见 [session-manager.md](session-manager.md)。
 
@@ -64,7 +64,7 @@ export type ModelEvent =
   | { type: 'stop'; reason: 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal' };
 ```
 
-首个实现是 Anthropic Messages API（原生 tool use + prompt caching），其次是 OpenAI 兼容端点。Provider 只负责协议转换，不做重试——重试在 Agent 层统一处理，保证行为一致。
+首个实现使用原生 messages 协议（tool use + prompt caching），其次是兼容端点。Provider 只负责协议转换，不做重试——重试在 Agent 层统一处理，保证行为一致。
 
 ### `tools/`
 

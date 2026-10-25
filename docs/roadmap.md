@@ -5,7 +5,7 @@
 ## M0 · 设计对齐（当前）
 
 - [x] 架构、Agent 循环、工具、安全、配置、会话管理、TUI 文档
-- [x] 确定首个 Provider 与默认模型：Anthropic Messages API，默认 `claude-opus-4-7`
+- [x] 确定 Provider 接口与默认模型策略：模型名由配置提供，文档不绑定厂商
 - [x] 确定沙箱在 macOS / Linux 上的降级行为：Seatbelt / Landlock，内核能力缺失时降级并告警，其他平台禁用 `--full-auto`
 - [x] 确定 sessiond 边界：单写者会话存储 + 跨 CLI 查询，不执行模型与工具
 - [x] 确定 TUI 选型：Node + 自研 Terminal；Rust 仅作为性能兜底
@@ -17,7 +17,7 @@
 目标：能在一个真实仓库里完成「读文件 → 改文件 → 跑测试」的闭环。
 
 - 项目脚手架：TypeScript strict、ESM、tsup 构建、Vitest、`bin/codingx.js`
-- `Provider` 接口 + Anthropic 实现（流式、tool use）
+- `Provider` 接口 + 首个原生实现（流式、tool use）
 - Agent 循环（单 turn、串行工具、无压缩）
 - 工具：`read_file`、`list_dir`、`edit_file`、`shell`
 - 纯文本输出（`--plain`），无 TUI
@@ -62,7 +62,7 @@
 - MCP 客户端（stdio + SSE），动态注册外部工具
 - 自定义工具加载（`~/.codingx/tools/`）
 - 联网工具 `web_fetch`（默认关闭，`[web]` 域名白名单 + 仅 https）
-- 第二个 Provider（OpenAI 兼容端点）
+- 第二个 Provider（兼容端点）
 - `AGENTS.md` 多层级加载
 - 配置热重载（仅限非会话中）
 - TUI 打磨：复制/导出、transcript raw 模式、性能优化、可访问性

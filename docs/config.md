@@ -18,8 +18,8 @@
 # ~/.codingx/config.toml
 
 [model]
-provider = "anthropic"
-name = "claude-opus-4-7"
+provider = "primary"
+name = "model-name"
 max_output_tokens = 8192
 temperature = 0
 # 上下文窗口上限，用于触发压缩；留空则按模型默认值
@@ -28,11 +28,11 @@ context_window = 200000
 [agent]
 max_steps = 64               # 单 turn 最多模型往返次数，避免无进展循环
 
-[provider.anthropic]
-# 凭证优先从 `codingx login` 的 auth.json 读取；
-# 此处仅用于指向兼容端点
-base_url = "https://api.anthropic.com"
-api_key_env = "ANTHROPIC_API_KEY"
+[provider.primary]
+# 通用的 ENDPOINT 与 API_KEY；也可用 ENDPOINT / API_KEY 环境变量覆盖
+# 凭证优先从 `codingx login` 的 auth.json 读取
+endpoint = "https://api.example.com"
+api_key_env = "API_KEY"
 
 [approval]
 mode = "on-request"          # on-request | never | always-ask
@@ -99,7 +99,7 @@ servers = []
 
 ```toml
 [model]
-name = "claude-sonnet-4-5"    # 团队统一用更便宜的模型
+name = "model-name-small"    # 团队统一用更便宜的模型
 
 [approval.allow]
 exec = ["pnpm test", "pnpm build"]
@@ -123,7 +123,8 @@ args = ["-y", "@modelcontextprotocol/server-github"]
 | `CODINGX_SESSIOND` | 设为 `0` 关闭 sessiond（退回进程内存储，无跨 CLI） |
 | `CODINGX_SESSIOND_SOCKET` | 覆盖 sessiond socket 路径 |
 | `CODINGX_LOG` | 设为 `debug` 输出详细日志到 stderr |
-| `ANTHROPIC_API_KEY` | API Key（`api_key_env` 指向的变量名） |
+| `ENDPOINT` | 覆盖 Provider 端点 |
+| `API_KEY` | 通用 API Key（`api_key_env` 指向的变量名） |
 
 ## AGENTS.md
 

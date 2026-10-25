@@ -63,7 +63,7 @@
 
 ```json
 → {"jsonrpc":"2.0","id":7,"method":"session.list","params":{"limit":20}}
-← {"jsonrpc":"2.0","id":7,"result":{"sessions":[{"id":"a1b2c3d4e5f6","status":"running","cwd":"/Users/red/work/api","model":"claude-opus-4-7","clients":1,"updatedAt":"2026-10-25T02:41:09Z"}]}}
+← {"jsonrpc":"2.0","id":7,"result":{"sessions":[{"id":"a1b2c3d4e5f6","status":"running","cwd":"/Users/red/work/api","model":"model-name","clients":1,"updatedAt":"2026-10-25T02:41:09Z"}]}}
 ```
 
 ## 会话模型
@@ -189,8 +189,8 @@ log = "~/.codingx/logs/sessiond.log"
 
 - 只监听本机 socket，不监听 TCP；目录 `0700`、socket `0600`、`sessiond.json` / 会话文件 / `index.json` 均为 `0600`。
 - 对端 UID 校验 + socket 属主/权限校验；其他用户无法查询或写入会话。
-- daemon 启动时清空 `ANTHROPIC_API_KEY` 等凭证变量，不读取 `auth.json`，不加载项目配置，不执行仓库代码。
-- CLI 发送前与 daemon 落盘前各做一次脱敏；命中 `sk-`、`ghp_`、AWS key 等模式时替换为 `[REDACTED:<kind>]` 并标记 `redacted: true`，CLI 收到告警。
+- daemon 启动时清空 `API_KEY` 等凭证变量，不读取 `auth.json`，不加载项目配置，不执行仓库代码。
+- CLI 发送前与 daemon 落盘前各做一次脱敏；命中常见 API Key / token 模式时替换为 `[REDACTED:<kind>]` 并标记 `redacted: true`，CLI 收到告警。
 - 沙箱默认把 `~/.codingx`、`session.dir` 与 sessiond 实际 socket 目录列为不可读，工具子进程也拿不到 `CODINGX_SESSIOND_SOCKET`，避免模型诱导工具读取历史或直接操作 socket。
 - daemon 日志只记录连接、租约、append 的元数据，不记录 prompt、工具输出与文件内容。
 - 资源上限：最多 64 个并发连接；单帧 8 MiB、单事件 1 MiB；订阅缓冲 1000 条；超限断开而不是拖垮 daemon。

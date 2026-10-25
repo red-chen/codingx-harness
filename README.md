@@ -55,10 +55,12 @@ npx codingx --continue
 npx codingx sessions list
 ```
 
-配置模型凭证：
+配置模型凭证与端点：
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+export API_KEY=...
+# 如使用自定义兼容端点，可设置 ENDPOINT
+export ENDPOINT=https://api.example.com
 # 或运行 codingx login，凭证写入 ~/.codingx/auth.json
 ```
 
@@ -98,7 +100,7 @@ codingx-harness/
 │   ├── cli/                # 参数解析、子命令、退出码
 │   ├── tui/                # Terminal、cell buffer、布局、widgets、输入、overlay
 │   ├── agent/              # 主循环、turn 编排、上下文组装
-│   ├── providers/          # 模型适配（Anthropic / OpenAI 兼容）
+│   ├── providers/          # 模型适配（原生协议 / 兼容端点）
 │   ├── tools/              # 工具实现与注册表
 │   ├── policy/             # 审批策略、命令判定
 │   ├── sandbox/            # 平台沙箱适配（seatbelt / landlock）

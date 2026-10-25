@@ -103,7 +103,7 @@ export interface SandboxPolicy {
 
 ### 环境变量
 
-子进程默认只继承白名单内的变量（`PATH`、`HOME`、`LANG`、`TERM` 等）。`ANTHROPIC_API_KEY` 之类的凭证**不传给子进程**——否则一条 `env` 命令就能把密钥写进 rollout 和模型上下文。
+子进程默认只继承白名单内的变量（`PATH`、`HOME`、`LANG`、`TERM` 等）。`API_KEY` 之类的凭证**不传给子进程**——否则一条 `env` 命令就能把密钥写进 rollout 和模型上下文。
 
 ## Session Manager
 
@@ -145,7 +145,7 @@ TUI 会把模型输出、工具输出、用户输入与粘贴内容直接画到�
 
 - `codingx login` 走 OAuth 流程，token 存 `~/.codingx/auth.json`，权限 `0600`
 - 也支持从环境变量读取 API Key（CI 场景）；密钥不写入 `config.toml`
-- 凭证永不写入 rollout 文件；CLI 发送前与 sessiond 落盘前各做一次已知模式（`sk-`、`ghp_`、AWS key 格式）的脱敏扫描
+- 凭证永不写入 rollout 文件；CLI 发送前与 sessiond 落盘前各做一次常见凭证模式的脱敏扫描
 
 ## 审计
 
