@@ -8,7 +8,7 @@
 ├──────────────────────────────────────────────────────┤
 │  Agent 层  agent loop / turn / context               │  编排：模型 ↔ 工具 ↔ 会话
 ├──────────────────────────────────────────────────────┤
-│  能力层   providers / tools / mcp                    │  模型与工具的适配器
+│  能力层   providers / routing / tools / mcp          │  模型、选路与工具适配
 ├──────────────────────────────────────────────────────┤
 │  执行层   policy / sandbox / exec                    │  审批、隔离、进程管理
 ├──────────────────────────────────────────────────────┤
@@ -16,7 +16,7 @@
 └──────────────────────────────────────────────────────┘
 ```
 
-**依赖方向自上而下，禁止反向依赖。** 上层通过接口调用下层，下层不感知上层的存在。例如 `agent` 只依赖 `Provider` 与 `Tool` 接口，不 import 具体的厂商 SDK 或 TUI 实现——这让 Agent 循环可以在测试里用假 Provider 驱动。
+**依赖方向自上而下，禁止反向依赖。** 上层通过接口调用下层，下层不感知上层的存在。例如 `agent` 只依赖 `ModelClient` 与 `Tool` 接口，不 import 具体的厂商 SDK 或 TUI 实现——这让 Agent 循环可以在测试里用假 Provider 驱动。
 
 `sessiond` 不在这张分层图内：它是独立进程，通过本机 IPC 为 `session/` 提供单写者存储；CLI 默认不再直接写 rollout，只有 `sessiond.enabled = false` 的嵌入式模式例外。见 [session-manager.md](session-manager.md)。
 
@@ -53,11 +53,14 @@
 ```ts
 export type Protocol = 'anthropic-messages' | 'openai-responses';
 
-export interface Provider {
-  readonly id: string;
-  readonly protocol: Protocol;
+export interface ModelClient {
   stream(req: ModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent>;
   countTokens(messages: Message[]): Promise<number>;
+}
+
+export interface Provider extends ModelClient {
+  readonly id: string;
+  readonly protocol: Protocol;
 }
 
 export type ModelEvent =
@@ -67,7 +70,15 @@ export type ModelEvent =
   | { type: 'stop'; reason: 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal' };
 ```
 
-默认实现 Anthropic Messages 协议（原生 tool use + prompt caching）；后续增加 OpenAI Responses 协议，两者都映射到同一套 `ModelEvent`。`Provider.id` 是配置键，可并存多个 Provider；一次 session 只选择一个，不做自动路由或故障转移。Provider 只负责协议转换，不做重试——重试在 Agent 层统一处理，保证行为一致。厂商凭证名不进入配置，统一使用 `API_KEY` 与 `ENDPOINT`。
+Provider 适配器只负责协议转换（Anthropic Messages / OpenAI Responses），把差异映射到同一套 `ModelEvent`；一个适配器不做选路、不做重试。`Provider.id` 是配置键，可并存多个 Provider。厂商凭证名不进入配置，统一使用 `API_KEY` 与 `endpoint`。
+
+### `routing/`
+
+- `ProviderRouter` 实现 `ModelClient`，按 route 选择 target；支持 `failover` / `weighted` / `round-robin`。
+- 维护每个 target 的健康状态与熔断；429 / 5xx / 网络错误触发冷却，恢复走 half-open。
+- **只在首个内容事件前 failover**；`text.delta` / `tool.call` 发出后不再切换，避免重复输出或重复工具调用。
+- 统一拥有 Provider 重试与故障转移预算；Agent 不再包一层 `withRetry`。
+- 默认 `affinity = session`，避免每轮切换 Provider 丢失 prompt cache。见 [provider-routing.md](provider-routing.md)。
 
 ### `tools/`
 
@@ -110,7 +121,7 @@ export type ModelEvent =
 
 ### `config/`
 
-配置来自四层，后者覆盖前者：全局 `~/.codingx/config.toml` → 项目 `.codingx/config.toml` → 环境变量 → 命令行。`[sessiond]` 整段以及 `session.dir` / `retention_days` 只能来自全局配置或环境变量，项目配置不得覆盖。详见 [config.md](config.md)。
+配置来自四层，后者覆盖前者：全局 `~/.codingx/config.toml` → 项目 `.codingx/config.toml` → 环境变量 → 命令行。`[sessiond]` 整段以及 `session.dir` / `retention_days` 只能来自全局配置或环境变量，项目配置不得覆盖。`[provider.<id>]` 含端点与凭证，也只允许全局配置；项目配置只能定义/选择 routes。详见 [config.md](config.md)。
 
 ## 一次 Turn 的数据流
 
@@ -121,7 +132,7 @@ export type ModelEvent =
 context.assemble()          # 系统提示 + 历史 + 用户输入 + 工具定义
    │
    ▼
-provider.stream()           # SSE 流式返回
+router.stream()             # 选路 + 协议适配，SSE 流式返回
    │  ├─ text.delta ──────► tui 增量渲染
    │  └─ tool.call ───────► 收集待执行调用
    ▼
@@ -158,6 +169,8 @@ stop: end_turn              # 本轮结束，等待下一次用户输入
 | 与 sessiond 断开 | 中止当前 turn，不本地续写；重连后按 `seq` 回放，会话标记 `interrupted` |
 | 会话被其他 CLI 占用 | 返回 `SESSION_BUSY`，提示 `sessions show/watch` 或空闲时 `--takeover` |
 | sessiond 不可用 | 自动拉起；仍失败则报错退出，不回退到隐式双写 |
+| 无健康 Provider | 返回 `NO_HEALTHY_PROVIDER`，不无限重试 |
+| 内容已发出后 Provider 失败 | 中止当前 turn，不跨 Provider 重放 |
 | 未捕获异常 | 写入 rollout 后退出，退出码 1 |
 
 ## 可测试性
@@ -166,4 +179,5 @@ stop: end_turn              # 本轮结束，等待下一次用户输入
 - 沙箱与审批层可替换为空实现（`--yolo` 仅用于测试环境），保证 CI 无需交互
 - Terminal 的 cell buffer、diff、输入解析与布局做纯单测；PTY + `@xterm/headless` 覆盖 alt screen、resize 与 paste
 - TUI 状态机与 widget 渲染可脱离终端，直接对 cell buffer 做 golden 帧
+- ProviderRouter 用假 Provider 覆盖策略、熔断、half-open、首包前/后 failover 与并发选路
 - sessiond 用临时 `CODINGX_HOME` 与脚本化客户端覆盖协议、租约、崩溃恢复与多客户端并发

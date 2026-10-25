@@ -10,7 +10,7 @@
 4. 全局配置 `~/.codingx/config.toml`
 5. 内置默认值
 
-项目配置只允许覆盖**行为类**设置（模型、审批、工具开关、MCP、联网），不允许覆盖凭证——避免从远程仓库克隆来的项目配置窃取本地密钥。凭证只从 `codingx login` 的 `auth.json` 或环境变量读取，不写入 `config.toml`。整个 `[sessiond]` 段与 `session.dir` / `retention_days` 是例外：只允许来自全局配置或环境变量，项目配置不得覆盖。
+项目配置只允许覆盖**行为类**设置（模型、审批、工具开关、MCP、联网），不允许覆盖凭证——避免从远程仓库克隆来的项目配置窃取本地密钥。凭证只从 `codingx login` 的 `auth.json` 或环境变量读取，不写入 `config.toml`。整个 `[sessiond]` 段与 `session.dir` / `retention_days` 是例外：只允许来自全局配置或环境变量，项目配置不得覆盖。`[provider.<id>]` 含端点与凭证，也只允许全局配置；项目配置可以定义/选择 routes，但只能引用全局 provider id。
 
 ## 完整示例
 
@@ -18,8 +18,7 @@
 # ~/.codingx/config.toml
 
 [model]
-provider = "primary"
-name = "model-name"
+route = "default"            # 选择 route；也可用 --route / CODINGX_ROUTE
 max_output_tokens = 8192
 temperature = 0
 # 上下文窗口上限，用于触发压缩；留空则按模型默认值
@@ -31,16 +30,33 @@ max_steps = 64               # 单 turn 最多模型往返次数，避免无进�
 [provider.primary]
 # 默认协议；后续可切 openai-responses
 protocol = "anthropic-messages"
-# 通用的 ENDPOINT 与 API_KEY；也可用 ENDPOINT / API_KEY 环境变量覆盖
-# 凭证优先从 `codingx login` 的 auth.json 读取
+# 通用的 ENDPOINT 与 API_KEY；凭证优先从 `codingx login` 的 auth.json 读取
 endpoint = "https://api.example.com"
 api_key_env = "API_KEY"
 
-# 可按 id 配置多个 Provider；一次会话只激活一个
-# [provider.secondary]
-# protocol = "openai-responses"
-# endpoint = "https://api.example.com"
-# api_key_env = "SECONDARY_API_KEY"
+# OpenAI Responses 在 M4 加入；在此之前可只保留 primary，并删除 secondary target
+[provider.secondary]
+protocol = "openai-responses"
+endpoint = "https://api.example.com"
+api_key_env = "SECONDARY_API_KEY"
+
+[routes.default]
+strategy = "weighted"        # failover | weighted | round-robin
+affinity = "session"         # session | turn | none
+max_attempts = 3
+failure_threshold = 3
+cooldown_seconds = 30
+
+[[routes.default.targets]]
+provider = "primary"
+model = "model-name"
+weight = 70
+
+# M4 后启用
+[[routes.default.targets]]
+provider = "secondary"
+model = "model-name-2"
+weight = 30
 
 [approval]
 mode = "on-request"          # on-request | never | always-ask
@@ -101,15 +117,20 @@ servers = []
 
 `web_fetch` 仅在 `web.enabled = true` 时注册；请求只允许 https，域名必须命中 `allowed_domains`，重定向目标同样校验，解析到私网 / 回环地址的域名一律拒绝。
 
-`provider.<id>.protocol` 默认 `anthropic-messages`，后续支持 `openai-responses`；协议只决定 wire 格式，`ENDPOINT` 与 `API_KEY` 保持通用配置。
+`provider.<id>.protocol` 默认 `anthropic-messages`，后续支持 `openai-responses`；协议只决定 wire 格式，`endpoint` 与 `api_key_env` 保持通用配置。
 
-## 多 Provider
+## Provider 路由
 
-`[provider.<id>]` 是按 id 索引的表，可以配置多个 Provider（如 `primary`、`secondary`、`local`）。每个 Provider 有独立的 `protocol`、`endpoint`、`api_key_env`；但一次会话只激活一个，不做自动路由或故障转移。
+`[provider.<id>]` 是按 id 索引的表，可以配置多个 Provider；`[routes.<name>]` 把 targets（provider + model）组织成可选择的策略。`[model] route` 选择默认 route，`--route` / `CODINGX_ROUTE` 可覆盖。
 
-选择顺序：`--provider` > `CODINGX_PROVIDER` > `[model] provider`。`[model] name` 对应当前选中的 Provider；切换 Provider 时用 `--model` 指定该 Provider 的模型名，不做自动映射。
+- `failover`：按 targets 顺序切换
+- `weighted`：按权重分摊，默认 `affinity = session` 保持 prompt cache
+- `round-robin`：轮转
+- 所有策略都支持在“首个内容事件之前”的故障转移；内容发出后不重放
 
-M1 只实现 Anthropic Messages；OpenAI Responses 在 M4 加入，届时通过 `protocol = "openai-responses"` 显式选择，不改变默认值。
+`--provider` 在 route 内固定 Provider id，`--model` 覆盖目标 model；把候选收窄到单个目标时不再跨 Provider failover。完整语义见 [provider-routing.md](provider-routing.md)。
+
+M1 只实现 Anthropic Messages；OpenAI Responses 在 M4 加入，届时 secondary target 才可用。`[provider.<id>]` 含端点与凭证，只允许全局配置；项目配置可以定义/选择 routes，但只能引用全局 provider id。
 
 ## 项目配置
 
@@ -117,7 +138,14 @@ M1 只实现 Anthropic Messages；OpenAI Responses 在 M4 加入，届时通过 
 
 ```toml
 [model]
-name = "model-name-small"    # 团队统一用更便宜的模型
+route = "cheap"
+
+[routes.cheap]
+strategy = "failover"
+
+[[routes.cheap.targets]]
+provider = "primary"
+model = "model-name-small"
 
 [approval.allow]
 exec = ["pnpm test", "pnpm build"]
@@ -128,20 +156,20 @@ command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
 ```
 
-该文件应提交到版本库。凭证与个人偏好留在全局配置。
+该文件应提交到版本库。provider 定义、凭证与个人偏好留在全局配置；routes 可以提交，但 target 只能引用全局 provider id。
 
 ## 环境变量
 
 | 变量 | 作用 |
 | --- | --- |
-| `CODINGX_MODEL` | 覆盖当前 Provider 的模型名 |
-| `CODINGX_PROVIDER` | 覆盖 Provider id |
+| `CODINGX_ROUTE` | 覆盖 route 名 |
+| `CODINGX_MODEL` | 覆盖目标 model |
+| `CODINGX_PROVIDER` | 在 route 内固定 Provider id |
 | `CODINGX_APPROVAL` | 覆盖审批模式 |
 | `CODINGX_HOME` | 覆盖 `~/.codingx` 目录 |
 | `CODINGX_SESSIOND` | 设为 `0` 关闭 sessiond（退回进程内存储，无跨 CLI） |
 | `CODINGX_SESSIOND_SOCKET` | 覆盖 sessiond socket 路径 |
 | `CODINGX_LOG` | 设为 `debug` 输出详细日志到 stderr |
-| `ENDPOINT` | 覆盖 Provider 端点 |
 | `API_KEY` | 通用 API Key（`api_key_env` 指向的变量名） |
 
 ## AGENTS.md
@@ -191,8 +219,9 @@ rollout 文件为 append-only JSONL，每行一个事件，默认由 sessiond �
 ```bash
 codingx [options] [prompt]
 
-  -m, --model <name>        指定模型
-  -p, --provider <id>       指定 Provider id
+      --route <name>        选择 route（默认取 [model] route）
+  -m, --model <name>        覆盖目标模型名
+  -p, --provider <id>       在 route 内固定 Provider id
   -C, --cd <path>           指定工作目录
       --full-auto           跳过审批询问（沙箱仍生效）
       --yolo                关闭审批与沙箱（危险）

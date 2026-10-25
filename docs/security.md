@@ -120,6 +120,19 @@ sessiond 是本地受信进程，但不因此放宽边界：
 
 协议、权限与资源上限见 [session-manager.md](session-manager.md)。
 
+## Provider 路由
+
+自动 failover 会把同一份对话发给另一个 Provider，因此路由必须显式配置：
+
+- route 的 targets 必须显式列出；禁止隐式 fallback 到未配置的 Provider 或自动发现 Provider。
+- `[provider.<id>]` 的端点与凭证只允许全局配置；项目配置只能定义/选择 routes，且 target 只能引用全局 provider id。
+- 每个 target 使用自己的 `api_key_env`，router 不跨 Provider 复用密钥，也不把密钥写入日志或 rollout。
+- `provider.selected` / `provider.failover` / `provider.health` 只记录 route、provider、model、错误类别与时间，不记录 prompt 或响应正文。
+- 所有 target 不健康时返回 `NO_HEALTHY_PROVIDER`，不无限重试或静默切到未配置的端点。
+- 首内容事件之后禁止 failover，避免重复输出与重复工具调用。
+
+完整语义见 [provider-routing.md](provider-routing.md)。
+
 ## TUI 渲染边界
 
 TUI 会把模型输出、工具输出、用户输入与粘贴内容直接画到终端；这些文本都可能包含 ANSI / OSC 控制序列。渲染规则见 [tui.md](tui.md)：

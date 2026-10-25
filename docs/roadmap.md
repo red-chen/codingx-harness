@@ -6,6 +6,7 @@
 
 - [x] 架构、Agent 循环、工具、安全、配置、会话管理、TUI 文档
 - [x] 确定默认 Provider 协议：Anthropic Messages；预留 OpenAI Responses；模型名由配置提供
+- [x] 确定路由模型：route + target，支持 failover / weighted / round-robin
 - [x] 确定沙箱在 macOS / Linux 上的降级行为：Seatbelt / Landlock，内核能力缺失时降级并告警，其他平台禁用 `--full-auto`
 - [x] 确定 sessiond 边界：单写者会话存储 + 跨 CLI 查询，不执行模型与工具
 - [x] 确定 TUI 选型：Node + 自研 Terminal；Rust 仅作为性能兜底
@@ -18,6 +19,7 @@
 
 - 项目脚手架：TypeScript strict、ESM、tsup 构建、Vitest、`bin/codingx.js`
 - `Provider` 接口 + Anthropic Messages 实现（流式、tool use、prompt caching）
+- `ProviderRouter` 单目标实现，为后续多 Provider 路由留接口
 - Agent 循环（单 turn、串行工具、无压缩）
 - 工具：`read_file`、`list_dir`、`edit_file`、`shell`
 - 纯文本输出（`--plain`），无 TUI
@@ -74,6 +76,7 @@
 - 并行只读工具执行
 - prompt cache 命中率优化（稳定前缀、工具定义顺序）
 - 用量与成本统计
+- Provider 路由：failover / weighted / round-robin、熔断、健康检查、会话粘性
 
 ## M6 · 分发
 

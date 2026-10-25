@@ -23,7 +23,7 @@ async function runTurn(input: string, ctx: TurnContext): Promise<TurnResult> {
 
   for (let step = 0; step < ctx.limits.maxSteps; step++) {
     const request = await buildRequest(ctx);       // 含压缩决策
-    const events = ctx.provider.stream(request, ctx.signal);
+    const events = ctx.router.stream(request, ctx.signal);
 
     const text: string[] = [];
     const calls: ToolCall[] = [];
@@ -106,24 +106,17 @@ async function executeTools(calls: ToolCall[], ctx: TurnContext): Promise<ToolRe
 
 `runOne` 内部顺序：查表 → 参数校验（zod）→ 审批 → 沙箱执行 → 结果裁剪 → 追加事件到 sessiond。任何一步失败都转换成 `is_error: true` 的 `tool_result` 回填，让模型自己看到错误并纠正，而不是让整个 turn 崩掉。
 
-## 模型请求的重试
+## 路由、重试与故障转移
 
-```ts
-async function withRetry<T>(fn: () => Promise<T>, signal: AbortSignal): Promise<T> {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try { return await fn(); }
-    catch (e) {
-      if (signal.aborted || !isRetryable(e) || attempt === 2) throw e;
-      await sleep(backoff(attempt), signal);   // 500ms → 2s
-    }
-  }
-  throw new Error('unreachable');
-}
-```
+Provider 的选择、重试、failover 与熔断统一由 `ProviderRouter` 负责；Agent 不再包 `withRetry`，避免两层重试叠加。
 
-3 次尝试之间最多退避两次（500ms、2s），第三次失败直接抛出。
+- `max_attempts` 是单次模型请求的总预算，不是每个 Provider 各重试 3 次。
+- **只在首个内容事件前 failover**：`text.delta` / `tool.call` 一旦发出，就不再切换 Provider；失败直接中止当前 turn。
+- 网络错误、408、429、5xx 可重试；参数错误、鉴权失败、内容策略拒绝不重试。
+- 429 的 `Retry-After` 与连续失败达到阈值的 target 进入冷却；全部不健康返回 `NO_HEALTHY_PROVIDER`。
+- 默认 `affinity = session`，同一会话尽量不切换 Provider，保住 prompt cache。
 
-`isRetryable`：网络错误、5xx、429、连接重置。不重试 4xx 中的参数错误与鉴权错误——重试没有意义，直接暴露给用户。
+完整策略、健康检查与审计字段见 [provider-routing.md](provider-routing.md)。
 
 ## 用量与成本
 

@@ -59,8 +59,7 @@ npx codingx sessions list
 
 ```bash
 export API_KEY=...
-# 如使用自定义兼容端点，可设置 ENDPOINT
-export ENDPOINT=https://api.example.com
+# 端点写在 config.toml 的 [provider.<id>]
 # 或运行 codingx login，凭证写入 ~/.codingx/auth.json
 ```
 
@@ -71,6 +70,7 @@ export ENDPOINT=https://api.example.com
 | [docs/architecture.md](docs/architecture.md) | 分层架构、模块职责、核心接口、Turn 数据流 |
 | [docs/tui.md](docs/tui.md) | 自研 Terminal、cell buffer、布局、流式渲染、键位与 overlay |
 | [docs/session-manager.md](docs/session-manager.md) | sessiond 进程模型、IPC 协议、写租约、跨 CLI 查询 |
+| [docs/provider-routing.md](docs/provider-routing.md) | Provider 路由、failover、负载均衡、熔断与粘性 |
 | [docs/agent-loop.md](docs/agent-loop.md) | Turn 生命周期、上下文管理、压缩与错误恢复 |
 | [docs/tools.md](docs/tools.md) | 工具清单、工具接口约定、审批粒度 |
 | [docs/security.md](docs/security.md) | 审批策略、沙箱模式、网络与命令白名单 |
@@ -84,6 +84,7 @@ export ENDPOINT=https://api.example.com
 | 运行时 | Node.js ≥ 20（ESM） | 原生 fetch、AbortController、稳定的 async 语义 |
 | 语言 | TypeScript strict | 工具入参、事件类型、Provider 接口都靠类型收敛 |
 | Provider 协议 | Anthropic Messages（默认）/ OpenAI Responses（后续） | 统一 ModelEvent，协议差异收敛在 providers/ |
+| Provider 路由 | route + target，failover / weighted / round-robin | 会话粘性、熔断与健康检查 |
 | TUI | 自研 Terminal（TypeScript） | 自己管理 cell buffer、ANSI 差分、输入与 alt screen，不依赖 Ink |
 | CLI 解析 | commander | 子命令 + 选项足够，生态成熟 |
 | 会话进程 | sessiond + Unix socket / 命名管道（JSON-RPC 2.0） | 单写者落盘、跨 CLI 查询，不暴露 TCP 端口 |
@@ -102,6 +103,7 @@ codingx-harness/
 │   ├── tui/                # Terminal、cell buffer、布局、widgets、输入、overlay
 │   ├── agent/              # 主循环、turn 编排、上下文组装
 │   ├── providers/          # 模型适配（Anthropic Messages / OpenAI Responses）
+│   ├── routing/            # route/target 选择、熔断、failover、负载均衡
 │   ├── tools/              # 工具实现与注册表
 │   ├── policy/             # 审批策略、命令判定
 │   ├── sandbox/            # 平台沙箱适配（seatbelt / landlock）
