@@ -29,6 +29,11 @@ async function resolveCwd(input: string | undefined): Promise<string> {
   return cwd;
 }
 
+/** Commander collector for repeatable --add-dir values. */
+function collectDir(value: string, previous: string[] | undefined): string[] {
+  return [...(previous ?? []), value];
+}
+
 /** Parse argv and execute one command. Returns the process exit code. */
 export async function runCli(argv: string[], io: Partial<CliIo> = {}): Promise<number> {
   const stdout = io.stdout ?? process.stdout;
@@ -42,6 +47,11 @@ export async function runCli(argv: string[], io: Partial<CliIo> = {}): Promise<n
     .description('Terminal AI coding agent')
     .version(VERSION, '-V, --version')
     .option('-C, --cd <path>', 'run as if started in this directory')
+    .option(
+      '--add-dir <dir>',
+      'additional directories that should be writable alongside the primary workspace (repeatable)',
+      collectDir,
+    )
     .option('--route <name>', 'select a configured provider route')
     .option('-m, --model <name>', 'override the target model')
     .option('-p, --provider <id>', 'pin a provider inside the selected route')
@@ -59,9 +69,11 @@ export async function runCli(argv: string[], io: Partial<CliIo> = {}): Promise<n
       ).length;
       if (resumeModes > 1) throw new ConfigError('Use only one of --continue, --resume or --fork.');
       const cwd = await resolveCwd(options.cd as string | undefined);
+      const addDirs = (options.addDir as string[] | undefined) ?? [];
       const initialPrompt = promptParts?.join(' ');
       exitCode = await runInteractive({
         cwd,
+        ...(addDirs.length > 0 ? { addDirs } : {}),
         ...(initialPrompt ? { initialPrompt } : {}),
         json: Boolean(options.json),
         ...(options.continue ? { continueSession: true } : {}),
@@ -98,9 +110,11 @@ export async function runCli(argv: string[], io: Partial<CliIo> = {}): Promise<n
         throw new ConfigError('--continue, --resume and --fork are only supported in interactive mode.');
       }
       const cwd = await resolveCwd(options.cd as string | undefined);
+      const addDirs = (options.addDir as string[] | undefined) ?? [];
       exitCode = await runExec({
         prompt: promptParts.join(' '),
         cwd,
+        ...(addDirs.length > 0 ? { addDirs } : {}),
         json: Boolean(options.json),
         ...(options.route ? { route: options.route as string } : {}),
         ...(options.model ? { model: options.model as string } : {}),

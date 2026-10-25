@@ -84,7 +84,7 @@ allow_custom = false
 max_output_chars = 30000
 
 [web]
-enabled = false              # web_fetch 默认关闭
+enabled = false              # WebFetch 默认关闭
 allowed_domains = []         # 仅 https；为空表示不允许任何域名
 
 [session]
@@ -109,13 +109,15 @@ servers = []
 # env = {}
 ```
 
+`sandbox.writable_roots` / `readable_roots` 预留给 M3 的 OS 级沙箱；当前构建中，文件与 Shell 工具的应用层可写根由启动时的 `--add-dir <DIR>` 显式追加（可重复）。
+
 `approval.mode` 只控制「何时询问」，不能突破硬拒绝列表与沙箱；工具自身的 `approval` 声明（`none` / `on-write` / `always`）给出默认粒度：
 
 - `on-request`：按工具声明与规则，在需要时询问（默认）
 - `never`：从不询问；未显式允许的非只读操作一律拒绝，适合 CI 与 `exec`
 - `always-ask`：任何工具调用都询问，包括只读工具
 
-`web_fetch` 仅在 `web.enabled = true` 时注册；请求只允许 https，域名必须命中 `allowed_domains`，重定向目标同样校验，解析到私网 / 回环地址的域名一律拒绝。
+`WebFetch` 仅在 `web.enabled = true` 时注册；请求只允许 https，域名必须命中 `allowed_domains`，重定向目标同样校验，解析到私网 / 回环地址的域名一律拒绝。
 
 `provider.<id>.protocol` 默认 `anthropic-messages`，后续支持 `openai-responses`；协议只决定 wire 格式，`endpoint` 与 `api_key_env` 保持通用配置。
 

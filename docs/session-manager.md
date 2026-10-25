@@ -36,7 +36,7 @@
 - 帧格式：NDJSON，每行一个 JSON-RPC 2.0 消息；单帧上限 8 MiB，单事件上限 1 MiB。
 - 握手：客户端先发 `initialize`，带上 `{ protocol: 1, client: { name, version, pid } }`；daemon 返回 `{ protocol, version, pid, startedAt, sessionCount }`。协议不匹配时返回 `PROTOCOL_MISMATCH`，客户端提示 `codingx sessiond restart`，不做静默降级。
 - 认证：连接建立时校验对端 UID（Linux `SO_PEERCRED`、macOS `LOCAL_PEERCRED`）；Windows 由命名管道 ACL 限制当前用户；Unix 下连接前 lstat socket，要求属主为当前用户且权限为 `0600`。
-- 客户端超时：普通请求 10s；`session.append` 30s；超时按可重试处理，事件带 `eventId` 保证幂等。
+- 客户端超时：普通请求 10s；`session.append` / `session.clear` 30s；超时按可重试处理，事件带 `eventId` 保证幂等。
 
 ### 方法
 
@@ -51,13 +51,14 @@
 | `session.detach` | 主动释放；连接关闭时自动等价执行。进行中的 turn 应先写 `turn.aborted`，否则按断连处理 |
 | `session.heartbeat` | 续租；写租约每 5s 一次，TTL 15s |
 | `session.append` | 追加一批事件，daemon 分配 `seq`、脱敏、fsync、广播 |
+| `session.clear` | 需要写租约；将 JSONL 重写为新的 `session.start` 头（`seq` 从 1 重新开始），会话回到 `idle`；仅 `idle` / `interrupted` 可清理，广播 `session.cleared` |
 | `session.replay` | 从 `fromSeq` 读历史事件，分页返回 |
 | `session.subscribe` | 从 `fromSeq` 订阅实时事件与状态变化 |
 | `session.fork` | 在指定 `seq` 复制为新会话（`requestId` 幂等），写新的 `session.start` 头并向当前连接授予写租约；仅非 `running` / `awaiting_approval` 会话可 fork |
 | `session.end` | 显式结束会话，写 `session.end`；需要写租约，仅 `idle` / `interrupted` 可结束，结束后拒绝写租约 |
 | `session.prune` | 按保留期清理已结束 / 已中断会话，活动会话永不清理 |
 
-通知由 daemon 主动推送：`session.event`（新事件）、`session.status`（状态变化）、`session.lease_revoked`（租约被接管）、`session.lagged`（订阅积压断开）。
+通知由 daemon 主动推送：`session.event`（新事件）、`session.status`（状态变化）、`session.cleared`（历史被重置，`lastSeq` 回到 1）、`session.lease_revoked`（租约被接管）、`session.lagged`（订阅积压断开）。
 
 幂等：`session.create` / `session.fork` 带客户端 `requestId`，写入 `session.start` 头并随索引重建，重复请求返回同一个会话；若原连接已断，响应不带租约，客户端需 `attach`。`session.append` 用 `eventId` 去重，去重缓存从每个会话尾部事件重建，daemon 重启后仍能吸收重试。
 
@@ -70,6 +71,7 @@
 
 - 新会话 ID 为 UUID v4，例如 `550e8400-e29b-41d4-a716-446655440000`；命令接受唯一前缀。旧的 12 位 base36 ID 仍可读取。
 - 文件名为 `<timestamp>_<id>.jsonl`，时间戳中的 `:` 替换为 `-`；首行是 daemon 写入的 `session.start`。
+- `/clear`（`session.clear`）把 JSONL 原地重写为只含一个新 `session.start` 头：保留会话 ID、cwd、model 与 `createdAt`，`seq` 回到 1，旧事件与 `eventId` 去重状态全部丢弃；随后的事件从 `seq: 2` 继续。
 - `sessions/index.json` 是元数据缓存，启动时按文件头与尾部事件校验，损坏或缺失时从 JSONL 重建；JSONL 永远是事实来源。
 - 旧版本没有 `session.start` 头的文件仍可读：daemon 用文件名与首个事件补全内存元数据，不修改旧文件，后续事件继续追加。
 - `ended` 会话不可再 resume，只能 `--fork` 出新的会话。

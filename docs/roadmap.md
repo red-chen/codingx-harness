@@ -21,22 +21,22 @@
 - [x] `Provider` 接口 + Anthropic Messages 实现（流式、tool use、prompt caching）
 - [x] `ProviderRouter` 单目标实现，为后续多 Provider 路由留接口
 - [x] Agent 循环（单 turn、串行工具、无压缩）
-- [x] 工具：`read_file`、`list_dir`、`edit_file`、`shell`
+- [x] 工具：`ReadFile`、`ListDir`、`EditFile`、`Shell`
 - [x] 纯文本输出（`--plain`），无 TUI
 - [x] `SessionStore` 接口 + 进程内实现，rollout 写入 JSONL（单写者）
 - [x] 额外交付：逐行交互模式、`--json` 事件流、`codingx log` 离线回放
 
 **验收**：`codingx exec "把 src/util.ts 里的 foo 重命名为 bar 并跑测试"` 能端到端完成，rollout 可回放。
 
-自动化验收已通过：本地假 Anthropic SSE 服务驱动 read_file → edit_file → shell → 最终回答，验证文件修改、退出码、JSON 事件流与 rollout 回放。真实 Provider 需要配置 API Key 后手工冒烟，未纳入 CI。
+自动化验收已通过：本地假 Anthropic SSE 服务驱动 ReadFile → EditFile → Shell → 最终回答，验证文件修改、退出码、JSON 事件流与 rollout 回放。真实 Provider 需要配置 API Key 后手工冒烟，未纳入 CI。
 
 **M1 实现偏差**（接口已留出，后续里程碑补齐）：
 
 - Sessiond 未实现，M1 使用带文件锁的进程内 JSONL 存储；`sessiond.enabled = true` 会告警并退回嵌入式存储。
 - 多目标路由未实现；M1 要求 route 收敛到单个 target，多目标配置会明确报错而不是静默忽略。
-- 审批与 OS 沙箱属于 M3；M1 的 `shell` 以当前用户权限运行，仅做 workspace 路径约束。
+- 审批与 OS 沙箱属于 M3；M1 的 `Shell` 以当前用户权限运行，仅做 workspace 路径约束。
 - TUI、上下文压缩、resume/fork 属于 M2；M1 提供逐行纯文本与 `codingx log`。
-- MCP、web_fetch、自定义工具、OpenAI Responses 属于 M4；相关配置会被忽略并告警。
+- MCP、WebFetch、自定义工具、OpenAI Responses 属于 M4；相关配置会被忽略并告警。
 
 ## M2 · 交互体验（核心与验收完成；mention/session picker/表格 holdback/背压列为 M2.1）
 
@@ -45,13 +45,13 @@
 - [x] 自研 Terminal：alt screen / raw mode、cell buffer、ANSI 差分、输入解析、resize、异常恢复
 - [x] 布局与 widgets：welcome、transcript viewport、composer、status/footer、固定键位（CLI 接入在 E6）
 - [ ] 消息单元：user/assistant、exec、diff、plan、notice；流式 markdown/diff 已完成，表格 holdback 与 30fps 节流待补
-- [ ] 交互：排队/transcript overlay/slash 补全已完成；mention、审批、session picker 待补
+- [ ] 交互：排队/transcript overlay/slash 补全/`/clear`/`/model`/AskUserQuestion 提问面板已完成；mention、审批、session picker 待补
 - [x] CJK/emoji、宽字符与 80x24 / 120x40 布局（PTY 冒烟通过）
 - [x] 上下文压缩：截断 → 丢弃 → 模型摘要（三级已完成）
 - [x] 会话 resume / fork（sessiond 启用时通过 IPC/租约）
 - [x] sessiond 常驻进程：Unix socket + JSON-RPC、写租约、会话索引、client、自动拉起、空闲退出
 - [x] 跨 CLI 查询：`codingx sessions list/show/watch/prune`
-- [x] 工具：`glob`、`grep`、`write_file`、`apply_patch`、`update_plan`
+- [x] 工具：`Glob`、`Grep`、`WriteFile`、`ApplyPatch`、`UpdatePlan`、`Skill`、`AskUserQuestion`
 - [x] CLI 中断与取消（`Ctrl+C` 首次中断；双击退出；`--continue` 续接）
 - [x] TUI 中断键位（`Esc` / `Ctrl+C`）
 
@@ -75,7 +75,7 @@
 
 - MCP 客户端（stdio + SSE），动态注册外部工具
 - 自定义工具加载（`~/.codingx/tools/`）
-- 联网工具 `web_fetch`（默认关闭，`[web]` 域名白名单 + 仅 https）
+- 联网工具 `WebFetch`（默认关闭，`[web]` 域名白名单 + 仅 https）
 - 第二个 Provider：OpenAI Responses 协议
 - [x] `AGENTS.md` 多层级加载（M1 已提前实现）
 - 配置热重载（仅限非会话中）
@@ -83,8 +83,8 @@
 
 ## M5 · 进阶能力
 
-- 子 Agent（`task` 工具，独立上下文）
-- `shell_interactive` 长驻进程管理
+- 子 Agent（`Task` 工具，独立上下文）
+- `ShellInteractive` 长驻进程管理
 - 并行只读工具执行
 - prompt cache 命中率优化（稳定前缀、工具定义顺序）
 - 用量与成本统计

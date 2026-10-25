@@ -98,6 +98,15 @@ class RemoteSessionHandle implements SessionHandle {
     return result.events;
   }
 
+  async clear(): Promise<void> {
+    if (!this.writable) throw new SessionError('Session ' + this.id + ' is read-only.');
+    if (this.ended || this.closed) throw new SessionError('Session ' + this.id + ' has ended or is closed.');
+    await this.client.clear({
+      sessionId: this.id,
+      ...(this.leaseId ? { leaseId: this.leaseId } : {}),
+    });
+  }
+
   async end(reason = 'completed'): Promise<RolloutEvent> {
     if (!this.writable) throw new SessionError('Session ' + this.id + ' is read-only.');
     if (this.ended) throw new SessionError('Session ' + this.id + ' has already ended.');

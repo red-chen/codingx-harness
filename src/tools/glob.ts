@@ -24,7 +24,7 @@ const schema = z.object({
     .min(1)
     .optional()
     .default('.')
-    .describe('Directory to search, relative to the workspace root (or absolute inside it). Defaults to the workspace root.'),
+    .describe('Directory to search, relative to the workspace root (or absolute inside an allowed root). Defaults to the workspace root.'),
 });
 
 type IgnoreMatcher = ReturnType<typeof ignore>;
@@ -33,7 +33,7 @@ function comparePaths(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-/** Root .gitignore semantics, matching list_dir; missing files are fine. */
+/** Root .gitignore semantics, matching ListDir; missing files are fine. */
 async function loadGitignore(root: string): Promise<IgnoreMatcher | undefined> {
   try {
     const text = await readFile(path.join(root, '.gitignore'), 'utf8');
@@ -45,10 +45,10 @@ async function loadGitignore(root: string): Promise<IgnoreMatcher | undefined> {
 }
 
 export const globTool: ToolDef<typeof schema> = {
-  name: 'glob',
+  name: 'Glob',
   description:
-    'Find files by file-name/path pattern inside the workspace, for example "**/*.ts" or "src/**/test-*.js". ' +
-    'Use this to discover file names and locations; use grep instead to search file contents. ' +
+    'Find files by file-name/path pattern inside the workspace or an --add-dir root, for example "**/*.ts" or "src/**/test-*.js". ' +
+    'Use this to discover file names and locations; use Grep instead to search file contents. ' +
     'Results are one workspace-relative path per line, sorted by modification time (newest first) with path as the tie-breaker. ' +
     'The root .gitignore and .git/node_modules/dist/build/coverage directories are ignored. ' +
     'Results are capped at 500 files with an explicit truncation footer; narrow the pattern or path when truncated.',
@@ -62,7 +62,7 @@ export const globTool: ToolDef<typeof schema> = {
     const resolved = await resolveWorkspacePath(ctx, requested, { mustExist: true });
     const info = await stat(resolved.absolute);
     if (!info.isDirectory()) {
-      throw new ToolError('Not a directory: ' + requested + '. glob only searches directories; use read_file for a file.');
+      throw new ToolError('Not a directory: ' + requested + '. Glob only searches directories; use ReadFile for a file.');
     }
 
     const entries = await fg(input.pattern, {
@@ -103,7 +103,9 @@ export const globTool: ToolDef<typeof schema> = {
         }
       }
       candidates.push({
-        path: path.relative(resolved.root, canonical).split(path.sep).join('/'),
+        // Reported paths stay relative to the primary workspace so the model
+        // can pass them straight back into ReadFile/EditFile.
+        path: path.relative(resolved.workspaceRoot, canonical).split(path.sep).join('/'),
         mtimeMs,
       });
     }
@@ -119,7 +121,7 @@ export const globTool: ToolDef<typeof schema> = {
       return {
         content:
           'No files matched "' + input.pattern + '" in ' + where + '. ' +
-          'glob matches file names only (use grep for file contents). ' +
+          'Glob matches file names only (use Grep for file contents). ' +
           'The root .gitignore and .git/node_modules/dist/build/coverage are excluded.',
         meta,
       };

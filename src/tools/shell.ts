@@ -9,7 +9,10 @@ const MAX_TIMEOUT_MS = 10 * 60 * 1000;
 
 const schema = z.object({
   command: z.string().min(1).describe('Shell command to run via bash -lc (cmd.exe on Windows).'),
-  cwd: z.string().optional().describe('Working directory inside the workspace. Defaults to the workspace root.'),
+  cwd: z
+    .string()
+    .optional()
+    .describe('Working directory inside the workspace or an --add-dir root. Defaults to the workspace root.'),
   timeout_ms: z
     .number()
     .int()
@@ -25,10 +28,10 @@ function section(label: string, text: string): string {
 }
 
 export const shellTool: ToolDef<typeof schema> = {
-  name: 'shell',
+  name: 'Shell',
   description:
-    'Run a shell command inside the workspace and return stdout, stderr and the exit code. ' +
-    'Commands run through bash -lc in their own process group; the working directory must stay inside the workspace. ' +
+    'Run a shell command inside the workspace (or an --add-dir root) and return stdout, stderr and the exit code. ' +
+    'Commands run through bash -lc in their own process group; the working directory must stay inside an allowed root. ' +
     'Use this to run tests, builds, linters and git commands. Long output is truncated with an explicit marker. ' +
     'A non-zero exit code is reported as an error result; read the output before deciding what to do next.',
   schema,

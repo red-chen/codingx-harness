@@ -1,19 +1,27 @@
 import { generateTurnId } from '../util/ids.js';
 import {
   abortError,
+  ConfigError,
   describeError,
   isAbortError,
   ProviderError,
   StepLimitError,
 } from '../util/errors.js';
-import type { Message, ModelClient, StopReason, TokenUsage, ToolCall, ToolSchema } from '../providers/types.js';
+import type { Message, ModelClient, ReasoningEffort, StopReason, TokenUsage, ToolCall, ToolSchema } from '../providers/types.js';
 import { assistantMessage, toolResultsMessage } from '../providers/types.js';
 import { estimateToolsTokens } from '../providers/tokens.js';
 import { estimateTokens } from '../util/tokens.js';
 import type { RouterSelection } from '../routing/router.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { ReadFileTracker } from '../tools/read-tracker.js';
-import type { PlanController, PlanStep, ShellToolContext, ToolContext } from '../tools/types.js';
+import type {
+  AskHandler,
+  PlanController,
+  PlanStep,
+  ShellToolContext,
+  SkillToolContext,
+  ToolContext,
+} from '../tools/types.js';
 import type { SessionHandle } from '../session/types.js';
 import { buildModelRequest, mergeConsecutiveUserMessages } from './context.js';
 import { compactMessages, type CompressionOptions, type CompressionResult } from './compression.js';
@@ -23,6 +31,8 @@ import { TurnState } from './turn.js';
 
 export interface AgentModelClient extends ModelClient {
   readonly selection?: RouterSelection;
+  /** Optional live model switch; ProviderRouter implements this. */
+  setModel?(model: string): void;
 }
 
 export type AgentCompressionOptions = Omit<CompressionOptions, 'contextWindow'> & {
@@ -41,11 +51,19 @@ export interface AgentLoopOptions {
   maxSteps: number;
   maxOutputTokens: number;
   temperature?: number;
+  /** Provider reasoning level; absent uses the provider default. */
+  reasoningEffort?: ReasoningEffort;
   sessionId: string;
   cwd: string;
   maxOutputChars: number;
   shell: ShellToolContext;
   readTracker?: ReadFileTracker;
+  /** Extra writable roots from --add-dir, in addition to cwd. */
+  additionalDirs?: readonly string[];
+  /** UI callback for AskUserQuestion; absent in non-interactive runs. */
+  ask?: AskHandler;
+  /** Skills loaded for this session; absent when none are configured. */
+  skills?: SkillToolContext;
   /** Replayed history for --resume / --fork. */
   initialMessages?: readonly Message[];
   /** Plan restored from a resumed rollout. */
@@ -106,6 +124,11 @@ export class AgentLoop {
       readTracker: this.readTracker,
       maxOutputChars: options.maxOutputChars,
       shell: options.shell,
+      ...(options.additionalDirs === undefined || options.additionalDirs.length === 0
+        ? {}
+        : { additionalDirs: options.additionalDirs }),
+      ...(options.ask === undefined ? {} : { ask: options.ask }),
+      ...(options.skills === undefined ? {} : { skills: options.skills }),
     };
   }
 
@@ -115,6 +138,34 @@ export class AgentLoop {
 
   get plan(): readonly PlanStep[] {
     return this.planSteps;
+  }
+
+  /** Drop the in-memory conversation, plan and read-before-write state after a rollout clear. */
+  clearHistory(): void {
+    this.messages.length = 0;
+    this.planSteps = [];
+    this.readTracker.clear();
+  }
+
+  get model(): string {
+    return this.options.model;
+  }
+
+  get reasoningEffort(): ReasoningEffort | undefined {
+    return this.options.reasoningEffort;
+  }
+
+  /** Switch the model for subsequent requests; the router updates in tandem. */
+  setModel(model: string): void {
+    const next = model.trim();
+    if (next.length === 0) throw new ConfigError('Model must not be empty.');
+    this.options.router.setModel?.(next);
+    this.options.model = next;
+  }
+
+  /** Change reasoning effort; undefined restores the provider default. */
+  setReasoningEffort(effort: ReasoningEffort | undefined): void {
+    this.options.reasoningEffort = effort;
   }
 
   async runTurn(input: string, runOptions: RunTurnOptions = {}): Promise<TurnResult> {
@@ -219,6 +270,9 @@ export class AgentLoop {
           tools: this.toolSchemas,
           maxOutputTokens: this.options.maxOutputTokens,
           ...(this.options.temperature === undefined ? {} : { temperature: this.options.temperature }),
+          ...(this.options.reasoningEffort === undefined
+            ? {}
+            : { reasoningEffort: this.options.reasoningEffort }),
           sessionId: this.options.sessionId,
         });
 
@@ -317,7 +371,7 @@ export class AgentLoop {
             result,
             durationMs,
           });
-          if (call.name === 'update_plan' && !result.isError && Array.isArray(result.meta?.plan)) {
+          if (call.name === 'UpdatePlan' && !result.isError && Array.isArray(result.meta?.plan)) {
             await this.options.session.append({
               type: 'plan.updated',
               turnId,

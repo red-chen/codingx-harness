@@ -60,6 +60,12 @@ export function formatEvent(event: RolloutEvent): string {
         '  ' + value(event, 'provider') + '/' + value(event, 'model') +
         ' route=' + value(event, 'route')
       );
+    case 'model.changed':
+      return (
+        head +
+        '  model=' + value(event, 'model') +
+        ' effort=' + (typeof event.reasoningEffort === 'string' ? event.reasoningEffort : 'default')
+      );
     case 'plan.updated': {
       const steps = Array.isArray(event.steps) ? event.steps : [];
       const rendered = steps

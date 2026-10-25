@@ -14,7 +14,7 @@ const schema = z.object({
   path: z
     .string()
     .min(1)
-    .describe('Path of the file to create or overwrite, relative to the workspace root (or absolute inside it). Parent directories are created.'),
+    .describe('Path of the file to create or overwrite, relative to the workspace root (or absolute inside an allowed root). Parent directories are created.'),
   content: z.string().describe('Complete UTF-8 content for the file. This replaces any existing content.'),
 });
 
@@ -31,12 +31,12 @@ async function readLstat(target: string): Promise<Stats | undefined> {
 }
 
 export const writeFileTool: ToolDef<typeof schema> = {
-  name: 'write_file',
+  name: 'WriteFile',
   description:
-    'Create or completely overwrite a UTF-8 text file inside the workspace. Parent directories are created automatically. ' +
-    'Overwriting an existing file requires that file to have been read with read_file in this session first; otherwise the write is refused. ' +
+    'Create or completely overwrite a UTF-8 text file inside the workspace or an --add-dir root. Parent directories are created automatically. ' +
+    'Overwriting an existing file requires that file to have been read with ReadFile in this session first; otherwise the write is refused. ' +
     'Directories, binary/non-UTF-8 files and files larger than 10 MiB are rejected. ' +
-    'Use write_file for new files or full rewrites, and edit_file for targeted replacements in an existing file.',
+    'Use WriteFile for new files or full rewrites, and EditFile for targeted replacements in an existing file.',
   schema,
   parallelSafe: false,
   approval: 'on-write',
@@ -74,7 +74,7 @@ export const writeFileTool: ToolDef<typeof schema> = {
       if (!ctx.readTracker.hasRead(resolved.absolute)) {
         return {
           content:
-            'Refusing to overwrite ' + relative + ' before it has been read. Call read_file on this file first, then retry write_file.',
+            'Refusing to overwrite ' + relative + ' before it has been read. Call ReadFile on this file first, then retry WriteFile.',
           isError: true,
           meta: { path: relative, reason: 'read-before-write' },
         };

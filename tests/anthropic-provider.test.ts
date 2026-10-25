@@ -132,7 +132,7 @@ const toolStream =
   sse('content_block_start', {
     type: 'content_block_start',
     index: 0,
-    content_block: { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: {} },
+    content_block: { type: 'tool_use', id: 'toolu_1', name: 'ReadFile', input: {} },
   }) +
   sse('content_block_delta', {
     type: 'content_block_delta',
@@ -158,8 +158,8 @@ function request(): ModelRequest {
     system: 'You are codingx.',
     messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
     tools: [
-      { name: 'read_file', description: 'read', inputSchema: { type: 'object' } },
-      { name: 'shell', description: 'run', inputSchema: { type: 'object' } },
+      { name: 'ReadFile', description: 'read', inputSchema: { type: 'object' } },
+      { name: 'Shell', description: 'run', inputSchema: { type: 'object' } },
     ],
     maxOutputTokens: 123,
     temperature: 0,
@@ -250,7 +250,24 @@ describe('AnthropicMessagesProvider streaming', () => {
     expect(body.tools[0].cache_control).toBeUndefined();
     expect(body.tools[1].cache_control).toEqual({ type: 'ephemeral' });
     expect(body.tools[0].input_schema).toEqual({ type: 'object' });
+    expect(body).not.toHaveProperty('output_config');
     expect(captured?.body).not.toContain('test-key');
+  });
+
+  it('sends reasoning effort as output_config.effort', async () => {
+    const server = await startServer(async (res) => {
+      await writeChunks(res, textStream);
+    });
+    const provider = new AnthropicMessagesProvider({
+      id: 'primary',
+      endpoint: server.url,
+      apiKey: 'test-key',
+    });
+    await collect(provider, { ...request(), reasoningEffort: 'high' });
+
+    const body = JSON.parse(server.requests[0]?.body ?? '{}');
+    expect(body.output_config).toEqual({ effort: 'high' });
+    expect(body).toMatchObject({ model: 'claude-test', max_tokens: 123 });
   });
 
   it('assembles streamed tool_use input across deltas', async () => {
@@ -262,7 +279,7 @@ describe('AnthropicMessagesProvider streaming', () => {
     expect(events).toContainEqual({
       type: 'tool.call',
       id: 'toolu_1',
-      name: 'read_file',
+      name: 'ReadFile',
       input: { path: 'src/a.ts' },
     });
     expect(events.at(-1)).toEqual({ type: 'stop', reason: 'tool_use' });

@@ -1,6 +1,6 @@
 import path from 'node:path';
-import type { Message, ToolCall } from '../providers/types.js';
-import { assistantMessage, toolResultsMessage } from '../providers/types.js';
+import type { Message, ReasoningEffort, ToolCall } from '../providers/types.js';
+import { assistantMessage, isReasoningEffort, toolResultsMessage } from '../providers/types.js';
 import type { RolloutEvent } from '../session/types.js';
 import type { ReadFileTracker } from '../tools/read-tracker.js';
 import type { PlanStep } from '../tools/types.js';
@@ -27,7 +27,7 @@ export interface RebuiltHistory {
   messages: Message[];
   syntheticResults: SyntheticToolResult[];
   readFileCalls: ReadFileCall[];
-  /** Last plan snapshot persisted by update_plan, if any. */
+  /** Last plan snapshot persisted by UpdatePlan, if any. */
   plan?: PlanStep[];
   lastTurnId?: string;
 }
@@ -147,7 +147,7 @@ export function rebuildHistory(events: readonly RolloutEvent[]): RebuiltHistory 
           synthetic: true,
         });
       }
-      if (call.name === 'read_file' && isObject(call.input)) {
+      if (call.name === 'ReadFile' && isObject(call.input)) {
         const rawPath = asString(call.input.path);
         if (rawPath) readFileCalls.push({ path: rawPath, isError });
       }
@@ -165,20 +165,49 @@ export function rebuildHistory(events: readonly RolloutEvent[]): RebuiltHistory 
   };
 }
 
-/** Mark files successfully read before a resume so edit_file still works. */
+/** Latest model/effort selected in a rollout; absent fields mean provider defaults. */
+export interface StoredModelSelection {
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+}
+
+/**
+ * Find the last `model.changed` event so resume can continue with the model the
+ * user selected. Unknown/malformed effort values are treated as cleared.
+ */
+export function latestModelSelection(events: readonly RolloutEvent[]): StoredModelSelection {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type !== 'model.changed') continue;
+    const model = asString(event.model);
+    const effort = isReasoningEffort(event.reasoningEffort) ? event.reasoningEffort : undefined;
+    return {
+      ...(model && model.length > 0 ? { model } : {}),
+      ...(effort === undefined ? {} : { reasoningEffort: effort }),
+    };
+  }
+  return {};
+}
+
+/** Mark files successfully read before a resume so EditFile still works. */
 export async function restoreReadTracker(
   rebuilt: RebuiltHistory,
   cwd: string,
   tracker: ReadFileTracker,
+  additionalDirs: readonly string[] = [],
 ): Promise<number> {
-  const root = await canonicalizePath(cwd);
+  const roots = [await canonicalizePath(cwd)];
+  for (const directory of additionalDirs) {
+    const root = await canonicalizePath(directory);
+    if (!roots.includes(root)) roots.push(root);
+  }
   let marked = 0;
   for (const call of rebuilt.readFileCalls) {
     if (call.isError) continue;
     try {
       const expanded = expandHome(call.path);
       const absolute = await canonicalizePath(path.resolve(cwd, expanded));
-      if (!isPathInside(root, absolute)) continue;
+      if (!roots.some((root) => isPathInside(root, absolute))) continue;
       tracker.markRead(absolute);
       marked += 1;
     } catch {

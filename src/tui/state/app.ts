@@ -1,7 +1,7 @@
 import type { UiEvent } from '../../agent/events.js';
 import type { ToolCall } from '../../providers/types.js';
-import { EMPTY_USAGE, addUsage, type TokenUsage } from '../../providers/types.js';
-import type { PlanStep } from '../../tools/types.js';
+import { EMPTY_USAGE, addUsage, type ReasoningEffort, type TokenUsage } from '../../providers/types.js';
+import type { AskQuestion, PlanStep } from '../../tools/types.js';
 import type { CellBuffer } from '../terminal/buffer.js';
 import type { KeyEvent } from '../terminal/input.js';
 import { composeFrame, composeFrameWithCursor, computeFrameLayout } from '../app.js';
@@ -15,6 +15,7 @@ import type {
   TranscriptCell,
   TurnSummaryCell,
   TuiAppState,
+  TuiAskState,
   TuiErrorInfo,
   TuiSessionState,
   TuiStatus,
@@ -35,6 +36,23 @@ import {
   moveComposerCursor,
 } from '../widgets/composer.js';
 import { slashMatches, type SlashCommand } from './slash.js';
+import {
+  advanceAsk,
+  askIsOtherRow,
+  beginAskCustom,
+  commitAskCustom,
+  createAskState,
+  currentAskQuestion,
+  currentAskSelection,
+  deleteAskCustomBackward,
+  deleteAskCustomForward,
+  insertAskCustom,
+  moveAskCursor,
+  moveAskCustomCursor,
+  previousAskQuestion,
+  selectAskOption,
+  selectAskOptionAt,
+} from './ask.js';
 import { transcriptHeight } from '../widgets/transcript.js';
 
 /**
@@ -106,7 +124,24 @@ export function toolCommandLabel(call: ToolCall): string {
     : {};
   if (typeof input.command === 'string' && input.command.length > 0) return input.command;
   if (typeof input.path === 'string' && input.path.length > 0) return call.name + ' ' + input.path;
+  if (call.name === 'Skill' && typeof input.name === 'string' && input.name.length > 0) {
+    return 'Skill ' + input.name;
+  }
+  if (call.name === 'AskUserQuestion' && Array.isArray(input.questions)) {
+    const first = input.questions[0];
+    if (typeof first === 'object' && first !== null) {
+      const question = (first as Record<string, unknown>).question;
+      if (typeof question === 'string' && question.trim().length > 0) {
+        return 'AskUserQuestion: ' + truncateLabel(question);
+      }
+    }
+  }
   return call.name;
+}
+
+function truncateLabel(text: string, max = 120): string {
+  const single = text.replace(/\s+/gu, ' ').trim();
+  return single.length <= max ? single : single.slice(0, max - 1) + '…';
 }
 
 function isCtrl(key: KeyEvent, code: string): boolean {
@@ -142,6 +177,7 @@ export class TuiApp {
         sessionId: options.session.sessionId,
         cwd: options.session.cwd,
         model: options.session.model,
+        ...(options.session.reasoningEffort ? { reasoningEffort: options.session.reasoningEffort } : {}),
         ...(options.session.home ? { home: options.session.home } : {}),
         ...(options.session.title ? { title: options.session.title } : {}),
       },
@@ -258,6 +294,9 @@ export class TuiApp {
             sessionId: event.session.sessionId,
             cwd: event.session.cwd,
             model: event.session.model,
+            ...(this.current.session.reasoningEffort
+              ? { reasoningEffort: this.current.session.reasoningEffort }
+              : {}),
             ...(this.current.session.home ? { home: this.current.session.home } : {}),
             ...(this.current.session.title ? { title: this.current.session.title } : {}),
           },
@@ -420,6 +459,8 @@ export class TuiApp {
         transcript.push(summary);
         this.patch({
           activeAssistant: null,
+          ...(this.current.mode === 'ask' ? { mode: 'main' as const } : {}),
+          ask: undefined,
           status,
           usage: copyUsage(event.usage),
           totalUsage: copyUsage(addUsage(this.current.totalUsage, event.usage)),
@@ -459,6 +500,57 @@ export class TuiApp {
     this.patch({ composer: createComposerState('', history), slashIndex: 0, slashDismissed: false });
   }
 
+  /**
+   * Reset all session-scoped UI state after the rollout was cleared. The
+   * session identity and the composer input history are intentionally kept.
+   */
+  resetSession(): void {
+    const session = this.current.session;
+    this.patch({
+      mode: 'main',
+      session: {
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        model: session.model,
+        ...(session.reasoningEffort ? { reasoningEffort: session.reasoningEffort } : {}),
+        ...(session.home ? { home: session.home } : {}),
+      },
+      transcript: [],
+      activeAssistant: null,
+      plan: [],
+      ask: undefined,
+      status: { state: 'idle', elapsedMs: 0 },
+      usage: copyUsage(EMPTY_USAGE),
+      queue: [],
+      composer: createComposerState('', this.current.composer.history),
+      scroll: { offset: 0 },
+      slashIndex: 0,
+      slashDismissed: false,
+      turnNumber: 0,
+      currentTurnSteps: 0,
+      totalUsage: copyUsage(EMPTY_USAGE),
+      turnLlmDurationMs: 0,
+      turnToolDurationMs: 0,
+      contextUsedTokens: 0,
+      contextPercent: undefined,
+    });
+  }
+
+  /** Update the model/effort shown in the meta row after /model. */
+  setModel(model: string, reasoningEffort?: ReasoningEffort): void {
+    const session = this.current.session;
+    this.patch({
+      session: {
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        model,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(session.home ? { home: session.home } : {}),
+        ...(session.title ? { title: session.title } : {}),
+      },
+    });
+  }
+
   /** Queue text above the composer without submitting it. */
   enqueue(text: string, submitted = false): void {
     if (text.trim().length === 0) return;
@@ -492,6 +584,8 @@ export class TuiApp {
     };
     this.patch({
       activeAssistant: null,
+      ...(this.current.mode === 'ask' ? { mode: 'main' as const } : {}),
+      ask: undefined,
       status: {
         state: 'idle',
         elapsedMs: 0,
@@ -499,6 +593,30 @@ export class TuiApp {
         error: { message },
       },
       transcript: [...this.current.transcript, notice],
+    });
+  }
+
+  /**
+   * Open the ask modal. The core awaits a matching answer/cancel UiCommand;
+   * the TUI itself never resolves the tool call.
+   */
+  showQuestion(questions: readonly AskQuestion[]): void {
+    if (questions.length === 0) return;
+    this.patch({
+      mode: 'ask',
+      ask: createAskState(questions),
+      status: { ...this.current.status, state: 'awaiting' },
+      slashDismissed: true,
+    });
+  }
+
+  /** Close the ask modal and resume the working status. Idempotent. */
+  clearAsk(): void {
+    const status = this.current.status;
+    this.patch({
+      ...(this.current.mode === 'ask' ? { mode: 'main' as const } : {}),
+      ask: undefined,
+      ...(status.state === 'awaiting' ? { status: { ...status, state: 'working' as const } } : {}),
     });
   }
 
@@ -608,8 +726,98 @@ export class TuiApp {
     return true;
   }
 
+  private handleAskKey(key: KeyEvent): UiCommand | undefined {
+    const ask = this.current.ask;
+    if (ask === undefined) return undefined;
+    if (isCtrl(key, 'c')) return { type: 'interrupt' };
+    if (isEscape(key)) {
+      if (ask.editing) {
+        this.patch({ ask: commitAskCustom(ask) });
+        return undefined;
+      }
+      this.clearAsk();
+      return { type: 'cancel-ask' };
+    }
+
+    if (ask.editing) {
+      if (key.code === 'enter') return this.finishAskQuestion(commitAskCustom(ask));
+      if (key.code === 'left') {
+        this.patch({ ask: moveAskCustomCursor(ask, 'left') });
+        return undefined;
+      }
+      if (key.code === 'right') {
+        this.patch({ ask: moveAskCustomCursor(ask, 'right') });
+        return undefined;
+      }
+      if (key.code === 'home' || key.code === 'end') {
+        this.patch({ ask: moveAskCustomCursor(ask, key.code) });
+        return undefined;
+      }
+      if (key.code === 'backspace') {
+        this.patch({ ask: deleteAskCustomBackward(ask) });
+        return undefined;
+      }
+      if (key.code === 'delete') {
+        this.patch({ ask: deleteAskCustomForward(ask) });
+        return undefined;
+      }
+      if (key.text !== undefined && key.text.length > 0 && isPlainText(key)) {
+        this.patch({ ask: insertAskCustom(ask, key.text) });
+      }
+      return undefined;
+    }
+
+    if (key.code === 'up') {
+      this.patch({ ask: moveAskCursor(ask, -1) });
+      return undefined;
+    }
+    if (key.code === 'down') {
+      this.patch({ ask: moveAskCursor(ask, 1) });
+      return undefined;
+    }
+    if (key.code === 'left') {
+      this.patch({ ask: previousAskQuestion(ask) });
+      return undefined;
+    }
+    if (key.code === 'space') {
+      if (askIsOtherRow(ask)) {
+        this.patch({ ask: beginAskCustom(ask) });
+      } else {
+        this.patch({ ask: selectAskOption(ask) });
+      }
+      return undefined;
+    }
+    if (key.code === 'enter') {
+      const question = currentAskQuestion(ask);
+      if (question === undefined) return undefined;
+      if (question.options.length === 0 || askIsOtherRow(ask)) {
+        this.patch({ ask: beginAskCustom(ask) });
+        return undefined;
+      }
+      const selected = currentAskSelection(ask);
+      return this.finishAskQuestion(selected.length === 0 ? selectAskOption(ask) : ask);
+    }
+    if (/^[1-9]$/u.test(key.code) && isPlainText(key)) {
+      this.patch({ ask: selectAskOptionAt(ask, Number.parseInt(key.code, 10) - 1) });
+      return undefined;
+    }
+    return undefined;
+  }
+
+  private finishAskQuestion(ask: TuiAskState): UiCommand | undefined {
+    const { state, answers } = advanceAsk(ask);
+    if (answers === undefined) {
+      this.patch({ ask: state });
+      return undefined;
+    }
+    this.clearAsk();
+    return { type: 'answer', answers };
+  }
+
   handleKey(key: KeyEvent): UiCommand | undefined {
     const mode = this.current.mode;
+
+    if (mode === 'ask') return this.handleAskKey(key);
 
     if (mode !== 'main') {
       if (isEscape(key) || isCtrl(key, 'c') || (mode === 'transcript' && isCtrl(key, 't')) || this.closeOverlayText(key)) {

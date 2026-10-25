@@ -49,7 +49,7 @@ async function setMtime(relative: string, iso: string): Promise<void> {
   await utimes(path.join(cwd, relative), date, date);
 }
 
-describe('glob', () => {
+describe('Glob', () => {
   it('lists files newest-first relative to the workspace', async () => {
     await put('old.txt', 'old');
     await put('nested/mid.txt', 'mid');
@@ -58,7 +58,7 @@ describe('glob', () => {
     await setMtime('nested/mid.txt', '2024-01-02T00:00:00Z');
     await setMtime('new.txt', '2024-01-03T00:00:00Z');
 
-    const result = await registry.execute('glob', { pattern: '**/*.txt' }, ctx);
+    const result = await registry.execute('Glob', { pattern: '**/*.txt' }, ctx);
     expect(result.isError).toBeUndefined();
     expect(result.content).toBe('new.txt\nnested/mid.txt\nold.txt');
     expect(result.meta).toEqual({ pattern: '**/*.txt', path: '.', count: 3, truncated: false });
@@ -71,7 +71,7 @@ describe('glob', () => {
     await utimes(path.join(cwd, 'b.txt'), fixed, fixed);
     await utimes(path.join(cwd, 'a.txt'), fixed, fixed);
 
-    const result = await registry.execute('glob', { pattern: '*.txt' }, ctx);
+    const result = await registry.execute('Glob', { pattern: '*.txt' }, ctx);
     expect(result.content).toBe('a.txt\nb.txt');
   });
 
@@ -84,7 +84,7 @@ describe('glob', () => {
       await put(directory + '/skip.ts', 'skip');
     }
 
-    const result = await registry.execute('glob', { pattern: '**/*' }, ctx);
+    const result = await registry.execute('Glob', { pattern: '**/*' }, ctx);
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain('src/keep.ts');
     expect(result.content).toContain('.env');
@@ -99,7 +99,7 @@ describe('glob', () => {
       Array.from({ length: 505 }, (_, index) => writeFile(path.join(cwd, 'many', 'f' + index + '.txt'), 'x')),
     );
 
-    const result = await registry.execute('glob', { pattern: 'many/*.txt' }, ctx);
+    const result = await registry.execute('Glob', { pattern: 'many/*.txt' }, ctx);
     const lines = result.content.split('\n');
     expect(lines).toHaveLength(501);
     expect(lines[500]).toContain('[truncated');
@@ -107,21 +107,21 @@ describe('glob', () => {
   });
 
   it('reports empty results and rejects invalid or escaping requests', async () => {
-    const empty = await registry.execute('glob', { pattern: '*.nope' }, ctx);
+    const empty = await registry.execute('Glob', { pattern: '*.nope' }, ctx);
     expect(empty.isError).toBeUndefined();
     expect(empty.content).toMatch(/No files matched/);
     expect(empty.meta).toMatchObject({ count: 0, truncated: false });
 
     await put('file.txt', 'x');
-    const notDirectory = await registry.execute('glob', { pattern: '*', path: 'file.txt' }, ctx);
+    const notDirectory = await registry.execute('Glob', { pattern: '*', path: 'file.txt' }, ctx);
     expect(notDirectory.isError).toBe(true);
     expect(notDirectory.content).toMatch(/Not a directory/);
 
-    const nul = await registry.execute('glob', { pattern: 'a\0b' }, ctx);
+    const nul = await registry.execute('Glob', { pattern: 'a\0b' }, ctx);
     expect(nul.isError).toBe(true);
     expect(nul.content).toMatch(/NUL/);
 
-    const outside = await registry.execute('glob', { pattern: '*', path: '..' }, ctx);
+    const outside = await registry.execute('Glob', { pattern: '*', path: '..' }, ctx);
     expect(outside.isError).toBe(true);
     expect(outside.content).toMatch(/outside the workspace/);
   });
@@ -132,12 +132,12 @@ describe('glob', () => {
     await writeFile(path.join(outside, 'secret.txt'), 'secret');
     await symlink(outside, path.join(cwd, 'escape'), 'dir');
 
-    const result = await registry.execute('glob', { pattern: '**/*.txt' }, ctx);
+    const result = await registry.execute('Glob', { pattern: '**/*.txt' }, ctx);
     expect(result.content).not.toContain('secret');
   });
 });
 
-describe('grep', () => {
+describe('Grep', () => {
   beforeEach(async () => {
     await put('src/a.ts', 'const needle = 1;\nconst other = 2;\n// needle again\n');
     await put('src/b.js', 'needle();\n');
@@ -145,7 +145,7 @@ describe('grep', () => {
   });
 
   it('finds content and reports file:line matches', async () => {
-    const result = await registry.execute('grep', { pattern: 'needle', path: '.' }, ctx);
+    const result = await registry.execute('Grep', { pattern: 'needle', path: '.' }, ctx);
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain('src/a.ts:1:const needle = 1;');
     expect(result.content).toContain('src/a.ts:3:// needle again');
@@ -155,14 +155,14 @@ describe('grep', () => {
   });
 
   it('honors the glob file filter', async () => {
-    const result = await registry.execute('grep', { pattern: 'needle', path: '.', glob: '*.ts' }, ctx);
+    const result = await registry.execute('Grep', { pattern: 'needle', path: '.', glob: '*.ts' }, ctx);
     expect(result.content).toContain('src/a.ts');
     expect(result.content).not.toContain('src/b.js');
     expect(result.meta).toMatchObject({ matches: 2 });
   });
 
   it('includes surrounding lines when context is set', async () => {
-    const result = await registry.execute('grep', { pattern: 'needle', path: 'src/a.ts', context: 1 }, ctx);
+    const result = await registry.execute('Grep', { pattern: 'needle', path: 'src/a.ts', context: 1 }, ctx);
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain('const other = 2;');
     expect(result.content).toMatch(/src\/a\.ts[-:]\d+[-:]/);
@@ -170,25 +170,25 @@ describe('grep', () => {
   });
 
   it('reports no matches without marking the result as an error', async () => {
-    const result = await registry.execute('grep', { pattern: 'definitely-not-present-xyz' }, ctx);
+    const result = await registry.execute('Grep', { pattern: 'definitely-not-present-xyz' }, ctx);
     expect(result.isError).toBeUndefined();
     expect(result.content).toMatch(/No matches/);
     expect(result.meta).toMatchObject({ matches: 0, truncated: false });
   });
 
   it('reports invalid regular expressions as errors', async () => {
-    const result = await registry.execute('grep', { pattern: '[', path: '.' }, ctx);
+    const result = await registry.execute('Grep', { pattern: '[', path: '.' }, ctx);
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/regex|regular expression/i);
   });
 
   it('rejects paths outside the workspace and missing paths', async () => {
     await mkdir(path.join(root, 'outside'));
-    const outside = await registry.execute('grep', { pattern: 'x', path: '../outside' }, ctx);
+    const outside = await registry.execute('Grep', { pattern: 'x', path: '../outside' }, ctx);
     expect(outside.isError).toBe(true);
     expect(outside.content).toMatch(/outside the workspace/);
 
-    const missing = await registry.execute('grep', { pattern: 'x', path: 'nope' }, ctx);
+    const missing = await registry.execute('Grep', { pattern: 'x', path: 'nope' }, ctx);
     expect(missing.isError).toBe(true);
     expect(missing.content).toMatch(/not found/);
   });
@@ -259,23 +259,23 @@ describe('grep ripgrep preference', () => {
     await chmod(rgPath, 0o755);
     const env = { ...ctx.shell.env, PATH: binDir + path.delimiter + (ctx.shell.env.PATH ?? '') };
 
-    const withRg = await registry.execute('grep', { pattern: 'needle' }, { ...ctx, shell: { ...ctx.shell, env } });
+    const withRg = await registry.execute('Grep', { pattern: 'needle' }, { ...ctx, shell: { ...ctx.shell, env } });
     expect(withRg.isError).toBeUndefined();
     expect(withRg.meta).toMatchObject({ engine: 'rg', matches: 1, truncated: false });
     expect(withRg.content).toContain('real.txt:1:needle from rg');
 
     await writeFile(rgPath, '#!/bin/sh\nexit 127\n', 'utf8');
     await chmod(rgPath, 0o755);
-    const fallback = await registry.execute('grep', { pattern: 'needle' }, { ...ctx, shell: { ...ctx.shell, env } });
+    const fallback = await registry.execute('Grep', { pattern: 'needle' }, { ...ctx, shell: { ...ctx.shell, env } });
     expect(fallback.isError).toBeUndefined();
     expect(fallback.meta).toMatchObject({ engine: 'builtin', matches: 1 });
     expect(fallback.content).toContain('real.txt:1:needle real');
   });
 });
 
-describe('write_file', () => {
+describe('WriteFile', () => {
   it('creates a file, creates parent directories, reports bytes and marks it read', async () => {
-    const result = await registry.execute('write_file', { path: 'src/deep/new.txt', content: 'hello\n' }, ctx);
+    const result = await registry.execute('WriteFile', { path: 'src/deep/new.txt', content: 'hello\n' }, ctx);
     expect(result.isError).toBeUndefined();
     expect(result.content).toBe('Created src/deep/new.txt (6 bytes).');
     expect(result.meta).toEqual({ path: 'src/deep/new.txt', created: true, bytes: 6 });
@@ -285,19 +285,19 @@ describe('write_file', () => {
 
   it('refuses to overwrite a file that has not been read', async () => {
     const file = await put('existing.txt', 'original');
-    const result = await registry.execute('write_file', { path: 'existing.txt', content: 'changed' }, ctx);
+    const result = await registry.execute('WriteFile', { path: 'existing.txt', content: 'changed' }, ctx);
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/before it has been read/);
     expect(result.meta).toMatchObject({ reason: 'read-before-write' });
     expect(await readFile(file, 'utf8')).toBe('original');
   });
 
-  it('overwrites after read_file and preserves the existing mode', async () => {
+  it('overwrites after ReadFile and preserves the existing mode', async () => {
     const file = await put('mode.txt', 'old');
     await chmod(file, 0o640);
-    await registry.execute('read_file', { path: 'mode.txt' }, ctx);
+    await registry.execute('ReadFile', { path: 'mode.txt' }, ctx);
 
-    const result = await registry.execute('write_file', { path: 'mode.txt', content: 'new content' }, ctx);
+    const result = await registry.execute('WriteFile', { path: 'mode.txt', content: 'new content' }, ctx);
     expect(result.isError).toBeUndefined();
     expect(result.content).toBe('Overwrote mode.txt (11 bytes).');
     expect(result.meta).toEqual({ path: 'mode.txt', created: false, bytes: 11 });
@@ -309,23 +309,23 @@ describe('write_file', () => {
 
   it('rejects directories, binary/non-UTF-8 files and paths outside the workspace', async () => {
     await mkdir(path.join(cwd, 'dir'));
-    const directory = await registry.execute('write_file', { path: 'dir', content: 'x' }, ctx);
+    const directory = await registry.execute('WriteFile', { path: 'dir', content: 'x' }, ctx);
     expect(directory.isError).toBe(true);
     expect(directory.content).toMatch(/not a regular file/);
 
     const binaryFile = await put('binary.dat', Buffer.from([0x66, 0x00, 0x80]));
     ctx.readTracker.markRead(await realpath(binaryFile));
-    const binary = await registry.execute('write_file', { path: 'binary.dat', content: 'x' }, ctx);
+    const binary = await registry.execute('WriteFile', { path: 'binary.dat', content: 'x' }, ctx);
     expect(binary.isError).toBe(true);
     expect(binary.content).toMatch(/binary/);
 
     const invalidFile = await put('invalid.txt', Buffer.from([0x66, 0x6f, 0x80]));
     ctx.readTracker.markRead(await realpath(invalidFile));
-    const invalid = await registry.execute('write_file', { path: 'invalid.txt', content: 'x' }, ctx);
+    const invalid = await registry.execute('WriteFile', { path: 'invalid.txt', content: 'x' }, ctx);
     expect(invalid.isError).toBe(true);
     expect(invalid.content).toMatch(/UTF-8/);
 
-    const outside = await registry.execute('write_file', { path: '../outside.txt', content: 'x' }, ctx);
+    const outside = await registry.execute('WriteFile', { path: '../outside.txt', content: 'x' }, ctx);
     expect(outside.isError).toBe(true);
     expect(outside.content).toMatch(/outside the workspace/);
   });
@@ -333,7 +333,7 @@ describe('write_file', () => {
   it('refuses to write through a dangling symlink', async () => {
     const target = path.join(root, 'missing-outside.txt');
     await symlink(target, path.join(cwd, 'dangling.txt'));
-    const result = await registry.execute('write_file', { path: 'dangling.txt', content: 'x' }, ctx);
+    const result = await registry.execute('WriteFile', { path: 'dangling.txt', content: 'x' }, ctx);
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/symbolic link/);
     await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });

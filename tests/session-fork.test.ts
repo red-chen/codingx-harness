@@ -36,20 +36,20 @@ async function appendFirstTurn(session: SessionHandle): Promise<void> {
     type: 'assistant.message',
     turnId: 'turn-1',
     text: 'reading',
-    calls: [{ id: 'call-1', name: 'read_file', input: { path: 'a.ts' } }],
+    calls: [{ id: 'call-1', name: 'ReadFile', input: { path: 'a.ts' } }],
   });
   await session.append({
     type: 'tool.call',
     turnId: 'turn-1',
     callId: 'call-1',
-    name: 'read_file',
+    name: 'ReadFile',
     input: { path: 'a.ts' },
   });
   await session.append({
     type: 'tool.result',
     turnId: 'turn-1',
     callId: 'call-1',
-    name: 'read_file',
+    name: 'ReadFile',
     content: 'line',
     isError: false,
   });

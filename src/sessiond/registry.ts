@@ -14,6 +14,8 @@ import type {
   SessionAppendResult,
   SessionAttachParams,
   SessionAttachResult,
+  SessionClearParams,
+  SessionClearResult,
   SessionCreateParams,
   SessionCreateResult,
   SessionEndParams,
@@ -321,6 +323,38 @@ export class SessiondRegistry {
         appended: appended.map((event) => ({ seq: event.seq, eventId: event.eventId })),
         events: appended,
         lastSeq: record.lastSeq,
+      };
+    });
+  }
+
+  /** Reset a leased session's rollout to its header and restart its sequence. */
+  async clear(clientId: string, params: SessionClearParams): Promise<SessionClearResult> {
+    return this.runExclusive(async () => {
+      const record = await this.ensureRecord(params.sessionId);
+      const writer = record.writer;
+      if (!writer || writer.clientId !== clientId || (params.leaseId !== undefined && writer.id !== params.leaseId)) {
+        throw new SessiondRpcError('LEASE_REVOKED', 'Clearing a session requires the current write lease.');
+      }
+      if (writer.expiresAt <= Date.now()) {
+        await this.releaseWriter(record, 'lease expired', true);
+        throw new SessiondRpcError('LEASE_REVOKED', 'The write lease has expired.');
+      }
+      if (isActiveStatus(record.status)) {
+        throw new SessiondRpcError('SESSION_BUSY', 'Session ' + record.id + ' still has an active turn.');
+      }
+      if (!record.handle) throw new SessiondRpcError('INTERNAL', 'Session has no write handle.');
+
+      await record.handle.clear();
+      const events = await record.handle.replay();
+      record.status = deriveSessionStatus(events);
+      record.lastSeq = lastSeq(events);
+      record.eventCount = events.length;
+      this.publishCleared(record);
+      this.publishStatus(record);
+      return {
+        sessionId: record.id,
+        lastSeq: record.lastSeq,
+        eventCount: record.eventCount,
       };
     });
   }
@@ -716,6 +750,23 @@ export class SessiondRegistry {
             sessionId: record.id,
             status: record.status,
             ...(record.writer ? { writer: record.writer.clientId } : {}),
+          }),
+        );
+      } catch {
+        // Ignore subscriber failures.
+      }
+    }
+  }
+
+  /** Tell watchers that earlier seqs are gone and replay should restart at 1. */
+  private publishCleared(record: SessionRecord): void {
+    for (const subscriber of record.subscribers) {
+      try {
+        subscriber.sink(
+          notification('session.cleared', {
+            sessionId: record.id,
+            lastSeq: record.lastSeq,
+            eventCount: record.eventCount,
           }),
         );
       } catch {

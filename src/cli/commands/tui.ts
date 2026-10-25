@@ -1,6 +1,6 @@
 import path from 'node:path';
-import { rebuildHistory, restoreReadTracker } from '../../agent/index.js';
-import type { Message, TokenUsage } from '../../providers/types.js';
+import { latestModelSelection, rebuildHistory, restoreReadTracker } from '../../agent/index.js';
+import type { Message, ReasoningEffort, TokenUsage } from '../../providers/types.js';
 import {
   type SessionHandle,
   type SessionStoreApi,
@@ -96,7 +96,16 @@ async function replayResumed(
   session: SessionHandle,
   readTracker: ReadFileTracker,
   stderr: TextSink,
-): Promise<{ initialMessages?: readonly Message[]; plan?: readonly PlanStep[]; title?: string; turnCount?: number; usage?: TokenUsage; transcript?: ReturnType<typeof restoreTranscript> }> {
+): Promise<{
+  initialMessages?: readonly Message[];
+  plan?: readonly PlanStep[];
+  title?: string;
+  turnCount?: number;
+  usage?: TokenUsage;
+  transcript?: ReturnType<typeof restoreTranscript>;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+}> {
   const events = await session.replay();
   const rebuilt = rebuildHistory(events);
   if (rebuilt.syntheticResults.length > 0) {
@@ -115,7 +124,7 @@ async function replayResumed(
       'warning: repaired ' + rebuilt.syntheticResults.length + ' dangling tool call(s) with synthetic tool_result events.\n',
     );
   }
-  await restoreReadTracker(rebuilt, app.cwd, readTracker);
+  await restoreReadTracker(rebuilt, app.cwd, readTracker, app.additionalDirs);
   stderr.write(
     'resumed session ' + session.id + ' (' + rebuilt.messages.length + ' message(s), cwd ' + session.meta.cwd + ')\n',
   );
@@ -128,6 +137,7 @@ async function replayResumed(
   const turnCount = events.filter((event) => event.type === 'turn.start').length;
   const usage = totalUsageFrom(events);
   const transcript = restoreTranscript(events);
+  const modelSelection = latestModelSelection(events);
   return {
     ...(rebuilt.messages.length > 0 ? { initialMessages: rebuilt.messages } : {}),
     ...(rebuilt.plan && rebuilt.plan.length > 0 ? { plan: rebuilt.plan } : {}),
@@ -135,6 +145,8 @@ async function replayResumed(
     ...(turnCount > 0 ? { turnCount } : {}),
     ...(usage ? { usage } : {}),
     ...(transcript.length > 0 ? { transcript } : {}),
+    ...(modelSelection.model ? { model: modelSelection.model } : {}),
+    ...(modelSelection.reasoningEffort ? { reasoningEffort: modelSelection.reasoningEffort } : {}),
   };
 }
 
@@ -145,6 +157,7 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
   const app = await bootstrap({
     cwd: options.cwd,
     env,
+    ...(options.addDirs && options.addDirs.length > 0 ? { addDirs: options.addDirs } : {}),
     cli: {
       ...(options.route ? { route: options.route } : {}),
       ...(options.model ? { model: options.model } : {}),
@@ -157,16 +170,19 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
   try {
     const opened = await openSession(app, options);
     session = opened.session;
+    const activeSession = opened.session;
     const readTracker = new ReadFileTracker();
     const resumed = opened.resumed
       ? await replayResumed(app, session, readTracker, stderr)
       : {};
+    if (resumed.model && !options.model) app.router.setModel(resumed.model);
 
     const tuiApp = new TuiApp({
       session: {
         sessionId: session.id,
         cwd: app.cwd,
         model: app.router.selection.model,
+        ...(resumed.reasoningEffort ? { reasoningEffort: resumed.reasoningEffort } : {}),
         ...(env.HOME ? { home: env.HOME } : {}),
         ...(resumed.title ? { title: resumed.title } : {}),
         ...(resumed.turnCount ? { initialTurnNumber: resumed.turnCount } : {}),
@@ -190,6 +206,9 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
         readTracker,
         ...(resumed.initialMessages ? { initialMessages: resumed.initialMessages } : {}),
         ...(resumed.plan ? { initialPlan: resumed.plan } : {}),
+        ...(resumed.reasoningEffort ? { reasoningEffort: resumed.reasoningEffort } : {}),
+        ask: (questions, signal) =>
+          controller === undefined ? Promise.resolve(null) : controller.ask(questions, signal),
       },
     );
     tuiApp.handleEvent({
@@ -202,6 +221,23 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
       io: createProcessTerminalIO(),
       session,
       runTurn: (text, signal) => loop.runTurn(text, { signal }),
+      model: {
+        get: () => ({
+          model: app.router.selection.model,
+          ...(loop.reasoningEffort ? { reasoningEffort: loop.reasoningEffort } : {}),
+        }),
+        set: async (selection) => {
+          await activeSession.append({
+            type: 'model.changed',
+            model: selection.model,
+            ...(selection.reasoningEffort ? { reasoningEffort: selection.reasoningEffort } : {}),
+          });
+          app.router.setModel(selection.model);
+          loop.setModel(selection.model);
+          loop.setReasoningEffort(selection.reasoningEffort);
+        },
+      },
+      onClear: () => loop.clearHistory(),
       ...(options.initialPrompt ? { initialPrompt: options.initialPrompt } : {}),
     });
     return await controller.run();

@@ -29,7 +29,11 @@ const BINARY_EXTENSIONS = new Set([
 ]);
 
 const schema = z.object({
-  path: z.string().min(1).default('.').describe('Directory to list, relative to the workspace root. Defaults to the root.'),
+  path: z
+    .string()
+    .min(1)
+    .default('.')
+    .describe('Directory to list, relative to the workspace root or absolute inside an allowed root. Defaults to the root.'),
   depth: z
     .number()
     .int()
@@ -45,9 +49,9 @@ function isBinaryName(name: string): boolean {
 }
 
 export const listDirTool: ToolDef<typeof schema> = {
-  name: 'list_dir',
+  name: 'ListDir',
   description:
-    'List a directory tree inside the workspace. The root .gitignore and common build/dependency directories are respected, ' +
+    'List a directory tree inside the workspace or an --add-dir root. The root .gitignore and common build/dependency directories are respected, ' +
     'and binary files are hidden. depth 0 lists direct children; depth defaults to 2. Output is capped at 500 entries.',
   schema,
   parallelSafe: true,
@@ -57,7 +61,7 @@ export const listDirTool: ToolDef<typeof schema> = {
     const depth = input.depth ?? 2;
     const resolved = await resolveWorkspacePath(ctx, requested, { mustExist: true });
     const info = await stat(resolved.absolute);
-    if (!info.isDirectory()) throw new ToolError('Not a directory: ' + requested + '. Use read_file for files.');
+    if (!info.isDirectory()) throw new ToolError('Not a directory: ' + requested + '. Use ReadFile for files.');
 
     const root = resolved.root;
     let gitignore = '';

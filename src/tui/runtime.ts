@@ -1,5 +1,5 @@
-import { ATTR_REVERSE, CellBuffer } from './terminal/buffer.js';
-import { copyTextToClipboard } from '../util/clipboard.js';
+import { CellBuffer } from './terminal/buffer.js';
+import { debugLog } from '../util/debug.js';
 import { InputParser, type InputEvent, type KeyEvent } from './terminal/input.js';
 import { Renderer, type ColorMode } from './terminal/renderer.js';
 import { TerminalSession, type SessionSignal, type TerminalIO } from './terminal/session.js';
@@ -15,8 +15,6 @@ export interface TuiRuntimeOptions {
   onCommand?: (command: UiCommand) => void | Promise<void>;
   onLocalCommand?: (text: string) => void;
   onCopy?: () => void;
-  /** Injection point for selection-copy tests; defaults to OSC52/native clipboard. */
-  copySelection?: (text: string) => Promise<string> | string;
   onIdleCtrlC?: () => void;
   onSignal?: (signal: SessionSignal) => void;
   tickMs?: number;
@@ -38,7 +36,6 @@ export class TuiRuntime {
   private running = false;
   private stopped = false;
   private lastRender = 0;
-  private selection: { anchorX: number; anchorY: number; focusX: number; focusY: number; dragged: boolean } | undefined;
 
   constructor(options: TuiRuntimeOptions) {
     this.options = options;
@@ -48,7 +45,10 @@ export class TuiRuntime {
     this.renderer = options.renderer ?? new Renderer({
       colorMode: options.colorMode ?? 'truecolor',
     });
+    // Native (terminal-owned) selection is the copy path: leave mouse
+    // reporting off so drags create a real terminal selection for Cmd+C.
     this.session = new TerminalSession(options.io, {
+      mouse: false,
       onData: (chunk) => this.feed(chunk),
       onResize: (columns, rows) => this.resize(columns, rows),
       onSignal: (signal) => {
@@ -68,6 +68,13 @@ export class TuiRuntime {
     if (!this.session.enter()) return false;
     this.running = true;
     this.app.setSize(this.io.columns, this.io.rows);
+    debugLog(
+      'clipboard',
+      'tui start term=' + (process.env.TERM ?? '?') +
+        ' program=' + (process.env.TERM_PROGRAM ?? '?') +
+        ' tmux=' + (process.env.TMUX === undefined ? 'no' : 'yes') +
+        ' size=' + this.io.columns + 'x' + this.io.rows,
+    );
     this.render(true);
     const tickMs = Math.max(16, this.options.tickMs ?? 50);
     this.timer = setInterval(() => this.tick(), tickMs);
@@ -102,16 +109,7 @@ export class TuiRuntime {
       return;
     }
     if (event.type === 'focus') return;
-    if (event.type === 'mouse') {
-      this.handleMouse(event);
-      return;
-    }
-    if (event.type === 'wheel') {
-      if (event.direction === 'up') this.app.scrollUp(3);
-      else this.app.scrollDown(3);
-      this.render();
-      return;
-    }
+    if (event.type === 'mouse' || event.type === 'wheel') return;
     if (event.type === 'paste') {
       this.handleKey({ type: 'key', code: 'paste', text: event.text, mods: { ctrl: false, alt: false, shift: false, meta: false } });
       return;
@@ -179,7 +177,6 @@ export class TuiRuntime {
     if (!force && now - this.lastRender < 16) return;
     this.lastRender = now;
     const { frame, cursor } = this.app.frameWithCursor();
-    if (this.selection !== undefined) this.highlightSelection(frame);
     if (this.front === undefined || this.front.width !== frame.width || this.front.height !== frame.height) {
       this.front = new CellBuffer(frame.width, frame.height);
     }
@@ -191,95 +188,15 @@ export class TuiRuntime {
     this.session.write(output);
   }
 
-  private handleMouse(event: import('./terminal/input.js').MouseEvent): void {
-    const frame = this.app.frame();
-    if (frame.width === 0 || frame.height === 0) return;
-    const x = Math.min(frame.width - 1, Math.max(0, event.x - 1));
-    const y = Math.min(frame.height - 1, Math.max(0, event.y - 1));
-    if (event.action === 'press') {
-      if (event.button !== 0) return;
-      this.selection = { anchorX: x, anchorY: y, focusX: x, focusY: y, dragged: false };
-      this.render();
-      return;
-    }
-    if (this.selection === undefined) return;
-    if (event.action === 'drag') {
-      this.selection = { ...this.selection, focusX: x, focusY: y, dragged: true };
-      this.render();
-      return;
-    }
-    if (event.action === 'release') {
-      const selection = this.selection;
-      this.selection = undefined;
-      const text = selection.dragged ? this.selectionText(selection) : '';
-      this.render(true);
-      if (text.trim().length > 0) void this.copySelectionText(text);
-    }
-  }
-
-  private selectionBounds(selection: { anchorX: number; anchorY: number; focusX: number; focusY: number }): {
-    startX: number;
-    startY: number;
-    endX: number;
-    endY: number;
-  } {
-    const anchorFirst = selection.anchorY < selection.focusY ||
-      (selection.anchorY === selection.focusY && selection.anchorX <= selection.focusX);
-    return anchorFirst
-      ? { startX: selection.anchorX, startY: selection.anchorY, endX: selection.focusX, endY: selection.focusY }
-      : { startX: selection.focusX, startY: selection.focusY, endX: selection.anchorX, endY: selection.anchorY };
-  }
-
-  private highlightSelection(frame: CellBuffer): void {
-    if (this.selection === undefined) return;
-    const { startX, startY, endX, endY } = this.selectionBounds(this.selection);
-    for (let y = startY; y <= endY; y++) {
-      const from = y === startY ? startX : 0;
-      const to = y === endY ? endX : frame.width - 1;
-      for (let x = from; x <= to; x++) {
-        const cell = frame.get(x, y);
-        if (cell === undefined || cell.width === 0) continue;
-        frame.set(x, y, { ...cell, attrs: cell.attrs | ATTR_REVERSE });
-      }
-    }
-  }
-
-  private selectionText(selection: { anchorX: number; anchorY: number; focusX: number; focusY: number }): string {
-    const frame = this.app.frame();
-    const { startX, startY, endX, endY } = this.selectionBounds(selection);
-    const lines: string[] = [];
-    for (let y = startY; y <= endY; y++) {
-      const from = y === startY ? startX : 0;
-      const to = y === endY ? endX : frame.width - 1;
-      let line = '';
-      for (let x = from; x <= to; x++) {
-        const cell = frame.get(x, y);
-        if (cell === undefined || cell.width === 0) continue;
-        line += cell.symbol;
-      }
-      lines.push(line.replace(/ +$/u, ''));
-    }
-    return lines.join('\n');
-  }
-
-  private async copySelectionText(text: string): Promise<void> {
-    try {
-      const method = this.options.copySelection !== undefined
-        ? await this.options.copySelection(text)
-        : await copyTextToClipboard(text, { write: (chunk) => { this.session.write(chunk); } });
-      this.app.addNotice('Copied selection (' + text.length + ' chars) to clipboard (' + method + ').');
-    } catch (error) {
-      this.app.addNotice('Clipboard copy failed: ' + (error instanceof Error ? error.message : String(error)), 'error');
-    }
-    this.render(true);
-  }
-
   private tick(): void {
     if (!this.running) return;
     if (this.input.shouldFlush()) {
       for (const event of this.input.flushPending()) this.handleInput(event);
     }
-    if (this.app.status.state === 'working' && Date.now() - this.lastRender >= 100) {
+    if (
+      (this.app.status.state === 'working' || this.app.status.state === 'awaiting') &&
+      Date.now() - this.lastRender >= 100
+    ) {
       this.render(true);
     }
   }

@@ -5,7 +5,15 @@ export { AnthropicMessagesProvider, resolveMessagesUrl } from './anthropic/messa
 export type { AnthropicProviderOptions } from './anthropic/messages-provider.js';
 export { createProvider } from './factory.js';
 export type { ProviderFactoryOptions } from './factory.js';
-export { addUsage, assistantMessage, EMPTY_USAGE, messageText, toolResultsMessage } from './types.js';
+export {
+  addUsage,
+  assistantMessage,
+  EMPTY_USAGE,
+  isReasoningEffort,
+  messageText,
+  REASONING_EFFORTS,
+  toolResultsMessage,
+} from './types.js';
 export type {
   ContentBlock,
   Message,
@@ -14,6 +22,7 @@ export type {
   ModelRequest,
   Protocol,
   Provider,
+  ReasoningEffort,
   Role,
   StopReason,
   TextBlock,

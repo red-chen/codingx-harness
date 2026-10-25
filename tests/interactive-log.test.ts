@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { PassThrough } from 'node:stream';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,6 +21,7 @@ class MemorySink implements TextSink {
 interface FakeServer {
   url: string;
   requests: number;
+  bodies: Array<Record<string, unknown>>;
   close(): Promise<void>;
 }
 
@@ -77,9 +78,18 @@ function textResponse(text: string): string {
 
 async function startServer(responses: string[]): Promise<FakeServer> {
   let requestCount = 0;
+  const bodies: Array<Record<string, unknown>> = [];
   const server = createServer((req, res) => {
-    req.resume();
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
+      let parsed: Record<string, unknown> = {};
+      try {
+        parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+      } catch {
+        parsed = {};
+      }
+      bodies.push(parsed);
       const index = requestCount++;
       const body = responses[index];
       if (!body) {
@@ -102,6 +112,7 @@ async function startServer(responses: string[]): Promise<FakeServer> {
     get requests() {
       return requestCount;
     },
+    bodies,
     close: async () => {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -215,12 +226,103 @@ describe('interactive mode', () => {
     });
 
     expect(code).toBe(0);
-    expect(stdout.value).toContain('Commands: /help, /session, /quit');
+    expect(stdout.value).toContain('Commands: /help, /session, /model, /clear, /quit');
     expect(stdout.value).toContain('session: ');
     expect(server.requests).toBe(0);
     const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
     const sessions = await store.listSessions();
     expect(sessions[0]?.status).toBe('idle');
+  });
+
+  it('clears the conversation and rewrites the JSONL rollout on /clear', async () => {
+    const server = await startServer([textResponse('First answer.')]);
+    const { home, workspace } = await setup(server.url);
+    const input = new PassThrough();
+    input.end('hello\n/clear\n/quit\n');
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+
+    const code = await runInteractive({
+      cwd: workspace,
+      env: envFor(home, workspace),
+      stdin: input,
+      stdout,
+      stderr,
+    });
+
+    expect(code).toBe(0);
+    expect(server.requests).toBe(1);
+    expect(stdout.value).toContain('First answer.');
+    expect(stdout.value).toContain('Session cleared');
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const sessions = await store.listSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({ status: 'idle', eventCount: 1 });
+    const id = sessions[0]?.id;
+    if (!id) throw new Error('missing session');
+    const events = await store.replaySession(id);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe('session.start');
+    const raw = await readFile(sessions[0]!.filePath, 'utf8');
+    expect(raw).not.toContain('First answer.');
+    expect(raw).not.toContain('hello');
+  });
+
+  it('changes model and effort with /model and restores them on resume', async () => {
+    const server = await startServer([textResponse('First answer.'), textResponse('Second answer.')]);
+    const { home, workspace } = await setup(server.url);
+    const env = envFor(home, workspace);
+
+    const firstInput = new PassThrough();
+    firstInput.end('first\n/model model-b high\n/quit\n');
+    const firstStdout = new MemorySink();
+    const firstStderr = new MemorySink();
+    const firstCode = await runInteractive({
+      cwd: workspace,
+      env,
+      stdin: firstInput,
+      stdout: firstStdout,
+      stderr: firstStderr,
+    });
+
+    expect(firstCode).toBe(0);
+    expect(server.requests).toBe(1);
+    expect(firstStdout.value).toContain('First answer.');
+    expect(firstStdout.value).toContain('model: model-b');
+    expect(firstStdout.value).toContain('effort: high');
+    expect(server.bodies[0]).toMatchObject({ model: 'test-model' });
+    expect(server.bodies[0]).not.toHaveProperty('output_config');
+
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const sessions = await store.listSessions();
+    const id = sessions[0]?.id;
+    if (!id) throw new Error('missing session');
+    const events = await store.replaySession(id);
+    expect(events.find((event) => event.type === 'model.changed')).toMatchObject({
+      model: 'model-b',
+      reasoningEffort: 'high',
+    });
+
+    const secondInput = new PassThrough();
+    secondInput.end('second\n/quit\n');
+    const secondStdout = new MemorySink();
+    const secondStderr = new MemorySink();
+    const secondCode = await runInteractive({
+      cwd: workspace,
+      env,
+      resumeSessionId: id,
+      stdin: secondInput,
+      stdout: secondStdout,
+      stderr: secondStderr,
+    });
+
+    expect(secondCode).toBe(0);
+    expect(server.requests).toBe(2);
+    expect(secondStdout.value).toContain('Second answer.');
+    expect(server.bodies[1]).toMatchObject({
+      model: 'model-b',
+      output_config: { effort: 'high' },
+    });
   });
 
   it('keeps JSON stdout machine-readable for slash commands', async () => {
@@ -245,7 +347,7 @@ describe('interactive mode', () => {
     const lines = stdout.value.trimEnd().split('\n').map((line) => JSON.parse(line));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ type: 'session.info' });
-    expect(stderr.value).toContain('Commands: /help, /session, /quit');
+    expect(stderr.value).toContain('Commands: /help, /session, /model, /clear, /quit');
     expect(stderr.value).toContain('session: ');
   });
 
@@ -305,20 +407,20 @@ describe('log replay', () => {
       type: 'assistant.message',
       turnId: 'turn-1',
       text: 'reading a file',
-      calls: [{ id: 'call-1', name: 'read_file', input: { path: 'a.ts' } }],
+      calls: [{ id: 'call-1', name: 'ReadFile', input: { path: 'a.ts' } }],
     });
     await session.append({
       type: 'tool.call',
       turnId: 'turn-1',
       callId: 'call-1',
-      name: 'read_file',
+      name: 'ReadFile',
       input: { path: 'a.ts' },
     });
     await session.append({
       type: 'tool.result',
       turnId: 'turn-1',
       callId: 'call-1',
-      name: 'read_file',
+      name: 'ReadFile',
       content: '1\tconst a = 1;',
       isError: false,
     });
@@ -348,7 +450,7 @@ describe('log replay', () => {
     expect(humanOut.value).toContain('hello log');
     expect(humanOut.value).toContain('reading a file');
     expect(humanOut.value).toContain('tool.call');
-    expect(humanOut.value).toContain('read_file');
+    expect(humanOut.value).toContain('ReadFile');
     expect(humanOut.value).toContain('status=done');
 
     const jsonOut = new MemorySink();

@@ -27,13 +27,13 @@ describe('PlainRenderer', () => {
     renderer.render({
       type: 'tool.started',
       turnId: 't1',
-      call: { id: 'c1', name: 'shell', input: { command: 'echo hi' } },
+      call: { id: 'c1', name: 'Shell', input: { command: 'echo hi' } },
     });
     renderer.render({
       type: 'tool.finished',
       turnId: 't1',
       callId: 'c1',
-      name: 'shell',
+      name: 'Shell',
       result: { content: 'exit_code: 0\n\nstdout:\nhi' },
       durationMs: 12,
     });
@@ -43,7 +43,7 @@ describe('PlainRenderer', () => {
     expect(stdout.value).toBe(
       'codingx 0.1.0\nmodel: model-a\ndirectory: /work/repo\n\nHello\n',
     );
-    expect(stderr.value).toContain('• shell: echo hi\n');
+    expect(stderr.value).toContain('• Shell: echo hi\n');
     expect(stderr.value).toContain('  └ exit_code: 0');
     expect(stderr.value).toContain('[tokens: in 10, out 3, cache read 5]');
     expect(stderr.value).not.toContain('Hello');
@@ -56,7 +56,7 @@ describe('PlainRenderer', () => {
     renderer.render({
       type: 'tool.started',
       turnId: 't1',
-      call: { id: 'c1', name: 'read_file', input: { path: 'src/a.ts' } },
+      call: { id: 'c1', name: 'ReadFile', input: { path: 'src/a.ts' } },
     });
     renderer.render({ type: 'turn.started', turnId: 't1' });
     renderer.render({
@@ -67,7 +67,7 @@ describe('PlainRenderer', () => {
       durationMs: 9,
       error: { code: 'PROVIDER_ERROR', message: 'upstream failed' },
     });
-    expect(stderr.value).toContain('• read_file: src/a.ts');
+    expect(stderr.value).toContain('• ReadFile: src/a.ts');
     expect(stderr.value).toContain('[error] PROVIDER_ERROR: upstream failed');
     expect(stdout.value).toBe('');
   });

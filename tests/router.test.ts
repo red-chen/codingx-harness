@@ -88,6 +88,24 @@ describe('ProviderRouter selection', () => {
     expect(primary.requests[0]?.model).toBe('model-a');
   });
 
+  it('switches model at runtime and applies it to the next request', async () => {
+    const primary = new FakeProvider('primary', [{ events: [] }]);
+    const router = new ProviderRouter({
+      routeName: 'default',
+      route: route([target('primary', 'model-a')]),
+      providers: { primary },
+    });
+    expect(router.model).toBe('model-a');
+
+    router.setModel(' model-b ');
+    expect(router.selection.model).toBe('model-b');
+    expect(router.model).toBe('model-b');
+    await collect(router);
+    expect(primary.requests[0]?.model).toBe('model-b');
+
+    expect(() => router.setModel('   ')).toThrow(/empty/i);
+  });
+
   it('respects --provider and --model pins', () => {
     const primary = new FakeProvider('primary', [{ events: [] }]);
     const secondary = new FakeProvider('secondary', [{ events: [] }]);

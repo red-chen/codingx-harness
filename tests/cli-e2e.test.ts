@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
 import type { ServerResponse } from 'node:http';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { runExec } from '../src/cli/commands/exec.js';
@@ -187,15 +187,15 @@ function envFor(home: string, workspace: string): NodeJS.ProcessEnv {
 }
 
 describe('codingx exec end-to-end', () => {
-  it('completes read_file -> edit_file -> shell -> final answer and writes a replayable rollout', async () => {
+  it('completes ReadFile -> EditFile -> shell -> final answer and writes a replayable rollout', async () => {
     const server = await startServer([
-      toolResponse('toolu_read', 'read_file', { path: 'src/util.ts' }),
-      toolResponse('toolu_edit', 'edit_file', {
+      toolResponse('toolu_read', 'ReadFile', { path: 'src/util.ts' }),
+      toolResponse('toolu_edit', 'EditFile', {
         path: 'src/util.ts',
         old_string: 'const foo',
         new_string: 'const bar',
       }),
-      toolResponse('toolu_shell', 'shell', { command: "grep -q 'const bar' src/util.ts" }),
+      toolResponse('toolu_shell', 'Shell', { command: "grep -q 'const bar' src/util.ts" }),
       textResponse('Renamed foo to bar and verified.'),
     ]);
     const { home, workspace } = await setupWorkspace(server.url);
@@ -213,9 +213,9 @@ describe('codingx exec end-to-end', () => {
     expect(code).toBe(0);
     expect(await readFile(path.join(workspace, 'src', 'util.ts'), 'utf8')).toContain('const bar = 1;');
     expect(stdout.value).toBe('Renamed foo to bar and verified.\n');
-    expect(stderr.value).toContain('• read_file: src/util.ts');
-    expect(stderr.value).toContain('• edit_file: src/util.ts');
-    expect(stderr.value).toContain('• shell: grep -q');
+    expect(stderr.value).toContain('• ReadFile: src/util.ts');
+    expect(stderr.value).toContain('• EditFile: src/util.ts');
+    expect(stderr.value).toContain('• Shell: grep -q');
     expect(stderr.value).toContain('[tokens:');
     expect(stderr.value).toContain('warning: M1 has no approval prompts');
 
@@ -225,15 +225,17 @@ describe('codingx exec end-to-end', () => {
     expect(firstBody).toMatchObject({ model: 'test-model', stream: true });
     const tools = firstBody.tools as Array<{ name: string }>;
     expect(tools.map((tool) => tool.name)).toEqual([
-      'read_file',
-      'list_dir',
-      'glob',
-      'grep',
-      'write_file',
-      'edit_file',
-      'update_plan',
-      'apply_patch',
-      'shell',
+      'ReadFile',
+      'ListDir',
+      'Glob',
+      'Grep',
+      'WriteFile',
+      'EditFile',
+      'UpdatePlan',
+      'ApplyPatch',
+      'Shell',
+      'Skill',
+      'AskUserQuestion',
     ]);
     expect((firstBody.system as Array<{ cache_control?: unknown }>)[0]?.cache_control).toBeDefined();
     const lastMessages = server.bodies[3]?.messages as Array<{ role: string; content: unknown[] }>;
@@ -264,6 +266,186 @@ describe('codingx exec end-to-end', () => {
     expect(events.find((event) => event.type === 'turn.end')).toMatchObject({ status: 'done' });
     expect(events.find((event) => event.type === 'session.end')).toBeDefined();
     await expect(store.attachSession(sessionId, 'write')).rejects.toThrow(/ended/);
+  });
+
+  it('allows repeated --add-dir roots for file tools and lists them in the system prompt', async () => {
+    const responses: string[] = [];
+    const server = await startServer(responses);
+    const { root, home, workspace } = await setupWorkspace(server.url);
+    const extra = path.join(root, 'extra');
+    const second = path.join(root, 'second');
+    const shared = path.join(workspace, 'shared');
+    await mkdir(extra, { recursive: true });
+    await mkdir(second, { recursive: true });
+    await mkdir(shared, { recursive: true });
+    const extraFile = path.join(second, 'note.txt');
+    responses.push(
+      toolResponse('toolu_add_dir', 'WriteFile', { path: extraFile, content: 'written through add-dir\n' }),
+      textResponse('Wrote the note in the additional directory.'),
+    );
+
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+
+    const code = await runCli(
+      [
+        '--cd',
+        workspace,
+        '--add-dir',
+        path.relative(workspace, extra),
+        '--add-dir',
+        second,
+        '--add-dir',
+        '~/shared',
+        'exec',
+        'write a note in the extra directory',
+      ],
+      { stdout, stderr, env: envFor(home, workspace) },
+    );
+
+    expect(code).toBe(0);
+    expect(await readFile(extraFile, 'utf8')).toBe('written through add-dir\n');
+    expect(stdout.value).toBe('Wrote the note in the additional directory.\n');
+    expect(stderr.value).toContain('• WriteFile: ' + extraFile);
+    expect(server.bodies).toHaveLength(2);
+
+    const canonicalExtra = await realpath(extra);
+    const canonicalSecond = await realpath(second);
+    const canonicalShared = await realpath(shared);
+    const systemText = (server.bodies[0]?.system as Array<{ text?: string }>)
+      .map((block) => block.text ?? '')
+      .join('');
+    expect(systemText).toContain('additional writable directories');
+    expect(systemText).toContain(canonicalExtra);
+    expect(systemText).toContain(canonicalSecond);
+    expect(systemText).toContain(canonicalShared);
+  });
+
+  it('rejects a missing --add-dir before the turn starts', async () => {
+    const server = await startServer([]);
+    const { root, home, workspace } = await setupWorkspace(server.url);
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+
+    const code = await runCli(
+      ['--cd', workspace, '--add-dir', path.join(root, 'missing'), 'exec', 'hello'],
+      { stdout, stderr, env: envFor(home, workspace) },
+    );
+
+    expect(code).not.toBe(0);
+    expect(stderr.value).toContain('Additional directory does not exist');
+    expect(server.bodies).toHaveLength(0);
+  });
+
+  it('loads project skills into the system prompt and the skill tool', async () => {
+    const server = await startServer([
+      toolResponse('toolu_skill', 'Skill', { name: 'code-review' }),
+      textResponse('Followed the skill.'),
+    ]);
+    const { home, workspace } = await setupWorkspace(server.url);
+    const skillDir = path.join(workspace, '.codingx', 'skills', 'code-review');
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      '---\nname: code-review\ndescription: Review a diff.\n---\n\n# Review workflow\n\nCheck tests.\n',
+      'utf8',
+    );
+
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+    const code = await runExec({
+      prompt: 'Review the current diff.',
+      cwd: workspace,
+      env: envFor(home, workspace),
+      stdout,
+      stderr,
+    });
+
+    expect(code).toBe(0);
+    expect(stdout.value).toBe('Followed the skill.\n');
+    expect(stderr.value).toContain('• Skill: code-review');
+    expect(server.bodies).toHaveLength(2);
+
+    const firstBody = server.bodies[0];
+    if (!firstBody) throw new Error('missing first request body');
+    const systemText = (firstBody.system as Array<{ text?: string }>)
+      .map((block) => block.text ?? '')
+      .join('');
+    expect(systemText).toContain('# Skills');
+    expect(systemText).toContain('- code-review: Review a diff.');
+
+    const secondBody = server.bodies[1] as
+      | { messages?: Array<{ role: string; content: Array<Record<string, unknown>> }> }
+      | undefined;
+    const lastUser = secondBody?.messages?.at(-1);
+    const toolResult = lastUser?.content.find((block) => block.type === 'tool_result');
+    expect(toolResult?.content).toContain('# Review workflow');
+    expect(toolResult?.content).toContain('Base directory: ' + skillDir);
+  });
+
+  it('loads shared skills from $HOME/.agents/skills', async () => {
+    const server = await startServer([textResponse('Done.')]);
+    const { home, workspace } = await setupWorkspace(server.url);
+    const skillDir = path.join(workspace, '.agents', 'skills', 'shared-lint');
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      '---\nname: shared-lint\ndescription: Lint shared code.\n---\n\n# Lint workflow\n\nRun the linter.\n',
+      'utf8',
+    );
+
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+    const code = await runExec({
+      prompt: 'Lint the project.',
+      cwd: workspace,
+      env: envFor(home, workspace),
+      stdout,
+      stderr,
+    });
+
+    expect(code).toBe(0);
+    expect(stdout.value).toBe('Done.\n');
+    const firstBody = server.bodies[0];
+    if (!firstBody) throw new Error('missing first request body');
+    const systemText = (firstBody.system as Array<{ text?: string }>)
+      .map((block) => block.text ?? '')
+      .join('');
+    expect(systemText).toContain('- shared-lint: Lint shared code.');
+  });
+
+  it('returns a non-interactive is_error when exec calls AskUserQuestion', async () => {
+    const server = await startServer([
+      toolResponse('toolu_ask', 'AskUserQuestion', {
+        questions: [
+          { id: 'approach', question: 'Which approach?', options: [{ label: 'A' }, { label: 'B' }] },
+        ],
+      }),
+      textResponse('I will proceed with A.'),
+    ]);
+    const { home, workspace } = await setupWorkspace(server.url);
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+
+    const code = await runExec({
+      prompt: 'Pick an approach and continue.',
+      cwd: workspace,
+      env: envFor(home, workspace),
+      stdout,
+      stderr,
+    });
+
+    expect(code).toBe(0);
+    expect(stdout.value).toBe('I will proceed with A.\n');
+    expect(stderr.value).toContain('• ask: Which approach?');
+    expect(stderr.value).toContain('cannot show interactive questions');
+
+    const secondBody = server.bodies[1] as
+      | { messages?: Array<{ role: string; content: Array<Record<string, unknown>> }> }
+      | undefined;
+    const toolResult = secondBody?.messages?.at(-1)?.content.find((block) => block.type === 'tool_result');
+    expect(toolResult).toMatchObject({ is_error: true });
+    expect(toolResult?.content).toContain('cannot show interactive questions');
   });
 
   it('runs through the CLI parser with --json and keeps stdout machine-readable', async () => {
@@ -327,6 +509,7 @@ describe('CLI parsing', () => {
     expect(await runCli(['--help'], { stdout: helpOut, stderr: helpErr })).toBe(0);
     expect(helpOut.value).toContain('Usage: codingx');
     expect(helpOut.value).toContain('exec');
+    expect(helpOut.value).toContain('--add-dir');
   });
 
   it('returns 2 for a missing prompt and a bad working directory', async () => {

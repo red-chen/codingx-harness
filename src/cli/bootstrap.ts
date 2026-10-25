@@ -1,4 +1,6 @@
+import os from 'node:os';
 import path from 'node:path';
+import { stat } from 'node:fs/promises';
 import {
   getSelectedRoute,
   getSelectedRouteName,
@@ -12,14 +14,18 @@ import { createProvider } from '../providers/index.js';
 import { ProviderRouter, selectRouteTarget, type RouterPins } from '../routing/index.js';
 import { EmbeddedSessionStore, SessiondStore, ensureSessiond, type SessionStoreApi } from '../session/index.js';
 import { ToolRegistry, createBuiltinTools } from '../tools/index.js';
+import { loadSkills, type SkillRegistry } from '../skills/index.js';
 import { buildChildEnv } from '../exec/index.js';
 import { ConfigError } from '../util/errors.js';
 import { resolveApiKey } from '../util/auth.js';
+import { canonicalizePath, expandHome } from '../util/paths.js';
 import { VERSION } from '../version.js';
 
 export interface BootstrapOptions {
   cwd: string;
   cli?: ConfigOverrides;
+  /** Extra directories writable alongside cwd (CLI --add-dir). */
+  addDirs?: readonly string[];
   env?: NodeJS.ProcessEnv;
 }
 
@@ -27,15 +33,48 @@ export interface CliApp {
   loaded: LoadedConfig;
   config: Config;
   cwd: string;
+  /** Canonical extra writable directories from --add-dir. */
+  additionalDirs: string[];
   codingxHome: string;
   store: SessionStoreApi;
   router: ProviderRouter;
   tools: ToolRegistry;
   snapshot: ContextSnapshot;
+  skills: SkillRegistry;
   systemPrompt: string;
   shellEnv: Record<string, string>;
   warnings: string[];
   cliVersion: string;
+}
+
+/** Validate and canonicalize --add-dir inputs; relative paths resolve from cwd. */
+async function resolveAdditionalDirs(
+  inputs: readonly string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string[]> {
+  const home = env.HOME !== undefined && env.HOME.length > 0 ? env.HOME : os.homedir();
+  const directories: string[] = [];
+  for (const input of inputs) {
+    if (input.length === 0) throw new ConfigError('--add-dir requires a directory path.');
+    const candidate = path.resolve(cwd, expandHome(input, home));
+    let info;
+    try {
+      info = await stat(candidate);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new ConfigError('Additional directory does not exist: ' + input);
+      }
+      throw new ConfigError(
+        'Cannot access additional directory ' + input + ': ' + (error instanceof Error ? error.message : String(error)),
+        { cause: error },
+      );
+    }
+    if (!info.isDirectory()) throw new ConfigError('Additional directory is not a directory: ' + input);
+    const canonical = await canonicalizePath(candidate);
+    if (!directories.includes(canonical)) directories.push(canonical);
+  }
+  return directories;
 }
 
 /** Assemble the complete M1 runtime for one CLI invocation. */
@@ -44,6 +83,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
   const env = options.env ?? process.env;
   const loaded = await loadConfig({ cwd, env, cli: options.cli });
   const warnings = [...loaded.warnings];
+  const additionalDirs = await resolveAdditionalDirs(options.addDirs ?? [], cwd, env);
 
   warnings.push(
     'M1 has no approval prompts or OS-level sandbox; tool calls run with your user permissions. ' +
@@ -53,7 +93,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
     warnings.push('MCP servers are configured but MCP tools are not implemented in M1; the servers are ignored.');
   }
   if (loaded.config.web.enabled) {
-    warnings.push('web_fetch is not implemented in M1; [web] settings are ignored.');
+    warnings.push('WebFetch is not implemented in M1; [web] settings are ignored.');
   }
   if (loaded.config.tools.allowCustom) {
     warnings.push('Custom tools are not loaded in M1; tools.allow_custom is ignored.');
@@ -84,7 +124,18 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
 
   const snapshot = await createContextSnapshot({ cwd, env });
   warnings.push(...snapshot.warnings);
-  const systemPrompt = buildSystemPrompt(snapshot);
+  const home = env.HOME !== undefined && env.HOME.length > 0 ? env.HOME : os.homedir();
+  const loadedSkills = await loadSkills({
+    codingxHome: loaded.codingxHome,
+    projectRoot: snapshot.projectRoot,
+    agentsSkillsDir: path.join(home, '.agents', 'skills'),
+  });
+  warnings.push(...loadedSkills.warnings);
+  const skills = loadedSkills.registry;
+  const systemPrompt = buildSystemPrompt(snapshot, {
+    skills: skills.summaries(),
+    ...(additionalDirs.length > 0 ? { additionalDirs } : {}),
+  });
   const tools = new ToolRegistry(createBuiltinTools());
   const shellEnv = buildChildEnv(loaded.config.sandbox.envPassthrough, env);
   let store: SessionStoreApi;
@@ -106,11 +157,13 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
     loaded,
     config: loaded.config,
     cwd,
+    additionalDirs,
     codingxHome: loaded.codingxHome,
     store,
     router,
     tools,
     snapshot,
+    skills,
     systemPrompt,
     shellEnv,
     warnings,

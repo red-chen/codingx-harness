@@ -13,6 +13,8 @@
 
 Agent 只依赖 `ModelClient` 接口；`ProviderRouter` 实现它，负责把 `stream()` 调用路由到具体 `Provider` 适配器。
 
+运行时 `/model` 切换只更新当前 router 的 `selection.model`，不重新选择 route/provider；`ModelRequest.reasoningEffort` 由 provider 适配器映射到 wire 参数（Anthropic Messages 为 `output_config.effort`）。变更写入 `model.changed`，resume 时恢复。
+
 ## 配置
 
 ```toml

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
@@ -46,30 +46,107 @@ async function put(relative: string, content: string | Buffer): Promise<string> 
   return file;
 }
 
+describe('--add-dir roots', () => {
+  it('reads, edits and shells into additional directories', async () => {
+    const extra = path.join(root, 'extra');
+    await mkdir(extra, { recursive: true });
+    const extraCtx: ToolContext = { ...ctx, additionalDirs: [extra] };
+    const target = path.join(extra, 'notes.txt');
+
+    const write = await registry.execute('WriteFile', { path: target, content: 'hello extra\n' }, extraCtx);
+    expect(write.isError).toBeUndefined();
+    expect(write.content).toContain('Created ' + path.relative(cwd, target));
+    expect(await readFile(target, 'utf8')).toBe('hello extra\n');
+
+    const read = await registry.execute('ReadFile', { path: target }, extraCtx);
+    expect(read.content).toContain('hello extra');
+
+    const edit = await registry.execute(
+      'EditFile',
+      { path: target, old_string: 'hello extra', new_string: 'edited extra' },
+      extraCtx,
+    );
+    expect(edit.isError).toBeUndefined();
+    expect(await readFile(target, 'utf8')).toBe('edited extra\n');
+
+    const glob = await registry.execute('Glob', { pattern: '*.txt', path: extra }, extraCtx);
+    expect(glob.isError).toBeUndefined();
+    expect(glob.content).toBe(path.relative(cwd, target).split(path.sep).join('/'));
+    const globReadBack = await registry.execute('ReadFile', { path: glob.content.trim() }, extraCtx);
+    expect(globReadBack.content).toContain('edited extra');
+
+    const grep = await registry.execute('Grep', { pattern: 'edited', path: extra }, extraCtx);
+    expect(grep.isError).toBeUndefined();
+    expect(grep.content).toContain(path.relative(cwd, target).split(path.sep).join('/') + ':1:');
+
+    const shell = await registry.execute('Shell', { command: 'pwd', cwd: extra }, extraCtx);
+    expect(shell.isError).toBeUndefined();
+    expect(shell.content).toContain(await realpath(extra));
+  });
+
+  it('keeps relative paths anchored to the primary workspace', async () => {
+    const extra = path.join(root, 'extra');
+    await mkdir(extra, { recursive: true });
+    await put('note.txt', 'primary note');
+    await writeFile(path.join(extra, 'note.txt'), 'extra note');
+    const extraCtx: ToolContext = { ...ctx, additionalDirs: [extra] };
+
+    const primary = await registry.execute('ReadFile', { path: 'note.txt' }, extraCtx);
+    expect(primary.content).toContain('primary note');
+    expect(primary.content).not.toContain('extra note');
+
+    const viaTraversal = await registry.execute('ReadFile', { path: '../extra/note.txt' }, extraCtx);
+    expect(viaTraversal.content).toContain('extra note');
+  });
+
+  it('still rejects paths outside every root and symlinks escaping an added root', async () => {
+    const extra = path.join(root, 'extra');
+    const outside = path.join(root, 'outside');
+    await mkdir(extra, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(path.join(outside, 'secret.txt'), 'outside secret');
+    const extraCtx: ToolContext = { ...ctx, additionalDirs: [extra] };
+
+    const escaped = await registry.execute('ReadFile', { path: path.join(outside, 'secret.txt') }, extraCtx);
+    expect(escaped.isError).toBe(true);
+    expect(escaped.content).toMatch(/outside the workspace/);
+    expect(escaped.content).toContain(extra);
+
+    await symlink(path.join(outside, 'secret.txt'), path.join(extra, 'link.txt'));
+    const link = await registry.execute('ReadFile', { path: path.join(extra, 'link.txt') }, extraCtx);
+    expect(link.isError).toBe(true);
+    expect(link.content).toMatch(/outside the workspace/);
+  });
+});
+
 describe('ToolRegistry', () => {
   it('keeps registration order and generates stable JSON schemas', () => {
     expect(registry.list().map((tool) => tool.name)).toEqual([
-      'read_file',
-      'list_dir',
-      'glob',
-      'grep',
-      'write_file',
-      'edit_file',
-      'update_plan',
-      'apply_patch',
-      'shell',
+      'ReadFile',
+      'ListDir',
+      'Glob',
+      'Grep',
+      'WriteFile',
+      'EditFile',
+      'UpdatePlan',
+      'ApplyPatch',
+      'Shell',
+      'Skill',
+      'AskUserQuestion',
     ]);
     const schemas = registry.toJsonSchemas();
     expect(schemas.map((schema) => schema.name)).toEqual([
-      'read_file',
-      'list_dir',
-      'glob',
-      'grep',
-      'write_file',
-      'edit_file',
-      'update_plan',
-      'apply_patch',
-      'shell',
+      'ReadFile',
+      'ListDir',
+      'Glob',
+      'Grep',
+      'WriteFile',
+      'EditFile',
+      'UpdatePlan',
+      'ApplyPatch',
+      'Shell',
+      'Skill',
+      'AskUserQuestion',
     ]);
     expect(schemas[0]?.inputSchema).toMatchObject({ type: 'object' });
     expect(JSON.stringify(schemas[0]?.inputSchema)).toContain('"path"');
@@ -77,7 +154,7 @@ describe('ToolRegistry', () => {
 
   it('rejects duplicate names', () => {
     const tool: ToolDef = {
-      name: 'read_file',
+      name: 'ReadFile',
       description: 'duplicate',
       schema: z.object({}),
       parallelSafe: true,
@@ -91,12 +168,12 @@ describe('ToolRegistry', () => {
     const unknown = await registry.execute('nope', {}, ctx);
     expect(unknown.isError).toBe(true);
     expect(unknown.content).toMatch(
-      /Available tools: read_file, list_dir, glob, grep, write_file, edit_file, update_plan, apply_patch, shell/,
+      /Available tools: ReadFile, ListDir, Glob, Grep, WriteFile, EditFile, UpdatePlan, ApplyPatch, Shell, Skill, AskUserQuestion/,
     );
 
-    const invalid = await registry.execute('read_file', { path: 42 }, ctx);
+    const invalid = await registry.execute('ReadFile', { path: 42 }, ctx);
     expect(invalid.isError).toBe(true);
-    expect(invalid.content).toMatch(/Invalid input for tool "read_file"/);
+    expect(invalid.content).toMatch(/Invalid input for tool "ReadFile"/);
   });
 
   it('converts thrown tool errors into is_error results', async () => {
@@ -147,15 +224,15 @@ describe('ToolRegistry', () => {
   });
 });
 
-describe('read_file', () => {
+describe('ReadFile', () => {
   it('reads line-numbered windows and reports continuation', async () => {
     await put('src/util.ts', 'line1\nline2\nline3\nline4\nline5\n');
-    const all = await registry.execute('read_file', { path: 'src/util.ts' }, ctx);
+    const all = await registry.execute('ReadFile', { path: 'src/util.ts' }, ctx);
     expect(all.isError).toBeUndefined();
     expect(all.content).toBe('1\tline1\n2\tline2\n3\tline3\n4\tline4\n5\tline5');
     expect(all.meta).toMatchObject({ totalLines: 5, returnedLines: 5 });
 
-    const window = await registry.execute('read_file', { path: 'src/util.ts', offset: 2, limit: 2 }, ctx);
+    const window = await registry.execute('ReadFile', { path: 'src/util.ts', offset: 2, limit: 2 }, ctx);
     expect(window.content).toContain('2\tline2');
     expect(window.content).toContain('3\tline3');
     expect(window.content).toContain('[Showing lines 2-3 of 5. Use offset=4 to continue.]');
@@ -165,21 +242,21 @@ describe('read_file', () => {
   it('marks files as read for read-before-write', async () => {
     await put('a.txt', 'hello');
     expect(ctx.readTracker.size).toBe(0);
-    await registry.execute('read_file', { path: 'a.txt' }, ctx);
+    await registry.execute('ReadFile', { path: 'a.txt' }, ctx);
     expect(ctx.readTracker.size).toBe(1);
   });
 
   it('handles empty files, past-EOF offsets and missing files', async () => {
     await put('empty.txt', '');
-    const empty = await registry.execute('read_file', { path: 'empty.txt' }, ctx);
+    const empty = await registry.execute('ReadFile', { path: 'empty.txt' }, ctx);
     expect(empty.content).toMatch(/is empty/);
     expect(empty.meta).toMatchObject({ totalLines: 0 });
 
     await put('two.txt', 'a\nb');
-    const past = await registry.execute('read_file', { path: 'two.txt', offset: 10 }, ctx);
+    const past = await registry.execute('ReadFile', { path: 'two.txt', offset: 10 }, ctx);
     expect(past.content).toMatch(/offset 10 is past the end/);
 
-    const missing = await registry.execute('read_file', { path: 'nope.txt' }, ctx);
+    const missing = await registry.execute('ReadFile', { path: 'nope.txt' }, ctx);
     expect(missing.isError).toBe(true);
     expect(missing.content).toMatch(/not found/);
   });
@@ -189,15 +266,15 @@ describe('read_file', () => {
     await put('image.bin', Buffer.from([0, 1, 2, 3]));
     await put('../outside.txt', 'secret');
 
-    const directory = await registry.execute('read_file', { path: 'dir' }, ctx);
+    const directory = await registry.execute('ReadFile', { path: 'dir' }, ctx);
     expect(directory.isError).toBe(true);
     expect(directory.content).toMatch(/Not a regular file/);
 
-    const binary = await registry.execute('read_file', { path: 'image.bin' }, ctx);
+    const binary = await registry.execute('ReadFile', { path: 'image.bin' }, ctx);
     expect(binary.isError).toBe(true);
     expect(binary.content).toMatch(/binary/);
 
-    const outside = await registry.execute('read_file', { path: '../outside.txt' }, ctx);
+    const outside = await registry.execute('ReadFile', { path: '../outside.txt' }, ctx);
     expect(outside.isError).toBe(true);
     expect(outside.content).toMatch(/outside the workspace/);
   });
@@ -206,13 +283,13 @@ describe('read_file', () => {
     const outside = path.join(root, 'secret.txt');
     await writeFile(outside, 'secret');
     await symlink(outside, path.join(cwd, 'link.txt'));
-    const result = await registry.execute('read_file', { path: 'link.txt' }, ctx);
+    const result = await registry.execute('ReadFile', { path: 'link.txt' }, ctx);
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/outside the workspace/);
   });
 });
 
-describe('list_dir', () => {
+describe('ListDir', () => {
   beforeEach(async () => {
     await put('README.md', 'readme');
     await put('src/main.ts', 'main');
@@ -226,7 +303,7 @@ describe('list_dir', () => {
   });
 
   it('renders a depth-limited tree and honors ignore rules', async () => {
-    const result = await registry.execute('list_dir', { path: '.', depth: 2 }, ctx);
+    const result = await registry.execute('ListDir', { path: '.', depth: 2 }, ctx);
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain('README.md');
     expect(result.content).toContain('src/');
@@ -242,23 +319,23 @@ describe('list_dir', () => {
   });
 
   it('supports depth 0 and subdirectories', async () => {
-    const shallow = await registry.execute('list_dir', { path: '.', depth: 0 }, ctx);
+    const shallow = await registry.execute('ListDir', { path: '.', depth: 0 }, ctx);
     expect(shallow.content).toContain('src/');
     expect(shallow.content).not.toContain('main.ts');
 
-    const sub = await registry.execute('list_dir', { path: 'src', depth: 1 }, ctx);
+    const sub = await registry.execute('ListDir', { path: 'src', depth: 1 }, ctx);
     expect(sub.content).toContain('main.ts');
     expect(sub.content).toContain('nested/');
     expect(sub.content).toContain('  deep.ts');
   });
 
   it('rejects files and paths outside the workspace', async () => {
-    const file = await registry.execute('list_dir', { path: 'README.md' }, ctx);
+    const file = await registry.execute('ListDir', { path: 'README.md' }, ctx);
     expect(file.isError).toBe(true);
     expect(file.content).toMatch(/Not a directory/);
 
     await mkdir(path.join(root, 'outside'));
-    const outside = await registry.execute('list_dir', { path: '../outside' }, ctx);
+    const outside = await registry.execute('ListDir', { path: '../outside' }, ctx);
     expect(outside.isError).toBe(true);
     expect(outside.content).toMatch(/outside the workspace/);
   });
@@ -268,26 +345,26 @@ describe('list_dir', () => {
     await Promise.all(
       Array.from({ length: 505 }, (_, index) => writeFile(path.join(cwd, 'many', 'f' + index + '.txt'), 'x')),
     );
-    const result = await registry.execute('list_dir', { path: 'many', depth: 0 }, ctx);
+    const result = await registry.execute('ListDir', { path: 'many', depth: 0 }, ctx);
     expect(result.meta).toMatchObject({ entries: 500, truncated: true });
     expect(result.content).toContain('[truncated after 500 entries]');
   });
 });
 
-describe('edit_file', () => {
+describe('EditFile', () => {
   it('requires a prior read, then replaces a unique string', async () => {
     await put('src/util.ts', 'const foo = 1;\nexport { foo };\n');
     const denied = await registry.execute(
-      'edit_file',
+      'EditFile',
       { path: 'src/util.ts', old_string: 'foo', new_string: 'bar' },
       ctx,
     );
     expect(denied.isError).toBe(true);
     expect(denied.content).toMatch(/before it has been read/);
 
-    await registry.execute('read_file', { path: 'src/util.ts' }, ctx);
+    await registry.execute('ReadFile', { path: 'src/util.ts' }, ctx);
     const edited = await registry.execute(
-      'edit_file',
+      'EditFile',
       { path: 'src/util.ts', old_string: 'const foo', new_string: 'const bar' },
       ctx,
     );
@@ -300,10 +377,10 @@ describe('edit_file', () => {
 
   it('rejects missing and ambiguous matches, with an opt-in replace_all', async () => {
     await put('multi.txt', 'foo foo foo');
-    await registry.execute('read_file', { path: 'multi.txt' }, ctx);
+    await registry.execute('ReadFile', { path: 'multi.txt' }, ctx);
 
     const missing = await registry.execute(
-      'edit_file',
+      'EditFile',
       { path: 'multi.txt', old_string: 'nope', new_string: 'x' },
       ctx,
     );
@@ -311,7 +388,7 @@ describe('edit_file', () => {
     expect(missing.content).toMatch(/was not found/);
 
     const ambiguous = await registry.execute(
-      'edit_file',
+      'EditFile',
       { path: 'multi.txt', old_string: 'foo', new_string: 'bar' },
       ctx,
     );
@@ -319,7 +396,7 @@ describe('edit_file', () => {
     expect(ambiguous.content).toMatch(/appears 3 times/);
 
     const all = await registry.execute(
-      'edit_file',
+      'EditFile',
       { path: 'multi.txt', old_string: 'foo', new_string: 'bar', replace_all: true },
       ctx,
     );
@@ -329,9 +406,9 @@ describe('edit_file', () => {
 
   it('returns a no-op for identical strings and refuses outside paths', async () => {
     await put('same.txt', 'abc');
-    await registry.execute('read_file', { path: 'same.txt' }, ctx);
+    await registry.execute('ReadFile', { path: 'same.txt' }, ctx);
     const noop = await registry.execute(
-      'edit_file',
+      'EditFile',
       { path: 'same.txt', old_string: 'abc', new_string: 'abc' },
       ctx,
     );
@@ -339,7 +416,7 @@ describe('edit_file', () => {
 
     await put('../outside.txt', 'abc');
     const outside = await registry.execute(
-      'edit_file',
+      'EditFile',
       { path: '../outside.txt', old_string: 'abc', new_string: 'def' },
       ctx,
     );
@@ -348,10 +425,10 @@ describe('edit_file', () => {
   });
 });
 
-describe('shell', () => {
+describe('Shell', () => {
   it('runs commands in the workspace and reports structured output', async () => {
     const result = await registry.execute(
-      'shell',
+      'Shell',
       { command: 'echo hello', description: 'say hello' },
       ctx,
     );
@@ -369,7 +446,7 @@ describe('shell', () => {
   it('honors cwd and reports non-zero exits as errors', async () => {
     await put('sub/marker.txt', 'marker');
     const result = await registry.execute(
-      'shell',
+      'Shell',
       { command: 'cat marker.txt && exit 3', cwd: 'sub' },
       ctx,
     );
@@ -380,7 +457,7 @@ describe('shell', () => {
   });
 
   it('times out and marks the result as an error', async () => {
-    const result = await registry.execute('shell', { command: 'sleep 5', timeout_ms: 200 }, ctx);
+    const result = await registry.execute('Shell', { command: 'sleep 5', timeout_ms: 200 }, ctx);
     expect(result.isError).toBe(true);
     expect(result.meta).toMatchObject({ timedOut: true });
     expect(result.content).toMatch(/timed out after 200ms/);
@@ -388,7 +465,7 @@ describe('shell', () => {
 
   it('rejects cwd outside the workspace', async () => {
     await mkdir(path.join(root, 'outside'));
-    const result = await registry.execute('shell', { command: 'pwd', cwd: '../outside' }, ctx);
+    const result = await registry.execute('Shell', { command: 'pwd', cwd: '../outside' }, ctx);
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/outside the workspace/);
   });
@@ -397,13 +474,13 @@ describe('shell', () => {
     const controller = new AbortController();
     controller.abort();
     await expect(
-      registry.execute('shell', { command: 'echo hi' }, { ...ctx, signal: controller.signal }),
+      registry.execute('Shell', { command: 'echo hi' }, { ...ctx, signal: controller.signal }),
     ).rejects.toMatchObject({ code: 'ABORTED' });
   });
 
   it('caps oversized shell output', async () => {
     const result = await registry.execute(
-      'shell',
+      'Shell',
       { command: 'yes a | head -c 2000' },
       { ...ctx, maxOutputChars: 300 },
     );

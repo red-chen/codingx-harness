@@ -268,6 +268,7 @@ class EmbeddedSessionHandle implements SessionHandle {
   private fileHandle: FileHandle | undefined;
   private lock: LockHandle | undefined;
   private nextSeq: number;
+  private header: RolloutEvent;
   private closed = false;
   private ended = false;
   private readonly seen = new Map<string, RolloutEvent>();
@@ -287,6 +288,22 @@ class EmbeddedSessionHandle implements SessionHandle {
     for (const event of events) this.seen.set(event.eventId, event);
     this.nextSeq = (events[events.length - 1]?.seq ?? 0) + 1;
     this.ended = events.some((event) => event.type === 'session.end');
+    const existing = events.find((event) => event.type === 'session.start');
+    this.header = existing
+      ? { ...existing }
+      : {
+          seq: 1,
+          ts: meta.createdAt,
+          type: 'session.start',
+          eventId: generateEventId(),
+          cwd: meta.cwd,
+          model: meta.model,
+          createdAt: meta.createdAt,
+          cliVersion: meta.cliVersion,
+          ...(meta.provider ? { provider: meta.provider } : {}),
+          ...(meta.requestId ? { requestId: meta.requestId } : {}),
+          ...(meta.forkedFrom ? { forkedFrom: meta.forkedFrom } : {}),
+        };
   }
 
   append(events: AppendEventInput | AppendEventInput[]): Promise<RolloutEvent[]> {
@@ -299,6 +316,12 @@ class EmbeddedSessionHandle implements SessionHandle {
   appendSystem(events: AppendEventInput | AppendEventInput[]): Promise<RolloutEvent[]> {
     const list = Array.isArray(events) ? events : [events];
     const run = this.queue.then(() => this.appendInternal(list, true));
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  clear(): Promise<void> {
+    const run = this.queue.then(() => this.clearInternal());
     this.queue = run.catch(() => undefined);
     return run;
   }
@@ -380,6 +403,43 @@ class EmbeddedSessionHandle implements SessionHandle {
     return written;
   }
 
+  private async clearInternal(): Promise<void> {
+    if (this.closed) throw new SessionError('Session handle ' + this.id + ' is closed.');
+    if (!this.writable) throw new SessionError('Session ' + this.id + ' is read-only.');
+    if (this.ended) throw new SessionError('Session ' + this.id + ' has ended and cannot be cleared.');
+    if (!this.fileHandle) throw new SessionError('Session handle ' + this.id + ' is closed.');
+
+    const header: RolloutEvent = {
+      ...this.header,
+      seq: 1,
+      ts: nowIso(),
+      eventId: generateEventId(),
+    };
+    let line: string;
+    try {
+      line = JSON.stringify(header) + '\n';
+    } catch (error) {
+      throw new SessionError('Session header is not JSON-serializable: ' + errorMessage(error), { cause: error });
+    }
+    if (Buffer.byteLength(line, 'utf8') > MAX_EVENT_BYTES) {
+      throw new SessionError('session.start event exceeds the 1 MiB limit.');
+    }
+
+    try {
+      await this.fileHandle.truncate(0);
+      await writeAll(this.fileHandle, line);
+      await this.fileHandle.sync();
+    } catch (error) {
+      throw new SessionError('Cannot clear session ' + this.id + ': ' + errorMessage(error), { cause: error });
+    }
+
+    this.header = header;
+    this.nextSeq = 2;
+    this.seen.clear();
+    this.seen.set(header.eventId, header);
+    this.ended = false;
+  }
+
   private async endInternal(reason: string): Promise<RolloutEvent> {
     if (this.ended) throw new SessionError('Session ' + this.id + ' has already ended.');
     if (!this.writable) throw new SessionError('Session ' + this.id + ' is read-only.');
@@ -424,7 +484,9 @@ export class EmbeddedSessionStore {
       let created = false;
       try {
         lock = await acquireLock(filePath);
-        fileHandle = await open(filePath, 'wx', 0o600);
+        // 'ax' keeps every writable handle in append mode so a clear can
+        // truncate and rewrite without leaving a sparse hole at the old offset.
+        fileHandle = await open(filePath, 'ax', 0o600);
         created = true;
         await chmod(filePath, 0o600).catch(() => undefined);
 

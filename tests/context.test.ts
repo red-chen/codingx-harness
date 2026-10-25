@@ -129,8 +129,20 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('Use pnpm.');
     expect(prompt).toContain('Tool output');
     expect(prompt).toContain('untrusted data');
-    expect(prompt).toContain('read_file before editing');
+    expect(prompt).toContain('ReadFile before editing');
     expect(prompt).toContain('# Project instructions');
+  });
+
+  it('lists additional writable directories when provided', () => {
+    const plain = buildSystemPrompt(snapshot());
+    expect(plain).toContain('File tools are confined to the workspace');
+    expect(plain).not.toContain('additional writable directories');
+
+    const prompt = buildSystemPrompt(snapshot(), { additionalDirs: ['/work/shared', '/tmp/output'] });
+    expect(prompt).toContain('additional writable directories');
+    expect(prompt).toContain('  - /work/shared');
+    expect(prompt).toContain('  - /tmp/output');
+    expect(prompt).not.toContain('File tools are confined to the workspace');
   });
 
   it('renders missing optional values explicitly and deterministically', () => {
@@ -154,7 +166,7 @@ describe('buildModelRequest', () => {
   it('assembles a provider request without mutating the history array', () => {
     const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hello' }] }];
     const tools = [
-      { name: 'read_file', description: 'read', inputSchema: { type: 'object' } },
+      { name: 'ReadFile', description: 'read', inputSchema: { type: 'object' } },
     ];
     const request = buildModelRequest({
       model: 'model-a',
@@ -163,6 +175,7 @@ describe('buildModelRequest', () => {
       tools,
       maxOutputTokens: 4096,
       temperature: 0,
+      reasoningEffort: 'high',
       sessionId: 'session-1',
     });
     expect(request).toMatchObject({
@@ -170,6 +183,7 @@ describe('buildModelRequest', () => {
       system: 'system prompt',
       maxOutputTokens: 4096,
       temperature: 0,
+      reasoningEffort: 'high',
       sessionId: 'session-1',
     });
     expect(request.messages).toEqual(messages);
@@ -204,6 +218,7 @@ it('merges consecutive user messages without mutating saved history', () => {
       maxOutputTokens: 1,
     });
     expect(request).not.toHaveProperty('temperature');
+    expect(request).not.toHaveProperty('reasoningEffort');
     expect(request).not.toHaveProperty('sessionId');
   });
 });

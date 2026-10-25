@@ -13,7 +13,7 @@ function textMessage(role: 'user' | 'assistant', text: string): Message {
 function toolUseMessage(id: string, input: unknown = { path: 'src/util.ts' }): Message {
   return {
     role: 'assistant',
-    content: [{ type: 'tool_use', id, name: 'read_file', input }],
+    content: [{ type: 'tool_use', id, name: 'ReadFile', input }],
   };
 }
 

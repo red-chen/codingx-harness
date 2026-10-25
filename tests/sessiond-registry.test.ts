@@ -159,6 +159,60 @@ describe('SessiondRegistry sessions and leases', () => {
     expect(resumed.status).toBe('idle');
   });
 
+  it('clears a leased session back to its header and notifies subscribers', async () => {
+    const created = await registry.create('client-a', createParams);
+    await registry.append('client-a', {
+      sessionId: created.sessionId,
+      leaseId: created.leaseId,
+      events: [{ type: 'user.message', text: 'old conversation' }],
+    });
+    const notes: RegistryNotification[] = [];
+    await registry.subscribe('client-b', { sessionId: created.sessionId }, (message) => notes.push(message));
+
+    const cleared = await registry.clear('client-a', {
+      sessionId: created.sessionId,
+      leaseId: created.leaseId,
+    });
+    expect(cleared).toEqual({ sessionId: created.sessionId, lastSeq: 1, eventCount: 1 });
+
+    const replay = await registry.replay({ sessionId: created.sessionId });
+    expect(replay.events).toHaveLength(1);
+    expect(replay.events[0]).toMatchObject({ seq: 1, type: 'session.start' });
+    expect(replay.events.some((event) => event.text === 'old conversation')).toBe(false);
+
+    const got = await registry.get(created.sessionId);
+    expect(got.session).toMatchObject({ status: 'idle', eventCount: 1 });
+    expect(got.lastSeq).toBe(1);
+    expect(notes.some((note) => note.method === 'session.cleared')).toBe(true);
+    expect(paramsOf(notes.find((note) => note.method === 'session.cleared')!)).toMatchObject({
+      sessionId: created.sessionId,
+      lastSeq: 1,
+      eventCount: 1,
+    });
+
+    await expect(registry.clear('client-b', { sessionId: created.sessionId })).rejects.toMatchObject({
+      kind: 'LEASE_REVOKED',
+    });
+    const appended = await registry.append('client-a', {
+      sessionId: created.sessionId,
+      leaseId: created.leaseId,
+      events: [{ type: 'user.message', text: 'after clear' }],
+    });
+    expect(appended.lastSeq).toBe(2);
+  });
+
+  it('refuses to clear a session with an active turn', async () => {
+    const created = await registry.create('client-a', createParams);
+    await registry.append('client-a', {
+      sessionId: created.sessionId,
+      leaseId: created.leaseId,
+      events: [{ type: 'turn.start', turnId: 't1' }],
+    });
+    await expect(
+      registry.clear('client-a', { sessionId: created.sessionId, leaseId: created.leaseId }),
+    ).rejects.toMatchObject({ kind: 'SESSION_BUSY' });
+  });
+
   it('broadcasts appended events and supports unsubscribe', async () => {
     const created = await registry.create('client-a', createParams);
     const notes: RegistryNotification[] = [];

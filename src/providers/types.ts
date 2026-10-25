@@ -1,5 +1,16 @@
 export type Protocol = 'anthropic-messages' | 'openai-responses';
 
+/**
+ * Provider-agnostic reasoning effort. The provider adapter maps these values
+ * to its wire format (Anthropic Messages: output_config.effort).
+ */
+export const REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return typeof value === 'string' && (REASONING_EFFORTS as readonly string[]).includes(value);
+}
+
 export type Role = 'user' | 'assistant';
 
 export interface TextBlock {
@@ -49,6 +60,8 @@ export interface ModelRequest {
   tools: ToolSchema[];
   maxOutputTokens: number;
   temperature?: number;
+  /** Provider-specific reasoning level; absent means the provider default. */
+  reasoningEffort?: ReasoningEffort;
   /** Session id, used by providers for cache affinity / metadata. */
   sessionId?: string;
 }

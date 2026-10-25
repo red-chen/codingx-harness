@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   SYNTHETIC_TOOL_RESULT,
+  latestModelSelection,
   rebuildHistory,
   restoreReadTracker,
 } from '../src/agent/index.js';
@@ -43,10 +44,10 @@ describe('rebuildHistory', () => {
       ev('assistant.message', {
         turnId: 't1',
         text: 'reading',
-        calls: [{ id: 'c1', name: 'read_file', input: { path: 'a.ts' } }],
+        calls: [{ id: 'c1', name: 'ReadFile', input: { path: 'a.ts' } }],
       }),
-      ev('tool.call', { turnId: 't1', callId: 'c1', name: 'read_file', input: { path: 'a.ts' } }),
-      ev('tool.result', { turnId: 't1', callId: 'c1', name: 'read_file', content: '1\tconst a', isError: false }),
+      ev('tool.call', { turnId: 't1', callId: 'c1', name: 'ReadFile', input: { path: 'a.ts' } }),
+      ev('tool.result', { turnId: 't1', callId: 'c1', name: 'ReadFile', content: '1\tconst a', isError: false }),
       ev('assistant.message', { turnId: 't1', text: 'done', calls: [] }),
       ev('turn.end', { turnId: 't1', status: 'done' }),
     ];
@@ -56,7 +57,7 @@ describe('rebuildHistory', () => {
     expect(rebuilt.messages[0]).toEqual({ role: 'user', content: [{ type: 'text', text: 'hello' }] });
     expect(rebuilt.messages[1]).toMatchObject({ role: 'assistant' });
     expect(rebuilt.messages[1]?.content[0]).toMatchObject({ type: 'text', text: 'reading' });
-    expect(rebuilt.messages[1]?.content[1]).toMatchObject({ type: 'tool_use', name: 'read_file' });
+    expect(rebuilt.messages[1]?.content[1]).toMatchObject({ type: 'tool_use', name: 'ReadFile' });
     expect(rebuilt.messages[2]).toEqual({
       role: 'user',
       content: [{ type: 'tool_result', tool_use_id: 'c1', content: '1\tconst a' }],
@@ -74,15 +75,15 @@ describe('rebuildHistory', () => {
         turnId: 't-dangling',
         text: '',
         calls: [
-          { id: 'c1', name: 'read_file', input: { path: 'a.ts' } },
-          { id: 'c2', name: 'shell', input: { command: 'sleep 100' } },
+          { id: 'c1', name: 'ReadFile', input: { path: 'a.ts' } },
+          { id: 'c2', name: 'Shell', input: { command: 'sleep 100' } },
         ],
       }),
-      ev('tool.call', { turnId: 't-dangling', callId: 'c1', name: 'read_file', input: { path: 'a.ts' } }),
+      ev('tool.call', { turnId: 't-dangling', callId: 'c1', name: 'ReadFile', input: { path: 'a.ts' } }),
       ev('tool.result', {
         turnId: 't-dangling',
         callId: 'c1',
-        name: 'read_file',
+        name: 'ReadFile',
         content: 'line',
         isError: false,
       }),
@@ -95,7 +96,7 @@ describe('rebuildHistory', () => {
     expect(rebuilt.syntheticResults[0]).toEqual({
       turnId: 't-dangling',
       callId: 'c2',
-      name: 'shell',
+      name: 'Shell',
       content: SYNTHETIC_TOOL_RESULT,
       isError: true,
       synthetic: true,
@@ -136,12 +137,12 @@ describe('rebuildHistory', () => {
       ev('assistant.message', {
         turnId: 't1',
         text: '',
-        calls: [{ id: 'r1', name: 'read_file', input: { path: 'missing.ts' } }],
+        calls: [{ id: 'r1', name: 'ReadFile', input: { path: 'missing.ts' } }],
       }),
       ev('tool.result', {
         turnId: 't1',
         callId: 'r1',
-        name: 'read_file',
+        name: 'ReadFile',
         content: 'not found',
         isError: true,
       }),
@@ -176,9 +177,9 @@ it('restores the last plan snapshot from plan.updated events', () => {
       ev('assistant.message', {
         turnId: 't1',
         text: '',
-        calls: [{ id: 'c1', name: 'shell', input: { command: 'true' } }],
+        calls: [{ id: 'c1', name: 'Shell', input: { command: 'true' } }],
       }),
-      ev('tool.result', { toolCallId: 'c1', name: 'shell', content: 'ok', isError: false }),
+      ev('tool.result', { toolCallId: 'c1', name: 'Shell', content: 'ok', isError: false }),
     ];
     const rebuilt = rebuildHistory(events);
     expect(rebuilt.syntheticResults).toEqual([]);
@@ -199,14 +200,14 @@ describe('restoreReadTracker', () => {
         turnId: 't1',
         text: '',
         calls: [
-          { id: 'c1', name: 'read_file', input: { path: 'a.ts' } },
-          { id: 'c2', name: 'read_file', input: { path: '../outside.ts' } },
-          { id: 'c3', name: 'read_file', input: { path: 'missing.ts' } },
+          { id: 'c1', name: 'ReadFile', input: { path: 'a.ts' } },
+          { id: 'c2', name: 'ReadFile', input: { path: '../outside.ts' } },
+          { id: 'c3', name: 'ReadFile', input: { path: 'missing.ts' } },
         ],
       }),
-      ev('tool.result', { callId: 'c1', name: 'read_file', content: 'a', isError: false }),
-      ev('tool.result', { callId: 'c2', name: 'read_file', content: 'outside', isError: false }),
-      ev('tool.result', { callId: 'c3', name: 'read_file', content: 'missing', isError: true }),
+      ev('tool.result', { callId: 'c1', name: 'ReadFile', content: 'a', isError: false }),
+      ev('tool.result', { callId: 'c2', name: 'ReadFile', content: 'outside', isError: false }),
+      ev('tool.result', { callId: 'c3', name: 'ReadFile', content: 'missing', isError: true }),
     ];
 
     const rebuilt = rebuildHistory(events);
@@ -217,5 +218,57 @@ describe('restoreReadTracker', () => {
     expect(tracker.size).toBe(1);
     expect(tracker.hasRead(await canonicalizePath(path.join(cwd, 'a.ts')))).toBe(true);
     expect(tracker.hasRead(await canonicalizePath(path.join(root, 'outside.ts')))).toBe(false);
+  });
+
+  it('restores reads under --add-dir roots as well', async () => {
+    const cwd = path.join(root, 'workspace');
+    const extra = path.join(root, 'extra');
+    await mkdir(cwd, { recursive: true });
+    await mkdir(extra, { recursive: true });
+    const extraFile = path.join(extra, 'shared.ts');
+    const outsideFile = path.join(root, 'outside.ts');
+    await writeFile(extraFile, 'shared');
+    await writeFile(outsideFile, 'outside');
+
+    const events = [
+      ev('assistant.message', {
+        turnId: 't1',
+        text: '',
+        calls: [
+          { id: 'c1', name: 'ReadFile', input: { path: extraFile } },
+          { id: 'c2', name: 'ReadFile', input: { path: outsideFile } },
+        ],
+      }),
+      ev('tool.result', { callId: 'c1', name: 'ReadFile', content: 'shared', isError: false }),
+      ev('tool.result', { callId: 'c2', name: 'ReadFile', content: 'outside', isError: false }),
+    ];
+
+    const tracker = new ReadFileTracker();
+    const marked = await restoreReadTracker(rebuildHistory(events), cwd, tracker, [extra]);
+
+    expect(marked).toBe(1);
+    expect(tracker.hasRead(await canonicalizePath(extraFile))).toBe(true);
+    expect(tracker.hasRead(await canonicalizePath(outsideFile))).toBe(false);
+  });
+});
+
+describe('latestModelSelection', () => {
+  it('returns the last valid model.changed selection', () => {
+    const events = [
+      ev('model.changed', { model: 'model-a', reasoningEffort: 'low' }),
+      ev('turn.start', { turnId: 't1' }),
+      ev('model.changed', { model: 'model-b', reasoningEffort: 'high' }),
+      ev('model.changed', { model: 'model-c' }),
+    ];
+    expect(latestModelSelection(events)).toEqual({ model: 'model-c' });
+  });
+
+  it('ignores malformed values and reports an empty selection without events', () => {
+    expect(latestModelSelection([ev('turn.start')])).toEqual({});
+    expect(
+      latestModelSelection([
+        ev('model.changed', { model: 'model-a', reasoningEffort: 'turbo' }),
+      ]),
+    ).toEqual({ model: 'model-a' });
   });
 });

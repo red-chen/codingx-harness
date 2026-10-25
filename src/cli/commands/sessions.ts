@@ -143,6 +143,9 @@ export async function runSessionsCommand(options: SessionsCommandOptions): Promi
         } else if (message.method === 'session.status') {
           const status = (message.params as { status?: unknown }).status;
           stdout.write('status: ' + String(status) + '\n');
+        } else if (message.method === 'session.cleared') {
+          const lastSeq = (message.params as { lastSeq?: unknown }).lastSeq;
+          stdout.write('session cleared (replay restarts at seq 1, last seq: ' + String(lastSeq ?? 1) + ')\n');
         } else if (message.method === 'session.lease_revoked') {
           stdout.write('lease revoked\n');
         }

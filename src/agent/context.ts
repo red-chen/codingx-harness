@@ -1,4 +1,4 @@
-import type { Message, ModelRequest, ToolSchema } from '../providers/types.js';
+import type { Message, ModelRequest, ReasoningEffort, ToolSchema } from '../providers/types.js';
 import { estimateMessagesTokens, estimateToolsTokens } from '../providers/tokens.js';
 import { estimateTokens } from '../util/tokens.js';
 
@@ -27,6 +27,7 @@ export interface BuildRequestOptions {
   tools: readonly ToolSchema[];
   maxOutputTokens: number;
   temperature?: number;
+  reasoningEffort?: ReasoningEffort;
   sessionId?: string;
 }
 
@@ -39,6 +40,7 @@ export function buildModelRequest(options: BuildRequestOptions): ModelRequest {
     tools: [...options.tools],
     maxOutputTokens: options.maxOutputTokens,
     ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
+    ...(options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }),
     ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
   };
 }

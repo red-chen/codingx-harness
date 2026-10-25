@@ -7,17 +7,17 @@ import type { ToolDef } from './types.js';
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 const schema = z.object({
-  path: z.string().min(1).describe('Path to an existing file inside the workspace.'),
+  path: z.string().min(1).describe('Path to an existing file inside the workspace or an --add-dir root.'),
   old_string: z.string().min(1).describe('Exact text to replace. It must match exactly once unless replace_all is true.'),
   new_string: z.string().describe('Replacement text. May be empty to delete the matched text.'),
   replace_all: z.boolean().optional().default(false).describe('Replace every occurrence instead of requiring a unique match.'),
 });
 
 export const editFileTool: ToolDef<typeof schema> = {
-  name: 'edit_file',
+  name: 'EditFile',
   description:
     'Replace an exact string in an existing UTF-8 file. By default old_string must appear exactly once; ' +
-    'otherwise use replace_all. The file must have been read with read_file in this session first. ' +
+    'otherwise use replace_all. The file must have been read with ReadFile in this session first. ' +
     'Include enough surrounding context in old_string to make it unique. Use this for targeted edits; ' +
     'do not rewrite unrelated content.',
   schema,
@@ -30,7 +30,7 @@ export const editFileTool: ToolDef<typeof schema> = {
     if (!ctx.readTracker.hasRead(resolved.absolute)) {
       return {
         content:
-          'Refusing to edit ' + rel + ' before it has been read. Call read_file on this file first, then retry the edit.',
+          'Refusing to edit ' + rel + ' before it has been read. Call ReadFile on this file first, then retry the edit.',
         isError: true,
         meta: { path: rel, reason: 'read-before-write' },
       };

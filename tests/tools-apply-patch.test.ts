@@ -44,7 +44,7 @@ async function put(relative: string, content: string | Buffer): Promise<string> 
 }
 
 async function read(relative: string): Promise<void> {
-  const result = await registry.execute('read_file', { path: relative }, ctx);
+  const result = await registry.execute('ReadFile', { path: relative }, ctx);
   expect(result.isError).toBeUndefined();
 }
 
@@ -56,7 +56,7 @@ function unified(lines: string[]): string {
   return lines.join('\n') + '\n';
 }
 
-describe('apply_patch', () => {
+describe('ApplyPatch', () => {
   it('modifies multiple files with multiple hunks and pure insertions', async () => {
     const original = [
       'const a = 1;',
@@ -97,7 +97,7 @@ describe('apply_patch', () => {
       ' gamma',
     ]);
 
-    const result = await registry.execute('apply_patch', { patch }, ctx);
+    const result = await registry.execute('ApplyPatch', { patch }, ctx);
     expect(result.isError).toBeUndefined();
     expect(result.meta).toEqual({
       files: [
@@ -145,7 +145,7 @@ describe('apply_patch', () => {
       '+export const three = 3;',
     ]);
 
-    const result = await registry.execute('apply_patch', { patch }, ctx);
+    const result = await registry.execute('ApplyPatch', { patch }, ctx);
     expect(result.isError).toBeUndefined();
     expect(result.meta).toEqual({
       files: [{ path: 'src/generated/new.ts', created: true, additions: 3, deletions: 0 }],
@@ -158,7 +158,7 @@ describe('apply_patch', () => {
     );
     expect(ctx.readTracker.hasRead(await realpath(path.join(cwd, 'src/generated/new.ts')))).toBe(true);
 
-    const again = await registry.execute('apply_patch', { patch }, ctx);
+    const again = await registry.execute('ApplyPatch', { patch }, ctx);
     expect(again.isError).toBe(true);
     expect(again.content).toMatch(/already exists/);
   });
@@ -181,7 +181,7 @@ describe('apply_patch', () => {
       '+TWO',
     ]);
 
-    const result = await registry.execute('apply_patch', { patch }, ctx);
+    const result = await registry.execute('ApplyPatch', { patch }, ctx);
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/before it has been read/);
     expect(result.meta).toMatchObject({ path: 'b.txt', reason: 'read-before-write' });
@@ -209,7 +209,7 @@ describe('apply_patch', () => {
       '+GAMMA',
     ]);
 
-    const result = await registry.execute('apply_patch', { patch }, ctx);
+    const result = await registry.execute('ApplyPatch', { patch }, ctx);
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/Context mismatch/);
     expect(await readText('a.txt')).toBe('alpha\n');
@@ -232,14 +232,14 @@ describe('apply_patch', () => {
       '+escaped',
     ]);
 
-    const result = await registry.execute('apply_patch', { patch }, ctx);
+    const result = await registry.execute('ApplyPatch', { patch }, ctx);
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/outside the workspace/);
     expect(await readText('a.txt')).toBe('safe\n');
     await expect(stat(path.join(root, 'escaped.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
 
     const quoted = await registry.execute(
-      'apply_patch',
+      'ApplyPatch',
       {
         patch: unified([
           '--- "a/a.txt"',
@@ -261,7 +261,7 @@ describe('apply_patch', () => {
     await read('old.txt');
 
     const rename = await registry.execute(
-      'apply_patch',
+      'ApplyPatch',
       {
         patch: unified([
           '--- a/old.txt',
@@ -277,7 +277,7 @@ describe('apply_patch', () => {
     expect(rename.content).toMatch(/rename/i);
 
     const deletion = await registry.execute(
-      'apply_patch',
+      'ApplyPatch',
       {
         patch: unified([
           '--- a/old.txt',
@@ -292,7 +292,7 @@ describe('apply_patch', () => {
     expect(deletion.content).toMatch(/delet/i);
 
     const noNewline = await registry.execute(
-      'apply_patch',
+      'ApplyPatch',
       {
         patch: unified([
           '--- a/old.txt',
@@ -315,7 +315,7 @@ describe('apply_patch', () => {
     await read('a.txt');
 
     const truncated = await registry.execute(
-      'apply_patch',
+      'ApplyPatch',
       {
         patch: unified([
           '--- a/a.txt',
@@ -330,7 +330,7 @@ describe('apply_patch', () => {
     expect(truncated.content).toMatch(/declared counts|ends before/);
 
     const extra = await registry.execute(
-      'apply_patch',
+      'ApplyPatch',
       {
         patch: unified([
           '--- a/a.txt',
@@ -347,7 +347,7 @@ describe('apply_patch', () => {
     expect(extra.content).toMatch(/more body lines|declares/);
 
     const badHeader = await registry.execute(
-      'apply_patch',
+      'ApplyPatch',
       {
         patch: unified([
           '--- a/a.txt',
@@ -383,7 +383,7 @@ describe('apply_patch', () => {
       '+SECOND',
     ]);
 
-    const result = await registry.execute('apply_patch', { patch }, ctx);
+    const result = await registry.execute('ApplyPatch', { patch }, ctx);
     expect(result.isError).toBeUndefined();
     expect(await readText('insert.txt')).toBe('start\na\nb\n');
     expect(await readText('no-final-newline.txt')).toBe('first\nSECOND');

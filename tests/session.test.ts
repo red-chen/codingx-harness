@@ -148,6 +148,67 @@ describe('EmbeddedSessionStore lifecycle', () => {
     await readOnly.close();
   });
 
+  it('clears the rollout to a fresh header and restarts the sequence', async () => {
+    const handle = await store.createSession(createOptions);
+    await handle.append([
+      { type: 'user.message', text: 'conversation secret' },
+      { type: 'turn.start', turnId: 't1' },
+      { type: 'turn.end', turnId: 't1', status: 'done' },
+    ]);
+    const before = (await handle.replay())[0];
+    expect(before?.type).toBe('session.start');
+
+    await handle.clear();
+
+    const events = await handle.replay();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      seq: 1,
+      type: 'session.start',
+      cwd: createOptions.cwd,
+      model: createOptions.model,
+      provider: createOptions.provider,
+      cliVersion: createOptions.cliVersion,
+      createdAt: before?.createdAt,
+    });
+    expect(events[0]?.eventId).not.toBe(before?.eventId);
+    const raw = await readFile(handle.filePath, 'utf8');
+    expect(raw).not.toContain('conversation secret');
+    expect(raw.trimEnd().split('\n')).toHaveLength(1);
+    expect((await store.listSessions())[0]).toMatchObject({ status: 'idle', eventCount: 1 });
+
+    const [next] = await handle.append({ type: 'user.message', text: 'after clear' });
+    expect(next?.seq).toBe(2);
+    await handle.close();
+  });
+
+  it('clears a reopened (append-mode) session without leaving a sparse hole', async () => {
+    const first = await store.createSession(createOptions);
+    await first.append({ type: 'user.message', text: 'before reopen' });
+    const id = first.id;
+    await first.close();
+
+    const resumed = await store.attachSession(id, 'write');
+    await resumed.clear();
+    const raw = await readFile(resumed.filePath, 'utf8');
+    expect(raw.startsWith('{"seq":1')).toBe(true);
+    expect(raw).not.toContain('\u0000');
+    expect(raw).not.toContain('before reopen');
+    const [next] = await resumed.append({ type: 'user.message', text: 'after reopen clear' });
+    expect(next?.seq).toBe(2);
+    await resumed.close();
+  });
+
+  it('rejects clear on read-only and ended handles', async () => {
+    const handle = await store.createSession(createOptions);
+    const readOnly = await store.attachSession(handle.id, 'read');
+    await expect(readOnly.clear()).rejects.toThrow(/read-only/);
+    await readOnly.close();
+    await handle.end();
+    await expect(handle.clear()).rejects.toThrow(/ended/);
+    await handle.close();
+  });
+
   it('enforces a single writer and recovers stale locks', async () => {
     const handle = await store.createSession(createOptions);
     await expect(store.attachSession(handle.id, 'write')).rejects.toThrow(/already locked/);

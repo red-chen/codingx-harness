@@ -87,6 +87,62 @@ describe('TuiApp state transitions', () => {
     expect(app.state.session).toEqual({ sessionId: 'zzzzzzzzzzzz', cwd: '/repo', model: 'other-model' });
   });
 
+  it('updates model and effort for the meta row and preserves them on clear', () => {
+    const app = makeApp();
+    app.setModel('next-model', 'high');
+    expect(app.state.session).toMatchObject({ model: 'next-model', reasoningEffort: 'high' });
+
+    app.handleEvent({
+      type: 'session.info',
+      session: { sessionId: 'zzzzzzzzzzzz', cwd: '/repo', model: 'info-model' },
+    });
+    expect(app.state.session).toMatchObject({ model: 'info-model', reasoningEffort: 'high' });
+
+    app.setModel('next-model');
+    expect(app.state.session.model).toBe('next-model');
+    expect(app.state.session.reasoningEffort).toBeUndefined();
+
+    app.setModel('final-model', 'low');
+    app.resetSession();
+    expect(app.state.session).toMatchObject({ model: 'final-model', reasoningEffort: 'low' });
+  });
+
+  it('resets session-scoped state while keeping identity and composer history', () => {
+    const app = makeApp();
+    app.submitText('first task');
+    app.handleEvent({ type: 'turn.started', turnId: 't1' });
+    app.handleEvent({ type: 'text.delta', turnId: 't1', text: 'working' });
+    app.handleEvent({ type: 'plan.updated', turnId: 't1', steps: [{ step: 'do it', status: 'in_progress' }] });
+    app.handleEvent({ type: 'context.updated', turnId: 't1', usedTokens: 1234, windowTokens: 200_000, steps: 2 });
+    app.handleEvent({ type: 'turn.finished', turnId: 't1', status: 'done', usage: USAGE, durationMs: 10 });
+    app.enqueue('queued task');
+    app.openHelp();
+
+    app.resetSession();
+
+    expect(app.state.mode).toBe('main');
+    expect(app.state.session).toEqual(SESSION);
+    expect(app.state.transcript).toEqual([]);
+    expect(app.state.activeAssistant).toBeNull();
+    expect(app.state.plan).toEqual([]);
+    expect(app.state.queue).toEqual([]);
+    expect(app.state.status).toMatchObject({ state: 'idle', elapsedMs: 0 });
+    expect(app.state.usage).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 });
+    expect(app.state.totalUsage).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    });
+    expect(app.state.turnNumber).toBe(0);
+    expect(app.state.currentTurnSteps).toBe(0);
+    expect(app.state.contextUsedTokens).toBe(0);
+    expect(app.state.contextWindowTokens).toBe(200_000);
+    expect(app.state.contextPercent).toBeUndefined();
+    expect(app.composer.text).toBe('');
+    expect(app.composer.history).toEqual(['first task']);
+  });
+
   it('moves to working on turn.started and records the injected clock', () => {
     const app = makeApp(() => 5000);
     app.handleEvent({ type: 'turn.started', turnId: 't1' });
@@ -158,7 +214,7 @@ describe('TuiApp state transitions', () => {
     app.handleEvent({
       type: 'tool.started',
       turnId: 't1',
-      call: { id: 'call-1', name: 'shell', input: { command: 'ls -la' } },
+      call: { id: 'call-1', name: 'Shell', input: { command: 'ls -la' } },
     });
     expect(app.transcript.map((cell) => cell.type)).toEqual(['assistant', 'exec']);
     const started = app.transcript[1];
@@ -174,7 +230,7 @@ describe('TuiApp state transitions', () => {
       type: 'tool.finished',
       turnId: 't1',
       callId: 'call-1',
-      name: 'shell',
+      name: 'Shell',
       result: { content: 'a.txt\nb.txt', isError: false },
       durationMs: 12,
     });
@@ -194,7 +250,7 @@ describe('TuiApp state transitions', () => {
       type: 'tool.finished',
       turnId: 't1',
       callId: 'orphan',
-      name: 'read_file',
+      name: 'ReadFile',
       result: { content: 'data', isError: true },
       durationMs: 3,
     });
@@ -202,7 +258,7 @@ describe('TuiApp state transitions', () => {
     expect(app.transcript[0]).toMatchObject({
       type: 'exec',
       callId: 'orphan',
-      command: 'read_file',
+      command: 'ReadFile',
       isError: true,
       running: false,
     });

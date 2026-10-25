@@ -110,12 +110,16 @@ type UiEvent =
 type UiCommand =
   | { type: 'submit'; text: string }
   | { type: 'interrupt' }
+  | { type: 'answer'; answers: AskAnswer[] }
+  | { type: 'cancel-ask' }
   | { type: 'approval'; decision: 'allow' | 'allow-session' | 'deny'; reason?: string }
   | { type: 'resume'; sessionId: string }
   | { type: 'fork'; sessionId: string };
 ```
 
-`TuiApp` 是一个显式状态机：`mode`（main / transcript / session-picker / approval）、`transcript`、`activeCell`、`composer`、`status`、`overlay`。事件循环同时监听 stdin、core 事件和帧定时器；没有隐藏的全局单例。
+`TuiApp` 是一个显式状态机：`mode`（main / transcript / ask / session-picker / approval）、`transcript`、`activeCell`、`composer`、`status`、`overlay`。事件循环同时监听 stdin、core 事件和帧定时器；没有隐藏的全局单例。
+
+`ask` 模式由 `AskUserQuestion` 工具触发：core 通过 `AskHandler` 调用 `TuiSession.ask()`，TUI 打开提问面板并等待 `answer` / `cancel-ask`；`Esc` 取消，`Ctrl+C` 仍然中断整个 turn。
 
 TUI 不持久化任何配置；所有颜色、键位、布局都是固定行为。模型与 cwd 只作为事件字段显示。终端渲染前对不可信文本做控制序列剥离，见 [security.md](security.md)。
 
@@ -156,9 +160,9 @@ model · cwd · session title
 - 向上滚动按历史内容 clamp；内容不足一屏时保持停在底部，不会出现空白。
 - welcome 卡作为 transcript 的第一个历史块保留，不会在首条消息后消失；滚动上限包含它。
 - resume 时从 rollout 重建 user/assistant/tool/plan/turn 摘要，历史 transcript 直接可见。
-- 支持鼠标滚轮（SGR mouse wheel）与 PgUp/PgDn、Shift+Up/Down。
+- 不开启鼠标上报：拖选交给终端原生处理，PgUp/PgDn、Shift+Up/Down 滚动 transcript。
 - `/copy` 默认复制完整 transcript；`/copy status|input|meta|screen` 分别复制 StatusRow/Composer/MetaBar/整屏；`/copy all` 复制全部区域（带分区标题），`/copy last` 复制最后一条 assistant 输出。Ctrl+Y 等同 `/copy all`。
-- 鼠标拖选时 TUI 用反色高亮选区，释放后自动复制选中文本；可跨 transcript/status/composer/meta 选择。剪贴板优先 OSC52 并回退 pbcopy/clip/wl-copy/xclip。
+- 选中文本后用终端自己的复制键：macOS 为 `⌘C`，其它平台为 `Ctrl+Shift+C`；TUI 不拦截拖选、不做应用内选区，因此复制的是终端里真实可见的文本。`Ctrl+Y` 与 `/copy` 仍可复制应用内的 transcript/区域文本（OSC52 + pbcopy/clip/wl-copy/xclip）。
 - 窄于 60 列收窄卡片；窄于 40 列隐藏 meta，只保留输入与最简状态。
 
 ## Widgets
@@ -176,6 +180,7 @@ TuiApp
 │   ├── Composer              // 多行编辑器 + slash 补全，独立背景
 │   └── MetaBar               // model · cwd · session title（最底部）
 └── OverlayHost
+    ├── AskView
     ├── ApprovalView
     ├── TranscriptOverlay
     ├── SessionPicker
@@ -217,16 +222,35 @@ Markdown 用 `marked` 或 `micromark` 解析成 AST，再转 styled spans；代�
 | 退出 | `Ctrl+C` 双击 / `Ctrl+D`（空 composer） |
 | 历史搜索 | `Ctrl+R` |
 | Transcript overlay | `Ctrl+T` |
+| 复制选区 | 鼠标拖选后 `⌘C`（Linux 终端 `Ctrl+Shift+C`） |
 | 复制最后回复 | `Ctrl+O` |
 | 外部编辑器 | `Ctrl+G` |
 | 清屏 | `Ctrl+L` |
 | 帮助 | `?` |
 | 滚动 | `PgUp` / `PgDn` / `Shift+↑/↓` |
 | 审批 | `y` / `a` / `esc`，或数字 1–3 |
+| 回答提问 | `↑/↓` 选择、`Space` 多选、`Enter` 确认、`Esc` 取消、数字 1–9 直选 |
+| 自定义回答 | 选中 `Other` 后 `Enter` 进入输入，`Enter` 提交 |
 
-Composer 空输入时 `↑/↓` 走历史；有内容时走光标；保留 `Ctrl+A/E`、`Ctrl+W`、`Ctrl+K/U`。审批打开时所有按键只进入审批。
+Composer 空输入时 `↑/↓` 走历史；有内容时走光标；保留 `Ctrl+A/E`、`Ctrl+W`、`Ctrl+K/U`。审批或提问打开时所有按键只进入对应弹层。
 
 ## Overlay
+
+### 提问（AskUserQuestion）
+
+```text
+ ─ Ask user · 1/2 ─────────────────────────────────────────────
+   方案
+   这次改动优先速度还是兼容性？
+
+     ( ) 1. 速度 — 只改一个文件，不补测试
+   › ( ) 2. 兼容 — 先补测试，再改实现
+     ○ Other: type your own answer
+
+   ↑/↓ choose · Space select · Enter confirm · Esc cancel
+```
+
+提问面板固定在底部（替代 composer/meta），问题逐条展示；选项、描述与选中状态全部来自 `AskUserQuestion` 的结构化入参。`multi_select` 用 `[x]/[ ]`，单选在确认后进入下一题；`Other` 行提供自由文本。提问期间状态行显示 `Awaiting answer`。面板内容只由工具入参生成，transcript 文本不能伪造或重排选项。
 
 ### 审批
 
@@ -245,11 +269,11 @@ Composer 空输入时 `↑/↓` 走历史；有内容时走光标；保留 `Ctrl
 
 ### Slash
 
-Slash 补全浮在 composer 上方，最多 8 行；命令 + 一句描述，支持过滤、↑/↓、enter、tab、esc、数字 1–9。只做 TUI 自身动作：`/resume`、`/diff`、`/clear`、`/help`、`/quit`。
+Slash 补全浮在 composer 上方，最多 8 行；命令 + 一句描述，支持过滤、↑/↓、enter、tab、esc、数字 1–9。命令只做本地动作（不发给模型）：`/resume`、`/diff`、`/model`、`/clear`、`/help`、`/quit`。`/model` 查看或设置模型与推理强度（`/model <model> [low|medium|high|xhigh|max|default]`、`/model --effort <level>`），写入 `model.changed` 并更新 meta 行；turn 运行中拒绝修改。`/clear` 重置当前会话的 UI、内存历史与 JSONL rollout（保留新的 `session.start` 头）；turn 运行中拒绝执行。
 
 ### Transcript
 
-`Ctrl+T` 打开全屏只读 transcript：`j/k`、`PgUp/PgDn`、`g/G` 滚动，`/` 搜索，`q`/esc 关闭；raw/rich 切换用于复制。
+`Ctrl+T` 打开全屏只读 transcript：`j/k`、`PgUp/PgDn`、`g/G` 滚动，`/` 搜索，`q`/esc 关闭；选中文本后按 `⌘C`（Linux 为 `Ctrl+Shift+C`）复制。
 
 ### Session picker
 

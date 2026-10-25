@@ -21,7 +21,7 @@ function marker(status: 'pending' | 'in_progress' | 'completed'): string {
 }
 
 export const updatePlanTool: ToolDef<typeof schema> = {
-  name: 'update_plan',
+  name: 'UpdatePlan',
   description:
     'Create or update the explicit task plan for a multi-step job. Pass the complete ordered plan each time, ' +
     'not a diff. Use status pending, in_progress (at most the current step) or completed. ' +

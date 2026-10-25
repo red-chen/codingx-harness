@@ -44,6 +44,28 @@ describe('slash completion', () => {
     expect(text).toContain('show session id and file');
   });
 
+  it('offers /model as a completable command', () => {
+    const app = makeApp();
+    type(app, '/mo');
+    expect(app.slashMenu.map((command) => command.name)).toEqual(['/model']);
+    const text = screenText(app.frame());
+    expect(text).toContain('/model');
+    expect(text).toContain('model and reasoning effort');
+    app.handleKey(key('tab'));
+    expect(app.composer.text).toBe('/model ');
+  });
+
+  it('offers /clear as a completable command', () => {
+    const app = makeApp();
+    type(app, '/cl');
+    expect(app.slashMenu.map((command) => command.name)).toEqual(['/clear']);
+    const text = screenText(app.frame());
+    expect(text).toContain('/clear');
+    expect(text).toContain('clear session history');
+    app.handleKey(key('tab'));
+    expect(app.composer.text).toBe('/clear ');
+  });
+
   it('completes on Tab and Enter, with arrow selection', () => {
     const app = makeApp();
     type(app, '/he');
@@ -53,7 +75,7 @@ describe('slash completion', () => {
 
     app.clearComposer();
     type(app, '/');
-    expect(app.slashMenu).toHaveLength(5);
+    expect(app.slashMenu).toHaveLength(7);
     expect(app.slashSelected).toBe(0);
     app.handleKey(key('down'));
     expect(app.slashSelected).toBe(1);
@@ -68,7 +90,7 @@ describe('slash completion', () => {
   it('dismisses with Escape and reopens when editing continues', () => {
     const app = makeApp();
     type(app, '/');
-    expect(app.slashMenu).toHaveLength(5);
+    expect(app.slashMenu).toHaveLength(7);
     app.handleKey(key('escape'));
     expect(app.slashMenu).toEqual([]);
     expect(app.state.slashDismissed).toBe(true);
@@ -89,7 +111,7 @@ describe('slash completion', () => {
   });
 
   it('handles a bare slash and empty query matching all commands', () => {
-    expect(slashMatches('/')).toHaveLength(5);
+    expect(slashMatches('/')).toHaveLength(7);
     expect(slashMatches('/x')).toEqual([]);
     expect(slashMatches('/help now')).toEqual([]);
     expect(slashMatches('hello')).toEqual([]);

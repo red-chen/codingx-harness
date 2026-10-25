@@ -181,7 +181,7 @@ describe('transcript cells', () => {
       type: 'exec',
       id: 'e1',
       callId: 'c1',
-      name: 'shell',
+      name: 'Shell',
       command: 'printf x',
       output: 'one\ntwo\nthree\nfour\nfive\nsix\nseven',
       isError: false,
@@ -316,7 +316,7 @@ describe('Composer', () => {
         type: 'exec',
         id: 'e1',
         callId: 'c1',
-        name: 'shell',
+        name: 'Shell',
         command: 'npm test',
         output: 'ok',
         isError: false,
@@ -545,13 +545,13 @@ describe('frame composition', () => {
     app.handleEvent({
       type: 'tool.started',
       turnId: 't1',
-      call: { id: 'c1', name: 'shell', input: { command: 'npm test' } },
+      call: { id: 'c1', name: 'Shell', input: { command: 'npm test' } },
     });
     app.handleEvent({
       type: 'tool.finished',
       turnId: 't1',
       callId: 'c1',
-      name: 'shell',
+      name: 'Shell',
       result: { content: '42 passed', isError: false },
       durationMs: 30,
     });

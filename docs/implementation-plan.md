@@ -25,8 +25,8 @@ npm test
 | T04 | 凭证与脱敏 | `src/util/auth.ts`、`src/util/redact.ts` | 从 env 或 `auth.json` 读 key；rollout 落盘前命中常见密钥模式被替换 | DONE |
 | T05 | SessionStore | `src/session/`：事件信封、JSONL 单写者、文件锁、seq、replay、状态推导、`session.end` | create/append/replay/end 可往返；seq 单调；双写被锁拒绝；半行被忽略 | DONE |
 | T06 | 子进程执行层 | `src/exec/`：spawn + 进程组、超时 SIGTERM→SIGKILL、有界输出、env 白名单 | 正常/非零/超时/中断均返回结构化结果；凭证变量不进入子进程 | DONE |
-| T07 | 工具注册表 + 文件工具 | `src/tools/`：`read_file`、`list_dir`、`edit_file`、zod→JSON Schema | 行号/offset/limit、目录树、唯一替换、先读后写、越界路径拒绝 | DONE |
-| T08 | shell 工具 | `shell` 工具接入 exec 层 | stdout/stderr/退出码/超时回填；输出裁剪且提示截断 | DONE |
+| T07 | 工具注册表 + 文件工具 | `src/tools/`：`ReadFile`、`ListDir`、`EditFile`、zod→JSON Schema | 行号/offset/limit、目录树、唯一替换、先读后写、越界路径拒绝 | DONE |
+| T08 | Shell 工具 | `Shell` 工具接入 exec 层 | stdout/stderr/退出码/超时回填；输出裁剪且提示截断 | DONE |
 | T09 | Anthropic Provider | `src/providers/anthropic/`：SSE 解析、tool_use 流、usage、prompt caching、HTTP 错误分类 | 假 SSE 服务覆盖文本、工具调用、错误映射、分块/CRLF；请求含 system/tools cache_control | DONE |
 | T10 | ProviderRouter | `src/routing/`：单目标解析、pin、首个内容事件前重试 | `--provider` / `--model` 收窄目标；429/5xx 在首内容前重试；首内容后不重试 | DONE |
 | T11 | 上下文组装 | `src/agent/system-prompt.ts`、`src/agent/context.ts` | 注入 cwd/平台/git/AGENTS.md 快照；工具定义顺序稳定以保住 prompt cache | DONE |
@@ -53,7 +53,7 @@ T03/T05/T06/T07 之间互不依赖，可并行实现；T09 依赖 T02 的消息�
 
 - **单目标路由**：`ProviderRouter` 目前解析出多个候选时要求 `--provider` / `--model` 收敛为一个；multi-target 的 failover / weighted / round-robin 在 M5 实现。配置示例中的 secondary target 在 M1 会得到明确错误而不是静默忽略。
 - **嵌入式会话存储**：M2 的 sessiond 尚未实现；M1 固定使用带文件锁的进程内存储。`sessiond.enabled = true` 会提示「M1 未实现，退回嵌入式存储」，不伪装成跨 CLI。
-- **无审批 / 无沙箱**：策略引擎与 Seatbelt/Landlock 属于 M3。M1 的 shell 继承配置的 env 白名单，但**不提供 OS 级隔离**；不要在不可信仓库里使用。文件工具限制在 workspace 内，作为过渡护栏。
+- **无审批 / 无沙箱**：策略引擎与 Seatbelt/Landlock 属于 M3。M1 的 Shell 继承配置的 env 白名单，但**不提供 OS 级隔离**；不要在不可信仓库里使用。文件工具默认限制在 workspace 内（可用 `--add-dir` 显式追加可写目录），作为过渡护栏。
 - **无压缩**：上下文压缩属于 M2；M1 超长上下文由 Provider 错误暴露，不静默截断历史。
 - **无 TUI**：M2 自研 Terminal；M1 使用逐行纯文本。`--plain` 是默认形态。
 - **resume / fork**：M2；M1 通过 `log` 回放验证 rollout 可重建。
@@ -64,7 +64,7 @@ T03/T05/T06/T07 之间互不依赖，可并行实现；T09 依赖 T02 的消息�
 - [x] `npm test`（15 个测试文件 / 149 个测试）
 - [x] `npm run build`（`dist/main.js` ≈ 126 KB；依赖外置）
 - [x] `node bin/codingx.js --help` / `--version`
-- [x] 假 Provider E2E：read_file → edit_file → shell 校验 → 最终文本
+- [x] 假 Provider E2E：ReadFile → EditFile → Shell 校验 → 最终文本
 - [x] 构建产物 E2E：直接运行 `bin/codingx.js`，验证文件修改、退出码、rollout、session.end 与锁释放
 - [x] rollout 含 `session.start` / `turn.start` / `tool.call` / `tool.result` / `turn.end`，`log` 可读回
 - [ ] 真实 Provider 手工冒烟（需要 `API_KEY`，不进 CI）
@@ -74,6 +74,6 @@ T03/T05/T06/T07 之间互不依赖，可并行实现；T09 依赖 T02 的消息�
 - 任务 T01–T16 全部完成；M1 可运行、可验证。
 - 测试：15 个文件、149 项全部通过；使用本地假 Anthropic HTTP/SSE 服务，无外网依赖。
 - 构建：`npm run build` 通过，`bin/codingx.js` 冒烟通过。
-- 验收路径：`read_file(src/util.ts) → edit_file(foo→bar) → shell(grep) → 最终回答`；rollout 追加 `session.start` … `session.end`，锁在退出后释放。
+- 验收路径：`ReadFile(src/util.ts) → EditFile(foo→bar) → Shell(grep) → 最终回答`；rollout 追加 `session.start` … `session.end`，锁在退出后释放。
 - 交付面：`codingx exec`、逐行交互、`--json`、`codingx log`、单目标 Anthropic Provider、4 个内置工具、嵌入式 JSONL SessionStore。
 - 下一里程碑：M2（自研 TUI、sessiond、上下文压缩、resume/fork、更多工具）。

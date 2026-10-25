@@ -13,7 +13,14 @@ import {
 import type { Message, ModelEvent, ModelRequest, StopReason } from '../src/providers/types.js';
 import type { AppendEventInput, RolloutEvent, SessionHandle } from '../src/session/types.js';
 import type { RouterSelection } from '../src/routing/router.js';
-import { ToolRegistry, updatePlanTool, type ToolDef } from '../src/tools/index.js';
+import {
+  ToolRegistry,
+  ReadFileTracker,
+  askUserQuestionTool,
+  updatePlanTool,
+  type AskQuestion,
+  type ToolDef,
+} from '../src/tools/index.js';
 import { abortError, ProviderError } from '../src/util/errors.js';
 
 let cwd: string;
@@ -53,6 +60,11 @@ class RecordingSession implements SessionHandle {
       this.events.push(event);
       return event;
     });
+  }
+
+  async clear(): Promise<void> {
+    this.events.length = 0;
+    this.seq = 0;
   }
 
   async replay(): Promise<RolloutEvent[]> {
@@ -491,7 +503,49 @@ describe('AgentLoop tool execution', () => {
     expect(loop.history).toHaveLength(8);
   });
 
-  it('persists and emits update_plan state', async () => {
+  it('routes AskUserQuestion through the configured handler and records the result', async () => {
+    const session = new RecordingSession();
+    const ui: UiEvent[] = [];
+    let asked: readonly AskQuestion[] = [];
+    const client = new ScriptedClient([
+      toolStep([
+        {
+          id: 'ask-1',
+          name: 'AskUserQuestion',
+          input: {
+            questions: [
+              { id: 'q1', question: 'Which one?', options: [{ label: 'A' }, { label: 'B' }] },
+            ],
+          },
+        },
+      ]),
+      textStep('done'),
+    ]);
+    const loop = createLoop(client, session, ui, {
+      tools: new ToolRegistry([askUserQuestionTool]),
+      ask: async (questions) => {
+        asked = questions;
+        return [{ id: 'q1', selected: ['B'] }];
+      },
+    });
+
+    const result = await loop.runTurn('go');
+    expect(result.status).toBe('done');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ id: 'q1', multiSelect: false });
+
+    const toolResult = eventsOf(session, 'tool.result')[0] as
+      | { name?: string; content?: string; isError?: boolean }
+      | undefined;
+    expect(toolResult).toMatchObject({ name: 'AskUserQuestion', isError: false });
+    expect(toolResult?.content).toContain('selected: B');
+
+    const followUp = client.requests[1]?.messages.at(-1)?.content[0];
+    expect(followUp).toMatchObject({ type: 'tool_result' });
+    if (followUp?.type === 'tool_result') expect(followUp.content).toContain('selected: B');
+  });
+
+  it('persists and emits UpdatePlan state', async () => {
     const session = new RecordingSession();
     const ui: UiEvent[] = [];
     const plan = [
@@ -500,7 +554,7 @@ describe('AgentLoop tool execution', () => {
       { step: 'run tests', status: 'pending' as const },
     ];
     const client = new ScriptedClient([
-      toolStep([{ id: 'plan-call', name: 'update_plan', input: { plan } }]),
+      toolStep([{ id: 'plan-call', name: 'UpdatePlan', input: { plan } }]),
       textStep('plan applied'),
     ]);
     const loop = createLoop(client, session, ui);
@@ -528,6 +582,47 @@ describe('AgentLoop tool execution', () => {
     expect(client.requests[1]?.messages[0]).toMatchObject({ role: 'user' });
     expect(client.requests[1]?.messages[1]).toMatchObject({ role: 'assistant' });
     expect(client.requests[1]?.messages[2]).toMatchObject({ role: 'user' });
+  });
+
+  it('clearHistory drops messages, plan and read-before-write state', async () => {
+    const session = new RecordingSession();
+    const readTracker = new ReadFileTracker();
+    readTracker.markRead('/tmp/already-read.ts');
+    const client = new ScriptedClient([textStep('answer')]);
+    const loop = createLoop(client, session, [], {
+      readTracker,
+      initialPlan: [{ step: 'old plan', status: 'pending' }],
+    });
+    await loop.runTurn('hello');
+    expect(loop.history).toHaveLength(2);
+    expect(loop.plan).toHaveLength(1);
+    expect(readTracker.size).toBe(1);
+
+    loop.clearHistory();
+
+    expect(loop.history).toEqual([]);
+    expect(loop.plan).toEqual([]);
+    expect(readTracker.size).toBe(0);
+  });
+
+  it('applies model and reasoning effort changes to subsequent requests', async () => {
+    const session = new RecordingSession();
+    const client = new ScriptedClient([textStep('first'), textStep('second')]);
+    const loop = createLoop(client, session, []);
+    await loop.runTurn('first');
+    expect(client.requests[0]).toMatchObject({ model: 'model-a' });
+
+    loop.setModel('model-b');
+    loop.setReasoningEffort('high');
+    expect(loop.model).toBe('model-b');
+    expect(loop.reasoningEffort).toBe('high');
+    await loop.runTurn('second');
+
+    expect(client.requests[1]).toMatchObject({ model: 'model-b', reasoningEffort: 'high' });
+
+    loop.setReasoningEffort(undefined);
+    expect(loop.reasoningEffort).toBeUndefined();
+    expect(() => loop.setModel(' ')).toThrow(/empty/i);
   });
 });
 

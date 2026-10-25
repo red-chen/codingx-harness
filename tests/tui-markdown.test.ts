@@ -88,7 +88,7 @@ describe('transcript message units', () => {
       type: 'exec',
       id: 'e1',
       callId: 'c1',
-      name: 'shell',
+      name: 'Shell',
       command: 'git diff',
       output: '+added\n-removed\n@@ hunk\ncontext',
       isError: false,

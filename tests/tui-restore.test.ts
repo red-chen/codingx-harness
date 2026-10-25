@@ -18,10 +18,10 @@ describe('restoreTranscript', () => {
       event(1, 'session.start', { cwd: '/w', model: 'm' }),
       event(2, 'user.message', { text: 'hello' }),
       event(3, 'assistant.message', { turnId: 't1', text: 'answer' }),
-      event(4, 'tool.call', { callId: 'c1', name: 'shell', input: { command: 'ls' } }),
+      event(4, 'tool.call', { callId: 'c1', name: 'Shell', input: { command: 'ls' } }),
       event(5, 'tool.result', {
         callId: 'c1',
-        name: 'shell',
+        name: 'Shell',
         content: 'file.txt',
         isError: false,
         durationMs: 120,

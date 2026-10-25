@@ -4,6 +4,7 @@ export {
 } from './system-prompt.js';
 export type {
   AgentsMdInfo,
+  BuildSystemPromptOptions,
   ContextSnapshot,
   CreateContextSnapshotOptions,
   GitInfo,
@@ -11,8 +12,8 @@ export type {
 export { buildModelRequest, estimateRequestTokens, mergeConsecutiveUserMessages } from './context.js';
 export type { BuildRequestOptions } from './context.js';
 export { AgentLoop } from './loop.js';
-export { SYNTHETIC_TOOL_RESULT, rebuildHistory, restoreReadTracker } from './history.js';
-export type { ReadFileCall, RebuiltHistory, SyntheticToolResult } from './history.js';
+export { SYNTHETIC_TOOL_RESULT, latestModelSelection, rebuildHistory, restoreReadTracker } from './history.js';
+export type { ReadFileCall, RebuiltHistory, StoredModelSelection, SyntheticToolResult } from './history.js';
 export type {
   AgentCompressionOptions,
   AgentLoopOptions,

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { EMPTY_USAGE } from '../src/providers/types.js';
+import { EMPTY_USAGE, type ReasoningEffort } from '../src/providers/types.js';
 import type { TurnResult } from '../src/agent/index.js';
 import type { SessionHandle } from '../src/session/index.js';
 import { TuiApp, TuiRuntime, type Disposer, type SessionSignal, type TerminalIO } from '../src/tui/index.js';
 import { TuiSession } from '../src/cli/tui-session.js';
+import type { AskQuestion } from '../src/tools/types.js';
 
 class FakeIO implements TerminalIO {
   readonly writes: string[] = [];
@@ -61,7 +62,6 @@ function makeRuntime(
   commands: unknown[],
   local: string[],
   onCopy?: () => void,
-  copySelection?: (text: string) => string,
 ): TuiRuntime {
   return new TuiRuntime({
     app,
@@ -74,7 +74,6 @@ function makeRuntime(
       local.push(text);
     },
     ...(onCopy ? { onCopy } : {}),
-    ...(copySelection ? { copySelection } : {}),
   });
 }
 
@@ -91,6 +90,7 @@ const fakeSession = {
   filePath: '/tmp/s1.jsonl',
   meta: { id: 's1', cwd: '/work', model: 'm', createdAt: '2026-01-01T00:00:00Z', cliVersion: '0.1.0' },
   writable: true,
+  clear: async () => undefined,
 } as unknown as SessionHandle;
 
 describe('TuiRuntime', () => {
@@ -129,31 +129,20 @@ describe('TuiRuntime', () => {
     runtime.stop();
   });
 
-  it('copies the text selected with the mouse on release', async () => {
+  it('leaves mouse reporting off so the terminal owns selection', () => {
     const io = new FakeIO();
     const app = makeApp();
-    const rows: string[] = [];
-    const frame = app.frame();
-    for (let y = 0; y < frame.height; y++) {
-      let row = '';
-      for (let x = 0; x < frame.width; x++) row += frame.get(x, y)?.symbol ?? ' ';
-      rows.push(row);
-    }
-    const statusY = rows.findIndex((row) => row.includes('Ready'));
-    expect(statusY).toBeGreaterThan(0);
-    let copied = '';
-    const runtime = makeRuntime(app, io, [], [], undefined, (text) => {
-      copied = text;
-      return 'test';
-    });
+    for (let index = 0; index < 40; index++) app.addNotice('history ' + index);
+    const runtime = makeRuntime(app, io, [], []);
     runtime.start();
-    const y = statusY + 1;
-    runtime.feed('\x1b[<0;1;' + y + 'M');
-    runtime.feed('\x1b[<32;20;' + y + 'M');
-    runtime.feed('\x1b[<0;20;' + y + 'm');
-    await flush();
-    expect(copied).toContain('Ready');
+    runtime.feed('\x1b[<64;10;5M');
+    runtime.feed('\x1b[<0;5;8M');
+    runtime.feed('\x1b[<0;5;8m');
+    expect(app.scrollOffset).toBe(0);
     runtime.stop();
+    const output = io.writes.join('');
+    expect(output).not.toContain('\x1b[?1002h');
+    expect(output).not.toContain('\x1b[?1006h');
   });
 
   it('invokes the copy hook for Ctrl+Y', () => {
@@ -164,19 +153,6 @@ describe('TuiRuntime', () => {
     runtime.start();
     runtime.feed('\x19');
     expect(copies).toBe(1);
-    runtime.stop();
-  });
-
-  it('scrolls the transcript with SGR mouse wheel events', () => {
-    const io = new FakeIO();
-    const app = makeApp();
-    for (let index = 0; index < 40; index++) app.addNotice('history ' + index);
-    const runtime = makeRuntime(app, io, [], []);
-    runtime.start();
-    runtime.feed('\x1b[<64;10;5M');
-    expect(app.scrollOffset).toBe(3);
-    runtime.feed('\x1b[<65;10;5M');
-    expect(app.scrollOffset).toBe(0);
     runtime.stop();
   });
 
@@ -326,6 +302,41 @@ describe('TuiSession', () => {
     await expect(running).resolves.toBe(0);
   });
 
+  it('bridges AskUserQuestion to the modal and settles on answers or abort', async () => {
+    const io = new FakeIO();
+    const app = makeApp();
+    const controller = new TuiSession({
+      app,
+      io,
+      session: fakeSession,
+      runTurn: async () => ({ turnId: 't1', status: 'done', usage: EMPTY_USAGE, steps: 0, durationMs: 0 }),
+    });
+    const running = controller.run();
+    await flush();
+
+    const questions: AskQuestion[] = [
+      { id: 'pick', question: 'Pick one', multiSelect: false, options: [{ label: 'A' }, { label: 'B' }] },
+    ];
+    app.handleEvent({ type: 'turn.started', turnId: 't1' });
+    const answered = controller.ask(questions);
+    expect(app.mode).toBe('ask');
+    expect(app.status.state).toBe('awaiting');
+    controller.runtime.feed('\r');
+    await flush();
+    await expect(answered).resolves.toEqual([{ id: 'pick', selected: ['A'] }]);
+    expect(app.mode).toBe('main');
+
+    const abort = new AbortController();
+    const pending = controller.ask(questions, abort.signal);
+    expect(app.mode).toBe('ask');
+    abort.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'ABORTED' });
+    expect(app.mode).toBe('main');
+
+    controller.exit(0);
+    await running;
+  });
+
   it('handles /session locally and /quit exits', async () => {
     const io = new FakeIO();
     const app = makeApp();
@@ -344,6 +355,177 @@ describe('TuiSession', () => {
     controller.runtime.feed('/session\r');
     expect(called).toBe(0);
     expect(app.transcript.some((cell) => cell.type === 'notice' && cell.text.includes('/tmp/s1.jsonl'))).toBe(true);
+    controller.runtime.feed('/quit\r');
+    await expect(running).resolves.toBe(0);
+  });
+
+  it('handles /clear by resetting the rollout, agent history and UI', async () => {
+    const io = new FakeIO();
+    const app = makeApp();
+    let sessionCleared = 0;
+    let agentCleared = 0;
+    app.submitText('old prompt');
+    app.handleEvent({ type: 'turn.started', turnId: 't1' });
+    app.handleEvent({ type: 'turn.finished', turnId: 't1', status: 'done', usage: EMPTY_USAGE, durationMs: 1 });
+    const session = {
+      ...fakeSession,
+      clear: async () => {
+        sessionCleared += 1;
+      },
+    } as unknown as SessionHandle;
+    const controller = new TuiSession({
+      app,
+      io,
+      session,
+      runTurn: async () => ({ turnId: 't2', status: 'done', usage: EMPTY_USAGE, steps: 0, durationMs: 0 }),
+      onClear: () => {
+        agentCleared += 1;
+      },
+    });
+    const running = controller.run();
+    await flush();
+
+    controller.runtime.feed('/clear\r');
+    await flush();
+
+    expect(sessionCleared).toBe(1);
+    expect(agentCleared).toBe(1);
+    expect(app.transcript).toHaveLength(1);
+    expect(app.transcript[0]).toMatchObject({ type: 'notice', level: 'info' });
+    expect((app.transcript[0] as { text: string }).text).toMatch(/cleared/i);
+    expect(app.state.turnNumber).toBe(0);
+    expect(app.state.session.title).toBeUndefined();
+    expect(app.state.usage).toEqual(EMPTY_USAGE);
+
+    controller.runtime.feed('/quit\r');
+    await expect(running).resolves.toBe(0);
+  });
+
+  it('refuses /clear while a turn is running', async () => {
+    const io = new FakeIO();
+    const app = makeApp();
+    let sessionCleared = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const session = {
+      ...fakeSession,
+      clear: async () => {
+        sessionCleared += 1;
+      },
+    } as unknown as SessionHandle;
+    const controller = new TuiSession({
+      app,
+      io,
+      session,
+      runTurn: async () => {
+        app.handleEvent({ type: 'turn.started', turnId: 't1' });
+        await held;
+        app.handleEvent({ type: 'turn.finished', turnId: 't1', status: 'aborted', usage: EMPTY_USAGE, durationMs: 1 });
+        return { turnId: 't1', status: 'aborted', usage: EMPTY_USAGE, steps: 0, durationMs: 1 };
+      },
+      initialPrompt: 'long task',
+    });
+    const running = controller.run();
+    await flush();
+
+    controller.runtime.feed('/clear\r');
+    await flush();
+    expect(sessionCleared).toBe(0);
+    expect(app.transcript.some((cell) => cell.type === 'notice' && cell.text.includes('while a turn is running'))).toBe(
+      true,
+    );
+
+    release();
+    await flush();
+    controller.runtime.feed('/quit\r');
+    await expect(running).resolves.toBe(0);
+  });
+
+  it('handles /model locally and updates the controller, meta row and efforts', async () => {
+    const io = new FakeIO();
+    const app = makeApp();
+    let selection: { model: string; reasoningEffort?: ReasoningEffort } = { model: 'm' };
+    const updates: Array<{ model: string; reasoningEffort?: ReasoningEffort }> = [];
+    const controller = new TuiSession({
+      app,
+      io,
+      session: fakeSession,
+      runTurn: async () => ({ turnId: 't1', status: 'done', usage: EMPTY_USAGE, steps: 0, durationMs: 0 }),
+      model: {
+        get: () => selection,
+        set: (next) => {
+          selection = next;
+          updates.push(next);
+        },
+      },
+    });
+    const running = controller.run();
+    await flush();
+
+    controller.runtime.feed('/model\r');
+    expect(
+      app.transcript.some((cell) => cell.type === 'notice' && cell.text.includes('effort: default')),
+    ).toBe(true);
+
+    controller.runtime.feed('/model model-b high\r');
+    await flush();
+    await flush();
+    expect(updates).toEqual([{ model: 'model-b', reasoningEffort: 'high' }]);
+    expect(app.state.session).toMatchObject({ model: 'model-b', reasoningEffort: 'high' });
+    expect(app.transcript.some((cell) => cell.type === 'notice' && cell.text.includes('model: model-b'))).toBe(true);
+
+    controller.runtime.feed('/model --effort default\r');
+    await flush();
+    await flush();
+    expect(updates[1]).toEqual({ model: 'model-b' });
+    expect(app.state.session.reasoningEffort).toBeUndefined();
+
+    controller.runtime.feed('/quit\r');
+    await expect(running).resolves.toBe(0);
+  });
+
+  it('refuses /model changes while a turn is running', async () => {
+    const io = new FakeIO();
+    const app = makeApp();
+    let updates = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const controller = new TuiSession({
+      app,
+      io,
+      session: fakeSession,
+      runTurn: async () => {
+        app.handleEvent({ type: 'turn.started', turnId: 't1' });
+        await held;
+        app.handleEvent({ type: 'turn.finished', turnId: 't1', status: 'aborted', usage: EMPTY_USAGE, durationMs: 1 });
+        return { turnId: 't1', status: 'aborted', usage: EMPTY_USAGE, steps: 0, durationMs: 1 };
+      },
+      model: {
+        get: () => ({ model: 'm' }),
+        set: () => {
+          updates += 1;
+        },
+      },
+      initialPrompt: 'long task',
+    });
+    const running = controller.run();
+    await flush();
+
+    controller.runtime.feed('/model model-b high\r');
+    await flush();
+    expect(updates).toBe(0);
+    expect(
+      app.transcript.some(
+        (cell) => cell.type === 'notice' && cell.text.includes('while a turn is running'),
+      ),
+    ).toBe(true);
+
+    release();
+    await flush();
     controller.runtime.feed('/quit\r');
     await expect(running).resolves.toBe(0);
   });

@@ -4,6 +4,7 @@ import { TUI_COLORS } from '../state/types.js';
 import type { StyledTextLine } from './welcome.js';
 import { drawStyledLine } from './welcome.js';
 import type { Rect } from '../layout/index.js';
+import { COPY_SHORTCUT } from '../hints.js';
 
 const BORDER = { fg: TUI_COLORS.border };
 const TITLE = { fg: TUI_COLORS.accent, attrs: ATTR_BOLD };
@@ -18,9 +19,9 @@ const HELP_ROWS: ReadonlyArray<readonly [string, string]> = [
   ['Esc / Ctrl+C', 'interrupt'],
   ['Ctrl+T', 'transcript'],
   ['PgUp/PgDn', 'scroll'],
-  ['Wheel', 'scroll transcript'],
   ['Ctrl+Y', 'copy all regions'],
-  ['Drag', 'select & copy'],
+  ['Drag', 'select text'],
+  [COPY_SHORTCUT, 'copy selection'],
   ['?', 'shortcuts'],
   ['Ctrl+C twice', 'exit'],
 ];

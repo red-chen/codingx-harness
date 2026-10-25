@@ -13,6 +13,7 @@ import {
   type DaemonStatusResult,
   type SessionAppendParams,
   type SessionAttachParams,
+  type SessionClearParams,
   type SessionCreateParams,
   type SessionEndParams,
   type SessionForkParams,
@@ -298,6 +299,13 @@ export class SessiondServer {
           events: events as SessionAppendParams['events'],
         };
         return this.registry.append(state.clientId, appendParams);
+      }
+      case METHOD.sessionClear: {
+        const clearParams: SessionClearParams = {
+          sessionId: requireString(params, 'sessionId'),
+          ...(optionalString(params, 'leaseId') ? { leaseId: optionalString(params, 'leaseId') } : {}),
+        };
+        return this.registry.clear(state.clientId, clearParams);
       }
       case METHOD.sessionReplay: {
         const replayParams: SessionReplayParams = {

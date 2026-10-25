@@ -98,13 +98,13 @@ describe('turn summary', () => {
     app.handleEvent({
       type: 'tool.started',
       turnId: 't1',
-      call: { id: 'c1', name: 'shell', input: { command: 'npm test' } },
+      call: { id: 'c1', name: 'Shell', input: { command: 'npm test' } },
     });
     app.handleEvent({
       type: 'tool.finished',
       turnId: 't1',
       callId: 'c1',
-      name: 'shell',
+      name: 'Shell',
       result: { content: 'ok', isError: false },
       durationMs: 1_000,
     });

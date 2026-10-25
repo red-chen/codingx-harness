@@ -33,7 +33,11 @@ export function spinnerFrame(elapsedMs: number): string {
 }
 
 export function statusElapsedMs(status: TuiStatus, now: number): number {
-  if (status.state === 'working' && status.startedAt !== undefined && Number.isFinite(now)) {
+  if (
+    (status.state === 'working' || status.state === 'awaiting') &&
+    status.startedAt !== undefined &&
+    Number.isFinite(now)
+  ) {
     return Math.max(0, now - status.startedAt);
   }
   return Math.max(0, status.elapsedMs);
@@ -105,7 +109,8 @@ export function statusLabel(status: TuiStatus, now = 0, width = 80): string {
   }
 
   if (status.state === 'awaiting') {
-    return width < 40 ? 'Awaiting' : '! Awaiting approval';
+    if (width < 40) return 'Awaiting';
+    return '! Awaiting answer (' + formatElapsed(elapsed) + ')';
   }
 
   if (status.outcome === 'aborted') {

@@ -7,6 +7,8 @@ import { editFileTool } from './edit-file.js';
 import { updatePlanTool } from './plan.js';
 import { applyPatchTool } from './apply-patch.js';
 import { shellTool } from './shell.js';
+import { askUserQuestionTool } from './ask-user.js';
+import { skillTool } from './skill.js';
 import type { ToolDef } from './types.js';
 
 export { ToolRegistry } from './registry.js';
@@ -21,11 +23,19 @@ export { editFileTool } from './edit-file.js';
 export { updatePlanTool } from './plan.js';
 export { applyPatchTool } from './apply-patch.js';
 export { shellTool } from './shell.js';
+export { askUserQuestionTool } from './ask-user.js';
+export { skillTool } from './skill.js';
 export type {
+  AskAnswer,
+  AskHandler,
+  AskOption,
+  AskQuestion,
   PlanController,
   PlanStep,
   PlanStepStatus,
   ShellToolContext,
+  SkillToolContext,
+  SkillToolEntry,
   ToolApproval,
   ToolContext,
   ToolDef,
@@ -44,5 +54,7 @@ export function createBuiltinTools(): ToolDef[] {
     updatePlanTool,
     applyPatchTool,
     shellTool,
+    skillTool,
+    askUserQuestionTool,
   ];
 }

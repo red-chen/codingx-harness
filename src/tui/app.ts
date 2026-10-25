@@ -7,6 +7,8 @@ import { metaHeight, renderMetaBar } from './widgets/meta.js';
 import { renderStatusRow } from './widgets/status.js';
 import { renderTranscript } from './widgets/transcript.js';
 import { renderHelpOverlay } from './widgets/overlay.js';
+import { TRANSCRIPT_COPY_HINT } from './hints.js';
+import { renderAskPanel } from './widgets/ask.js';
 import { renderSlashMenu } from './widgets/slash-menu.js';
 import { slashMenuHeight, slashMatches } from './state/slash.js';
 
@@ -130,7 +132,7 @@ export function composeFrameWithCursor(state: TuiAppState, options: ComposeFrame
       scrollOffset: state.scroll.offset,
       welcome: null,
     });
-    frame.setString(0, bottomRow.y, ' Ctrl+T to return ', { fg: TUI_COLORS.muted });
+    frame.setString(0, bottomRow.y, ' ' + TRANSCRIPT_COPY_HINT + ' · Ctrl+T to return ', { fg: TUI_COLORS.muted });
     return { frame, cursor: null };
   }
 
@@ -168,10 +170,15 @@ export function composeFrameWithCursor(state: TuiAppState, options: ComposeFrame
   renderMetaBar(layout.meta, frame, {
     model: state.session.model,
     cwd: state.session.cwd,
+    ...(state.session.reasoningEffort ? { reasoningEffort: state.session.reasoningEffort } : {}),
     ...(state.session.home ? { home: state.session.home } : {}),
     ...(state.session.title ? { title: state.session.title } : {}),
   });
   if (state.mode === 'help') renderHelpOverlay(frame, width, height);
+  if (state.mode === 'ask' && state.ask !== undefined) {
+    const panel = renderAskPanel(frame, width, height, state.ask);
+    return { frame, cursor: panel.cursor };
+  }
   const cursor = state.mode === 'main' ? composerCursorPosition(state.composer, layout.composer) : null;
   return { frame, cursor };
 }

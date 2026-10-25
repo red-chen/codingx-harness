@@ -72,7 +72,7 @@ function noNewlineError(lineNumber: number): ToolError {
   return new ToolError(
     'Invalid patch at line ' +
       lineNumber +
-      ': "\\ No newline at end of file" markers are not supported because apply_patch preserves the ' +
+      ': "\\ No newline at end of file" markers are not supported because ApplyPatch preserves the ' +
       'target file\'s existing final-newline behavior. Remove the marker (or ensure both files end with a newline).',
   );
 }
@@ -296,7 +296,7 @@ function parseUnifiedDiff(patch: string): FilePatch[] {
       throw new ToolError(
         'Invalid patch at line ' +
           plusLineNumber +
-          ': deleting files by patching to /dev/null is not supported. apply_patch only modifies existing files or creates new ones.',
+          ': deleting files by patching to /dev/null is not supported. ApplyPatch only modifies existing files or creates new ones.',
       );
     }
     const created = oldPath === '/dev/null';
@@ -526,23 +526,23 @@ function readFailure(relative: string): { content: string; isError: true; meta: 
     content:
       'Refusing to apply the patch to ' +
       relative +
-      ' before it has been read. Call read_file on this file first, then retry apply_patch.',
+      ' before it has been read. Call ReadFile on this file first, then retry ApplyPatch.',
     isError: true,
     meta: { path: relative, reason: 'read-before-write' },
   };
 }
 
 export const applyPatchTool: ToolDef<typeof schema> = {
-  name: 'apply_patch',
+  name: 'ApplyPatch',
   description:
-    'Apply a standard unified diff to one or more UTF-8 text files inside the workspace. Supports multiple files ' +
+    'Apply a standard unified diff to one or more UTF-8 text files inside the workspace or an --add-dir root. Supports multiple files ' +
     'and multiple "@@ -oldStart,oldCount +newStart,newCount @@" hunks per file. Paths are unquoted; a/ and b/ ' +
     'header prefixes are stripped and tab-separated timestamps are ignored. Create a new file with "--- /dev/null" ' +
     'and "+++ b/path"; the target must not already exist and parent directories are created. ' +
-    'Every existing target must have been read with read_file in this session first. Renames, deletions, quoted ' +
+    'Every existing target must have been read with ReadFile in this session first. Renames, deletions, quoted ' +
     'paths, and "\\ No newline at end of file" markers are rejected. All hunks are parsed, validated and applied in ' +
     'memory before anything is written, so a validation failure leaves every file unchanged. Existing file modes and ' +
-    'final-newline behavior are preserved. Use edit_file for a single targeted replacement and write_file for a full rewrite.',
+    'final-newline behavior are preserved. Use EditFile for a single targeted replacement and WriteFile for a full rewrite.',
   schema,
   parallelSafe: false,
   approval: 'on-write',

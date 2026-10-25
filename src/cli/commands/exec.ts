@@ -8,6 +8,8 @@ import { createLoop } from '../runtime.js';
 export interface ExecCommandOptions {
   prompt: string;
   cwd: string;
+  /** Extra writable directories alongside cwd. */
+  addDirs?: readonly string[];
   json?: boolean;
   route?: string;
   model?: string;
@@ -36,6 +38,7 @@ export async function runExec(options: ExecCommandOptions): Promise<number> {
   const app = await bootstrap({
     cwd: options.cwd,
     env,
+    ...(options.addDirs && options.addDirs.length > 0 ? { addDirs: options.addDirs } : {}),
     cli: {
       ...(options.route ? { route: options.route } : {}),
       ...(options.model ? { model: options.model } : {}),

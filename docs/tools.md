@@ -6,7 +6,7 @@
 import type { z } from 'zod';
 
 export interface ToolDef<S extends z.ZodType = z.ZodType> {
-  /** 模型可见的名字，snake_case */
+  /** 模型可见的名字，PascalCase */
   name: string;
   /** 给模型看的说明：做什么、什么时候用、什么时候别用 */
   description: string;
@@ -25,6 +25,22 @@ export interface ToolResult {
   /** 结构化元数据，供 TUI 渲染与 rollout 审计，不回传给模型 */
   meta?: Record<string, unknown>;
 }
+
+export interface ToolContext {
+  /** 主 workspace 根；相对路径始终从这里解析 */
+  cwd: string;
+  /** --add-dir 追加的可写根（已规范化的绝对路径） */
+  additionalDirs?: readonly string[];
+  signal: AbortSignal;
+  readTracker: ReadFileTracker;
+  maxOutputChars: number;
+  shell: { env: Record<string, string>; timeoutMs: number };
+  plan?: PlanController;
+  /** 仅当 UI 能在一轮中途收集答案时提供（TUI） */
+  ask?: AskHandler;
+  /** 本会话加载的技能；没有技能时为 undefined 或空注册表 */
+  skills?: SkillToolContext;
+}
 ```
 
 约定：
@@ -34,6 +50,8 @@ export interface ToolResult {
 - `approval` 只是默认粒度：`none` 无需审批（只读），`on-write` 仅在写时询问，`always` 每次询问；策略层可收紧，见 [security.md](security.md)。
 - `execute` 不抛异常处理「业务失败」（文件不存在、命令非零退出），统一走 `isError: true` 回填；只有真正的程序错误才 throw。
 - 输出默认裁剪到 30k 字符，超出部分保留头尾并标记省略行数。
+- 文件路径限制在 `cwd` 与 `--add-dir` 追加的允许根内；相对路径从 `cwd` 解析，绝对路径可指向任一允许根。符号链接会按真实路径校验，逃逸到允许根之外的文件仍被拒绝。
+- 工具返回给模型的路径统一相对主 workspace（跨盘时为绝对路径），因此可以原样作为下一次工具调用的 `path` 入参。
 
 ## 内置工具清单
 
@@ -41,38 +59,108 @@ export interface ToolResult {
 
 | 工具 | 入参 | 说明 |
 | --- | --- | --- |
-| `read_file` | `path`, `offset?`, `limit?` | 按行读取，带行号；默认最多 2000 行 |
-| `list_dir` | `path`, `depth?` | 树状列出目录，自动忽略 `.gitignore` 与二进制 |
-| `glob` | `pattern`, `path?` | 文件名匹配，返回按修改时间排序的路径列表 |
-| `grep` | `pattern`, `path?`, `glob?`, `context?` | 内容搜索，优先调用 `rg`，缺失时退化为内置实现 |
+| `ReadFile` | `path`, `offset?`, `limit?` | 按行读取，带行号；默认最多 2000 行 |
+| `ListDir` | `path`, `depth?` | 树状列出目录，自动忽略 `.gitignore` 与二进制 |
+| `Glob` | `pattern`, `path?` | 文件名匹配，返回按修改时间排序的路径列表 |
+| `Grep` | `pattern`, `path?`, `glob?`, `context?` | 内容搜索，优先调用 `rg`，缺失时退化为内置实现 |
 
 ### 文件写入
 
 | 工具 | 入参 | 说明 |
 | --- | --- | --- |
-| `write_file` | `path`, `content` | 整文件写入；写入前检查是否已存在并提示覆盖 |
-| `edit_file` | `path`, `old_string`, `new_string`, `replace_all?` | 精确字符串替换；`old_string` 必须唯一匹配，否则报错让模型重试 |
-| `apply_patch` | `patch` | unified diff 形式的多文件补丁，用于批量改动 |
+| `WriteFile` | `path`, `content` | 整文件写入；写入前检查是否已存在并提示覆盖 |
+| `EditFile` | `path`, `old_string`, `new_string`, `replace_all?` | 精确字符串替换；`old_string` 必须唯一匹配，否则报错让模型重试 |
+| `ApplyPatch` | `patch` | unified diff 形式的多文件补丁，用于批量改动 |
 
-`edit_file` 与 `apply_patch` 都要求**先读后写**：工具会检查该文件在本会话中是否被读取过，未读取则拒绝并提示先调用 `read_file`。这条约束显著降低了模型凭想象改文件的情况。
+`EditFile` 与 `ApplyPatch` 都要求**先读后写**：工具会检查该文件在本会话中是否被读取过，未读取则拒绝并提示先调用 `ReadFile`。这条约束显著降低了模型凭想象改文件的情况。
 
 ### 执行
 
 | 工具 | 入参 | 说明 |
 | --- | --- | --- |
-| `shell` | `command`, `cwd?`, `timeout_ms?`, `description?` | 执行命令，返回 stdout / stderr / 退出码 |
-| `shell_interactive` | `command` | 长驻进程（dev server 等），返回会话句柄，后续可读取输出（M5） |
+| `Shell` | `command`, `cwd?`, `timeout_ms?`, `description?` | 执行命令，返回 stdout / stderr / 退出码 |
+| `ShellInteractive` | `command` | 长驻进程（dev server 等），返回会话句柄，后续可读取输出（M5） |
 
-`shell` 的默认超时 120s，超时后向整个进程组发 `SIGTERM`，再等 5s 后 `SIGKILL`。命令在沙箱内执行，工作目录限制在 workspace 根。
+`Shell` 的默认超时 120s，超时后向整个进程组发 `SIGTERM`，再等 5s 后 `SIGKILL`。工作目录限制在 workspace 根或 `--add-dir` 追加的目录内；当前构建仍无 OS 级沙箱，命令本身不受该限制。
 
 ### 其他
 
 | 工具 | 说明 |
 | --- | --- |
-| `update_plan` | 维护任务清单，模型用它显式记录多步计划，TUI 实时展示 |
-| `web_fetch` | 抓取 URL 并转 markdown；默认关闭，受 `[web]` 域名白名单与网络策略约束（M4） |
-| `task` | 派发子 Agent（M5） |
+| `UpdatePlan` | 维护任务清单，模型用它显式记录多步计划，TUI 实时展示 |
+| `AskUserQuestion` | 向用户提 1–4 个问题并等待回答；TUI 弹出选择面板，无交互运行时返回 `is_error` |
+| `Skill` | 按名字加载本地技能（`SKILL.md`）的完整说明，系统提示只放目录 |
+| `WebFetch` | 抓取 URL 并转 markdown；默认关闭，受 `[web]` 域名白名单与网络策略约束（M4） |
+| `Task` | 派发子 Agent（M5） |
 | `mcp__<server>__<tool>` | 从 MCP Server 动态注册的外部工具 |
+
+## 用户提问（`AskUserQuestion`）
+
+模型在信息不足、且答案会改变下一步动作时，用这个工具向用户提问，而不是猜。入参是 1–4 个问题：
+
+```json
+{
+  "questions": [
+    {
+      "id": "approach",
+      "header": "方案",
+      "question": "这次改动优先速度还是兼容性？",
+      "options": [
+        { "label": "速度", "description": "只改一个文件，不补测试" },
+        { "label": "兼容", "description": "先补测试，再改实现" }
+      ],
+      "multi_select": false
+    }
+  ]
+}
+```
+
+- `options` 可选（2–6 个）；省略时返回自由文本。`multi_select` 允许多选。
+- 工具把答案格式化为 `selected: ...` / `custom: ...` 回填，并把结构化答案放进 `meta.answers`。
+- 用户按 `Esc` 取消时返回 `is_error: true`（`meta.dismissed`），提示模型改用普通文本继续，不要重复提问；正在输入自由文本时，第一次 `Esc` 只退出输入，再按一次才取消整组问题。
+- 非交互运行（`exec`、纯文本 `--plain`）没有 `ctx.ask`，工具返回 `is_error`，避免阻塞 stdin。
+- TUI 打开问题时状态行显示 `Awaiting answer`，turn 仍处于 `executing`；取消或中断会关闭面板。问题与答案本身通过常规 `tool.call` / `tool.result` 进入 rollout，可回放。
+- 面板只根据工具调用的结构化字段绘制；transcript 里模型生成的文本不能伪造选项或改变顺序。
+
+## Skills
+
+技能是本地指令包，用于把领域流程（例如 Office 文档、发布检查）按需加载，避免把所有说明常驻上下文。
+
+### 目录与优先级
+
+```text
+~/.agents/skills/<name>/SKILL.md          # 共享全局（其他 agent 工具也可读）
+~/.codingx/skills/<name>/SKILL.md         # codingx 全局，覆盖同名共享技能
+<project root>/.codingx/skills/<name>/SKILL.md   # 项目，覆盖同名全局技能
+```
+
+- 启动时依次扫描三个目录（缺失不报错），按名字建索引；后面的目录覆盖前面的同名技能并给出 warning，优先级为 项目 > `~/.codingx/skills` > `~/.agents/skills`。
+- 系统提示只放 `# Skills` 目录（名字 + 一行描述）；模型判断任务匹配时调用 `Skill`，工具返回完整正文、`SKILL.md` 路径与 base directory。
+- 正文中可以用相对路径引用技能目录下的补充文件。
+
+### SKILL.md 格式
+
+```markdown
+---
+name: office-docx
+description: Create, read, edit and validate Word documents.
+---
+
+# Workflow
+
+1. Read the existing document.
+2. ...
+```
+
+- `name` 可省略，默认取目录名；只允许字母、数字、点、下划线、连字符。
+- `description` 必填，会进入系统提示；支持单行、引号字符串与 `>` / `|` 块。
+- 单文件上限 256 KiB；缺 description、名字非法、frontmatter 未闭合、正文为空都会被跳过并给出 warning。
+- 正文超过工具输出上限（默认 30k 字符）时按通用规则保留头尾并标注截断；技能应保持精简。
+- 索引在会话启动时加载，会话中途新增/修改技能需要重开会话。技能文件与 `AGENTS.md` 属于同一信任级别：只在可信仓库中使用项目技能。
+
+### 当前限制
+
+文件工具默认限制在 workspace 内；未通过 `--add-dir` 添加该目录时，**全局技能目录中的补充文件无法被 `ReadFile` 读取**。需要引用补充文件时，把技能放在项目的 `.codingx/skills` 下，或用 `--add-dir` 显式加入技能目录。技能正文本身不受此限制（由 `Skill` 工具直接加载）。
 
 ## 工具输出的裁剪
 
@@ -80,10 +168,10 @@ export interface ToolResult {
 
 | 工具 | 策略 |
 | --- | --- |
-| `shell` | 保留最后 200 行 + 首个错误块；截断时标注总行数 |
-| `read_file` | 超过 `limit` 时明确告知「文件共 N 行，已返回 A-B 行」 |
-| `grep` | 最多 100 条命中，超出提示缩小范围 |
-| `list_dir` | 超过 500 个条目时折叠为目录统计 |
+| `Shell` | 保留最后 200 行 + 首个错误块；截断时标注总行数 |
+| `ReadFile` | 超过 `limit` 时明确告知「文件共 N 行，已返回 A-B 行」 |
+| `Grep` | 最多 100 条命中，超出提示缩小范围 |
+| `ListDir` | 超过 500 个条目时折叠为目录统计 |
 
 模型对「被截断了」这件事必须知情，否则会基于不完整信息做判断。
 

@@ -51,7 +51,7 @@ const schema = z.object({
     .min(1)
     .optional()
     .default('.')
-    .describe('File or directory to search, relative to the workspace root (or absolute inside it). Defaults to the workspace root.'),
+    .describe('File or directory to search, relative to the workspace root (or absolute inside an allowed root). Defaults to the workspace root.'),
   glob: z
     .string()
     .min(1)
@@ -333,7 +333,8 @@ function parseRgContextLine(
 
 async function parseRipgrepOutput(
   stdout: string,
-  workspaceRoot: string,
+  resolveRoot: string,
+  allowedRoot: string,
   displayRoot: string,
 ): Promise<BuiltinGrepResult> {
   const rawLines = stdout.split('\n');
@@ -351,8 +352,8 @@ async function parseRipgrepOutput(
     if (cache.has(filePart)) return cache.get(filePart) ?? null;
     let display: string | null = null;
     try {
-      const canonical = await canonicalizePath(path.resolve(workspaceRoot, filePart));
-      if (isPathInside(workspaceRoot, canonical)) {
+      const canonical = await canonicalizePath(path.resolve(resolveRoot, filePart));
+      if (isPathInside(allowedRoot, canonical)) {
         const info = await stat(canonical);
         if (info.isFile()) display = toDisplayPath(displayRoot, canonical);
       }
@@ -568,11 +569,11 @@ function grepError(content: string, input: { pattern: string }, relativePath: st
 }
 
 export const grepTool: ToolDef<typeof schema> = {
-  name: 'grep',
+  name: 'Grep',
   description:
-    'Search file contents inside the workspace with a regular expression. Use grep for content (a symbol, string or pattern inside files); ' +
-    'use glob to discover files by their names. ripgrep is preferred and a built-in scanner is used when rg is unavailable. ' +
-    'path may be a file or directory; glob narrows the files searched and context includes surrounding lines. ' +
+    'Search file contents inside the workspace or an --add-dir root with a regular expression. Use Grep for content (a symbol, string or pattern inside files); ' +
+    'use Glob to discover files by their names. ripgrep is preferred and a built-in scanner is used when rg is unavailable. ' +
+    'path may be a file or directory; the glob filter narrows the files searched and context includes surrounding lines. ' +
     'Output is file:line:content and is capped at 100 matches with an explicit truncation marker. ' +
     'Invalid regular expressions and search failures are reported as errors so the pattern can be fixed.',
   schema,
@@ -592,7 +593,7 @@ export const grepTool: ToolDef<typeof schema> = {
     if (input.glob) args.push('-g', input.glob);
     args.push('--', input.pattern, resolved.relative);
 
-    const run = await runRipgrep(args, resolved.root, ctx);
+    const run = await runRipgrep(args, resolved.workspaceRoot, ctx);
     if (run.aborted || ctx.signal.aborted) throw abortError('grep aborted.');
 
     if (run.unavailable) {
@@ -603,7 +604,7 @@ export const grepTool: ToolDef<typeof schema> = {
         ...(input.glob === undefined ? {} : { glob: input.glob }),
         context: input.context,
         maxMatches: MAX_MATCHES,
-        displayRoot: resolved.root,
+        displayRoot: resolved.workspaceRoot,
         signal: ctx.signal,
       });
       const formatted = grepResult(input, resolved.relative, 'builtin', result);
@@ -640,7 +641,12 @@ export const grepTool: ToolDef<typeof schema> = {
       );
     }
 
-    const parsed = await parseRipgrepOutput(run.stdout, resolved.root, resolved.root);
+    const parsed = await parseRipgrepOutput(
+      run.stdout,
+      resolved.workspaceRoot,
+      resolved.root,
+      resolved.workspaceRoot,
+    );
     return grepResult(input, resolved.relative, 'rg', parsed, run.outputTruncated);
   },
 };

@@ -1,4 +1,4 @@
-import type { TokenUsage } from '../../providers/types.js';
+import type { ReasoningEffort, TokenUsage } from '../../providers/types.js';
 import type { PlanStep } from '../../tools/types.js';
 import type { Color } from '../terminal/buffer.js';
 import { ansiColor, color256 } from '../terminal/buffer.js';
@@ -11,7 +11,7 @@ import { ansiColor, color256 } from '../terminal/buffer.js';
  * UiEvent; the TUI answers with UiCommand.
  */
 
-export type TuiMode = 'main' | 'transcript' | 'help';
+export type TuiMode = 'main' | 'transcript' | 'help' | 'ask';
 
 export type TuiStatusState = 'idle' | 'working' | 'awaiting';
 export type TuiTurnOutcome = 'done' | 'error' | 'aborted';
@@ -122,10 +122,41 @@ export interface TranscriptScrollState {
   readonly offset: number;
 }
 
+/** One selectable answer in the ask overlay. */
+export interface TuiAskOption {
+  readonly label: string;
+  readonly description?: string;
+}
+
+export interface TuiAskQuestion {
+  readonly id: string;
+  readonly header?: string;
+  readonly question: string;
+  readonly options: readonly TuiAskOption[];
+  readonly multiSelect: boolean;
+}
+
+/**
+ * Modal ask state. One question is visible at a time; selections and custom
+ * text are retained per question so going back does not lose answers.
+ */
+export interface TuiAskState {
+  readonly questions: readonly TuiAskQuestion[];
+  readonly index: number;
+  readonly selections: readonly (readonly string[])[];
+  /** Highlighted row for the current question (options followed by "Other"). */
+  readonly optionIndex: number;
+  readonly custom: readonly string[];
+  readonly editing: boolean;
+  readonly cursor: number;
+}
+
 export interface TuiSessionState {
   readonly sessionId: string;
   readonly cwd: string;
   readonly model: string;
+  /** Provider reasoning effort; absent means the provider default. */
+  readonly reasoningEffort?: ReasoningEffort;
   /** User home directory used to abbreviate cwd with '~'. */
   readonly home?: string;
   /** Short derived title; defaults to the first user prompt. */
@@ -142,6 +173,8 @@ export interface TuiAppState {
   readonly transcript: readonly TranscriptCell[];
   readonly activeAssistant: ActiveAssistantCell | null;
   readonly plan: readonly PlanStep[];
+  /** Present while the ask overlay is open (mode === 'ask'). */
+  readonly ask?: TuiAskState;
   readonly status: TuiStatus;
   readonly usage: TokenUsage;
   readonly queue: readonly QueueItem[];

@@ -7,7 +7,10 @@ import type { ToolDef } from './types.js';
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 const schema = z.object({
-  path: z.string().min(1).describe('Path to the file, relative to the workspace root (or absolute inside it).'),
+  path: z
+    .string()
+    .min(1)
+    .describe('Path to the file, relative to the workspace root (or absolute inside an allowed root).'),
   offset: z.number().int().min(1).optional().default(1).describe('1-based first line to return. Defaults to 1.'),
   limit: z
     .number()
@@ -20,19 +23,19 @@ const schema = z.object({
 });
 
 export const readFileTool: ToolDef<typeof schema> = {
-  name: 'read_file',
+  name: 'ReadFile',
   description:
-    'Read a UTF-8 text file inside the workspace by line, with line numbers. ' +
+    'Read a UTF-8 text file inside the workspace or an --add-dir root by line, with line numbers. ' +
     'Use offset and limit to page through large files. The response states the total line count and whether more lines remain. ' +
-    'You must call read_file on a file before editing it with edit_file. ' +
-    'Binary files are rejected; use grep for content search and list_dir for directories.',
+    'You must call ReadFile on a file before editing it with EditFile. ' +
+    'Binary files are rejected; use Grep for content search and ListDir for directories.',
   schema,
   parallelSafe: true,
   approval: 'none',
   async execute(input, ctx) {
     const resolved = await resolveWorkspacePath(ctx, input.path, { mustExist: true });
     const info = await stat(resolved.absolute);
-    if (!info.isFile()) throw new ToolError('Not a regular file: ' + input.path + '. Use list_dir for directories.');
+    if (!info.isFile()) throw new ToolError('Not a regular file: ' + input.path + '. Use ListDir for directories.');
     if (info.size > MAX_FILE_BYTES) {
       throw new ToolError(
         'File is too large to read (' + Math.ceil(info.size / 1024 / 1024) + ' MiB); the limit is 10 MiB.',

@@ -95,7 +95,7 @@ Provider 适配器只负责协议转换（Anthropic Messages / OpenAI Responses�
 
 ### `exec/`
 
-- 用 `spawn` 启动子进程（`shell` 工具的命令串交给 `bash -lc` 解析），绑定独立进程组，超时后 `SIGTERM` → 5s → `SIGKILL` 整组回收
+- 用 `spawn` 启动子进程（`Shell` 工具的命令串交给 `bash -lc` 解析），绑定独立进程组，超时后 `SIGTERM` → 5s → `SIGKILL` 整组回收
 - stdout / stderr 有界缓冲，超出 `tools.max_output_chars` 时按截断策略处理
 - 只注入 sandbox 计算后的环境变量白名单，凭证类变量不进入子进程
 
@@ -155,7 +155,7 @@ stop: end_turn              # 本轮结束，等待下一次用户输入
 
 - 一次 turn 只有一个 `AbortController`，用户按 `Esc` / `Ctrl+C` 触发 abort，向下传导到模型流与子进程
 - 一个会话同一时刻只有一个写租约，绑定 CLI 连接；其他 CLI 只能 observe。接管仅允许空闲会话，daemon 在租约丢失时把进行中的 turn 标记为 `interrupted`
-- 工具调用默认串行执行；只读工具（`read_file`、`grep`、`glob`）可标记 `parallelSafe`，同批并发，写工具强制串行
+- 工具调用默认串行执行；只读工具（`ReadFile`、`Grep`、`Glob`）可标记 `parallelSafe`，同批并发，写工具强制串行
 - 子进程用 `spawn` 而非 `exec`，绑定 `detached: true` 以便超时时整组 kill
 
 ## 错误处理

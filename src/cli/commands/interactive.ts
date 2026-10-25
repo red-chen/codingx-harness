@@ -1,8 +1,13 @@
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
-import { rebuildHistory, restoreReadTracker, type TurnResult } from '../../agent/index.js';
-import type { Message } from '../../providers/types.js';
+import {
+  latestModelSelection,
+  rebuildHistory,
+  restoreReadTracker,
+  type TurnResult,
+} from '../../agent/index.js';
+import type { Message, ReasoningEffort } from '../../providers/types.js';
 import {
   type SessionHandle,
   type SessionStoreApi,
@@ -13,11 +18,14 @@ import { SessionError } from '../../util/errors.js';
 import { PlainRenderer, type TextSink } from '../../ui/plain.js';
 import { VERSION } from '../../version.js';
 import { bootstrap, type CliApp } from '../bootstrap.js';
+import { describeModelSelection, parseModelCommand } from '../model-command.js';
 import { createLoop } from '../runtime.js';
 import { runTuiInteractive } from './tui.js';
 
 export interface InteractiveCommandOptions {
   cwd: string;
+  /** Extra writable directories alongside cwd (from --add-dir). */
+  addDirs?: readonly string[];
   initialPrompt?: string;
   json?: boolean;
   route?: string;
@@ -152,6 +160,7 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
     app = await bootstrap({
       cwd: options.cwd,
       env,
+      ...(options.addDirs && options.addDirs.length > 0 ? { addDirs: options.addDirs } : {}),
       cli: {
         ...(options.route ? { route: options.route } : {}),
         ...(options.model ? { model: options.model } : {}),
@@ -197,6 +206,8 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
     const readTracker = new ReadFileTracker();
     let initialMessages: readonly Message[] | undefined;
     let rebuiltPlan: readonly PlanStep[] | undefined;
+    let resumedModel: string | undefined;
+    let resumedEffort: ReasoningEffort | undefined;
     if (resumed) {
       const events = await session.replay();
       const rebuilt = rebuildHistory(events);
@@ -218,7 +229,10 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
             ' dangling tool call(s) with synthetic tool_result events.\n',
         );
       }
-      await restoreReadTracker(rebuilt, app.cwd, readTracker);
+      await restoreReadTracker(rebuilt, app.cwd, readTracker, app.additionalDirs);
+      const modelSelection = latestModelSelection(events);
+      resumedModel = modelSelection.model;
+      resumedEffort = modelSelection.reasoningEffort;
       initialMessages = rebuilt.messages;
       rebuiltPlan = rebuilt.plan;
       stderr.write(
@@ -230,11 +244,13 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
         );
       }
     }
+    if (resumedModel && !options.model) app.router.setModel(resumedModel);
 
     const loop = createLoop(app, session, (event) => renderer.render(event), {
       readTracker,
       ...(initialMessages ? { initialMessages } : {}),
       ...(rebuiltPlan ? { initialPlan: rebuiltPlan } : {}),
+      ...(resumedEffort ? { reasoningEffort: resumedEffort } : {}),
     });
     renderer.render({
       type: 'session.info',
@@ -265,12 +281,57 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
       if (EXIT_COMMANDS.has(line)) break;
       if (line === '/help') {
         commandOut.write(
-          'Commands: /help, /session, /quit. Ctrl+C interrupts a running turn; press it twice to exit.\n',
+          'Commands: /help, /session, /model, /clear, /quit. Ctrl+C interrupts a running turn; press it twice to exit.\n',
         );
         continue;
       }
       if (line === '/session') {
         commandOut.write('session: ' + session.id + '\nfile: ' + session.filePath + '\n');
+        continue;
+      }
+      if (line === '/model' || line.startsWith('/model ')) {
+        const current = {
+          model: app.router.selection.model,
+          ...(loop.reasoningEffort ? { reasoningEffort: loop.reasoningEffort } : {}),
+        };
+        const command = parseModelCommand(line, current);
+        if (command.type === 'show') {
+          commandOut.write(describeModelSelection(current) + '\n');
+          continue;
+        }
+        if (command.type === 'error') {
+          commandOut.write(command.message + '\n');
+          continue;
+        }
+        try {
+          await session.append({
+            type: 'model.changed',
+            model: command.selection.model,
+            ...(command.selection.reasoningEffort
+              ? { reasoningEffort: command.selection.reasoningEffort }
+              : {}),
+          });
+          app.router.setModel(command.selection.model);
+          loop.setModel(command.selection.model);
+          loop.setReasoningEffort(command.selection.reasoningEffort);
+          commandOut.write(describeModelSelection(command.selection) + '\n');
+        } catch (error) {
+          commandOut.write(
+            'Failed to update model: ' + (error instanceof Error ? error.message : String(error)) + '\n',
+          );
+        }
+        continue;
+      }
+      if (line === '/clear') {
+        try {
+          await session.clear();
+          loop.clearHistory();
+          commandOut.write('Session cleared: conversation and rollout history were reset.\n');
+        } catch (error) {
+          commandOut.write(
+            'Failed to clear session: ' + (error instanceof Error ? error.message : String(error)) + '\n',
+          );
+        }
         continue;
       }
       if (line.startsWith('/')) {

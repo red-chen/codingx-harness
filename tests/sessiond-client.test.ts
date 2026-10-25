@@ -108,6 +108,22 @@ describe('SessiondStore', () => {
     expect(ended[0]?.status).toBe('ended');
   });
 
+  it('clears a session through the daemon and restarts at seq 2', async () => {
+    const handle = await remote.createSession(createParams);
+    await handle.append({ type: 'user.message', text: 'remote secret' });
+    await handle.clear();
+
+    const replay = await handle.replay();
+    expect(replay).toHaveLength(1);
+    expect(replay[0]).toMatchObject({ seq: 1, type: 'session.start' });
+    const summaries = await remote.listSessions();
+    expect(summaries[0]).toMatchObject({ id: handle.id, status: 'idle', eventCount: 1 });
+
+    const [next] = await handle.append({ type: 'user.message', text: 'after clear' });
+    expect(next?.seq).toBe(2);
+    await handle.close();
+  });
+
   it('attaches a read-only observer and enforces the write lease across clients', async () => {
     const handle = await remote.createSession(createParams);
     const observer = await remote.attachSession(handle.id, 'read');

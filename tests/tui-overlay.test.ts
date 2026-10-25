@@ -33,6 +33,8 @@ describe('TUI overlays', () => {
     expect(text).toContain('Enter');
     expect(text).toContain('submit');
     expect(text).toContain('queue while working');
+    expect(text).toContain('select text');
+    expect(text).toContain('copy selection');
     expect(text).toContain('Ctrl+C twice');
     expect(app.mode).toBe('help');
   });
@@ -45,6 +47,7 @@ describe('TUI overlays', () => {
     const text = screenText(app.frame());
     expect(text).toContain('Transcript');
     expect(text).toContain('transcript body');
+    expect(text).toContain('to copy');
     expect(text).toContain('Ctrl+T to return');
     expect(text).not.toContain('Ask codingx to do anything');
     expect(text).not.toContain('? for shortcuts');

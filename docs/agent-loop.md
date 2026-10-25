@@ -70,6 +70,10 @@ CLI 打开或 resume 会话时，通过 sessiond 获取写租约；租约随连�
 
 注入是**一次性快照**，会话中途文件变化不会自动重载——避免上下文在 turn 之间无故漂移。需要刷新时由用户显式触发。
 
+### Skills
+
+启动时依次扫描 `~/.agents/skills`、`~/.codingx/skills` 与 `<project>/.codingx/skills`（后者覆盖前者同名技能），把每个 `SKILL.md` 的 `name` / `description` 作为目录注入系统提示的 `# Skills` 段。正文不进入系统提示，模型判断任务匹配后调用 `Skill` 工具按需加载，返回正文、文件路径与 base directory。这样技能数量增长不会线性推高每轮请求的固定 token；目录本身仍是快照，新增技能需要重开会话。详见 [tools.md](tools.md#skills)。
+
 ## 上下文压缩
 
 触发条件（满足任一）：
@@ -106,6 +110,15 @@ async function executeTools(calls: ToolCall[], ctx: TurnContext): Promise<ToolRe
 
 `runOne` 内部顺序：查表 → 参数校验（zod）→ 审批 → 沙箱执行 → 结果裁剪 → 追加事件到 sessiond。任何一步失败都转换成 `is_error: true` 的 `tool_result` 回填，让模型自己看到错误并纠正，而不是让整个 turn 崩掉。
 
+### 用户提问
+
+`AskUserQuestion` 是唯一会在工具执行中途等待用户的工具。`ToolContext.ask` 由交互层注入：
+
+- TUI：`TuiSession.ask()` 打开底部提问面板，等待 `answer` / `cancel-ask`；期间 `TurnState` 仍是 `executing`，TUI 状态行显示 `Awaiting answer`。
+- `exec` 与纯文本模式没有 `ctx.ask`，工具立即返回 `is_error`，提示模型改用普通文本提问，避免阻塞 stdin。
+- 用户取消返回 `is_error: true`（`meta.dismissed`），turn 继续；turn 被中断时 `ask` 以 `ABORTED` reject，与其他工具的中断路径一致。
+- 问题与答案不新增事件类型，仍然通过 `tool.call` / `tool.result` 写入 rollout；resume 与 `log` 回放无需特殊处理。
+
 ## 路由、重试与故障转移
 
 Provider 的选择、重试、failover 与熔断统一由 `ProviderRouter` 负责；Agent 不再包 `withRetry`，避免两层重试叠加。
@@ -124,4 +137,4 @@ Provider 的选择、重试、failover 与熔断统一由 `ProviderRouter` 负�
 
 ## 子 Agent（后续）
 
-`task` 工具可以派发一个独立上下文的子 Agent，用于大范围搜索或独立验证。子 Agent 有自己的 turn 循环与工具集，结果以摘要形式返回父 Agent，避免污染主上下文。子 Agent 使用独立的 session（`parent_id` 指向父会话），同样由 sessiond 管理。该能力放在 M5，先保证主循环正确。
+`Task` 工具可以派发一个独立上下文的子 Agent，用于大范围搜索或独立验证。子 Agent 有自己的 turn 循环与工具集，结果以摘要形式返回父 Agent，避免污染主上下文。子 Agent 使用独立的 session（`parent_id` 指向父会话），同样由 sessiond 管理。该能力放在 M5，先保证主循环正确。

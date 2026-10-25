@@ -329,6 +329,10 @@ function buildRequestBody(req: ModelRequest): Record<string, unknown> {
     body.system = [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }];
   }
   if (req.temperature !== undefined) body.temperature = req.temperature;
+  if (req.reasoningEffort !== undefined) {
+    // Anthropic Messages exposes reasoning intensity as output_config.effort.
+    body.output_config = { effort: req.reasoningEffort };
+  }
   if (req.tools.length > 0) {
     body.tools = req.tools.map((tool, index) => ({
       name: tool.name,

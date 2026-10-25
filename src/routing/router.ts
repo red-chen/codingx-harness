@@ -142,6 +142,13 @@ export class ProviderRouter implements ModelClient {
     return this.selection.model;
   }
 
+  /** Switch the active model while keeping the route and provider. */
+  setModel(model: string): void {
+    const next = model.trim();
+    if (next.length === 0) throw new ConfigError('Model must not be empty.');
+    this.selection.model = next;
+  }
+
   async countTokens(messages: Message[]): Promise<number> {
     return this.provider.countTokens(messages);
   }

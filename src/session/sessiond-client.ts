@@ -9,6 +9,8 @@ import {
   type SessionAppendResult,
   type SessionAttachParams,
   type SessionAttachResult,
+  type SessionClearParams,
+  type SessionClearResult,
   type SessionCreateParams,
   type SessionCreateResult,
   type SessionEndParams,
@@ -152,6 +154,10 @@ export class SessiondClient {
 
   async append(params: SessionAppendParams): Promise<SessionAppendResult> {
     return this.request<SessionAppendResult>('session.append', params, 30_000);
+  }
+
+  async clear(params: SessionClearParams): Promise<SessionClearResult> {
+    return this.request<SessionClearResult>('session.clear', params, 30_000);
   }
 
   async replay(params: SessionReplayParams): Promise<SessionReplayResult> {

@@ -98,6 +98,16 @@ describe('TUI bottom surfaces', () => {
     expect(meta).toContain('Fix parser regression');
   });
 
+  it('shows reasoning effort after the model and drops it when cleared', () => {
+    const app = makeApp('Task');
+    app.setModel('glm-5.3', 'high');
+    const layout = computeFrameLayout(app.state, 80, 24);
+    expect(rowText(app.renderFrame(), layout.meta.y)).toContain('effort high');
+
+    app.setModel('glm-5.3');
+    expect(rowText(app.renderFrame(), layout.meta.y)).not.toContain('effort');
+  });
+
   it('derives the title from the first submitted prompt and keeps it on session.info', () => {
     const app = makeApp();
     type(app, 'Please fix the parser bug');

@@ -98,6 +98,7 @@ export const METHOD = {
   sessionDetach: 'session.detach',
   sessionHeartbeat: 'session.heartbeat',
   sessionAppend: 'session.append',
+  sessionClear: 'session.clear',
   sessionReplay: 'session.replay',
   sessionSubscribe: 'session.subscribe',
   sessionFork: 'session.fork',
@@ -110,6 +111,7 @@ export type SessiondMethod = (typeof METHOD)[keyof typeof METHOD];
 export const NOTIFICATION = {
   event: 'session.event',
   status: 'session.status',
+  cleared: 'session.cleared',
   leaseRevoked: 'session.lease_revoked',
   lagged: 'session.lagged',
 } as const;
@@ -231,6 +233,17 @@ export interface SessionAppendResult {
   lastSeq: number;
 }
 
+export interface SessionClearParams {
+  sessionId: string;
+  leaseId?: string;
+}
+
+export interface SessionClearResult {
+  sessionId: string;
+  lastSeq: number;
+  eventCount: number;
+}
+
 export interface SessionReplayParams {
   sessionId: string;
   fromSeq?: number;
@@ -294,6 +307,12 @@ export interface SessionStatusNotification {
   sessionId: string;
   status: SessionStatus;
   writer?: string;
+}
+
+export interface SessionClearedNotification {
+  sessionId: string;
+  lastSeq: number;
+  eventCount: number;
 }
 
 export interface SessionLeaseRevokedNotification {

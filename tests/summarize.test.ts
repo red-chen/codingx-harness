@@ -35,7 +35,7 @@ const dropped: Message[] = [
     role: 'assistant',
     content: [
       { type: 'text', text: 'reading files' },
-      { type: 'tool_use', id: 'c1', name: 'read_file', input: { path: 'src/a.ts' } },
+      { type: 'tool_use', id: 'c1', name: 'ReadFile', input: { path: 'src/a.ts' } },
     ],
   },
   {
@@ -62,7 +62,7 @@ describe('serializeMessagesForSummary', () => {
     expect(transcript).toContain('## user');
     expect(transcript).toContain('inspect the repo');
     expect(transcript).toContain('## assistant');
-    expect(transcript).toContain('tool_use read_file');
+    expect(transcript).toContain('tool_use ReadFile');
     expect(transcript).toContain('src/a.ts');
     expect(transcript).toContain('tool_result');
     expect(transcript).toContain('line 1');

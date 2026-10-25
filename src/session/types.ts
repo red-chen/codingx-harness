@@ -83,6 +83,12 @@ export interface SessionHandle {
   append(events: AppendEventInput | AppendEventInput[]): Promise<RolloutEvent[]>;
   /** Authority-only append for reserved events (session.resumed/interrupted/end). */
   appendSystem?(events: AppendEventInput | AppendEventInput[]): Promise<RolloutEvent[]>;
+  /**
+   * Reset the session in place: rewrite the rollout so it only contains a
+   * fresh `session.start` header, restart seq/eventId state, and make the
+   * session idle again. Rejects when the handle is read-only or has ended.
+   */
+  clear(): Promise<void>;
   replay(options?: ReplayOptions): Promise<RolloutEvent[]>;
   end(reason?: string): Promise<RolloutEvent>;
   close(): Promise<void>;

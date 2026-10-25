@@ -22,15 +22,23 @@ function truncate(text: string, max: number): string {
 function toolLabel(call: ToolCall): string {
   const input =
     typeof call.input === 'object' && call.input !== null ? (call.input as Record<string, unknown>) : {};
-  if (call.name === 'shell' && typeof input.command === 'string') {
-    return 'shell: ' + truncate(input.command, 120);
+  if (call.name === 'Shell' && typeof input.command === 'string') {
+    return 'Shell: ' + truncate(input.command, 120);
   }
   if (typeof input.path === 'string') return call.name + ': ' + input.path;
+  if (call.name === 'Skill' && typeof input.name === 'string') return 'Skill: ' + input.name;
+  if (call.name === 'AskUserQuestion' && Array.isArray(input.questions)) {
+    const first = input.questions[0];
+    if (typeof first === 'object' && first !== null) {
+      const question = (first as Record<string, unknown>).question;
+      if (typeof question === 'string') return 'ask: ' + truncate(question, 120);
+    }
+  }
   return call.name;
 }
 
 function toolDetail(content: string, isError: boolean | undefined, name: string, durationMs: number): string {
-  if (name === 'shell') {
+  if (name === 'Shell') {
     const exitLine = content.split('\n').find((line) => line.trimStart().startsWith('exit_code:'));
     if (exitLine) return exitLine.trim();
   }
