@@ -11,6 +11,7 @@
 | 目标 | 说明 |
 | --- | --- |
 | 终端优先 | 全屏 TUI 与纯文本两种形态，SSH / tmux / CI 均可运行 |
+| 交互对齐 | 全屏 TUI 按 Codex 的信息架构组织：欢迎卡、消息单元、底部 composer、审批弹层 |
 | 多终端协同 | 会话由本地 sessiond 统一持有，任一终端可查询、观察同一会话 |
 | 可审计 | 每次模型调用与工具执行都写入 append-only 的 JSONL 会话日志 |
 | 默认安全 | 写操作与命令执行同时受审批策略和操作系统沙箱约束 |
@@ -21,6 +22,7 @@
 
 - 不做 IDE 插件与图形界面
 - 不做多用户 / 远程服务端形态；sessiond 只监听本机 Unix socket / 命名管道
+- 不逐像素复刻 Codex 的 TUI；对齐信息架构、核心状态与键盘手感
 - 不自研模型，只做 Harness 层
 
 ## 核心概念
@@ -63,6 +65,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 | 文档 | 内容 |
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | 分层架构、模块职责、核心接口、Turn 数据流 |
+| [docs/tui.md](docs/tui.md) | 全屏布局、组件树、流式渲染、键位、主题与 TUI 选型 |
 | [docs/session-manager.md](docs/session-manager.md) | sessiond 进程模型、IPC 协议、写租约、跨 CLI 查询 |
 | [docs/agent-loop.md](docs/agent-loop.md) | Turn 生命周期、上下文管理、压缩与错误恢复 |
 | [docs/tools.md](docs/tools.md) | 工具清单、工具接口约定、审批粒度 |
@@ -76,7 +79,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 | --- | --- | --- |
 | 运行时 | Node.js ≥ 20（ESM） | 原生 fetch、AbortController、稳定的 async 语义 |
 | 语言 | TypeScript strict | 工具入参、事件类型、Provider 接口都靠类型收敛 |
-| TUI | Ink（React for CLI） | 声明式渲染，流式增量更新比手写 ANSI 状态机可维护 |
+| TUI | Ink + 自绘全屏 viewport | 复用 React 组件模型与共享类型；只渲染可视区，不依赖终端 scrollback |
 | CLI 解析 | commander | 子命令 + 选项足够，生态成熟 |
 | 会话进程 | sessiond + Unix socket / 命名管道（JSON-RPC 2.0） | 单写者落盘、跨 CLI 查询，不暴露 TCP 端口 |
 | 测试 | Vitest | 与 ESM/TS 零配置，快照测试适合渲染层 |
@@ -91,7 +94,7 @@ codingx-harness/
 │   └── codingx.js          # 可执行入口（薄壳，转发到 dist）
 ├── src/
 │   ├── cli/                # 参数解析、子命令、退出码
-│   ├── tui/                # Ink 组件、输入处理、渲染
+│   ├── tui/                # 全屏 viewport、消息单元、composer、overlay
 │   ├── agent/              # 主循环、turn 编排、上下文组装
 │   ├── providers/          # 模型适配（Anthropic / OpenAI 兼容）
 │   ├── tools/              # 工具实现与注册表

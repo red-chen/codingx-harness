@@ -4,10 +4,11 @@
 
 ## M0 · 设计对齐（当前）
 
-- [x] 架构、Agent 循环、工具、安全、配置、会话管理文档
+- [x] 架构、Agent 循环、工具、安全、配置、会话管理、TUI 文档
 - [x] 确定首个 Provider 与默认模型：Anthropic Messages API，默认 `claude-opus-4-7`
 - [x] 确定沙箱在 macOS / Linux 上的降级行为：Seatbelt / Landlock，内核能力缺失时降级并告警，其他平台禁用 `--full-auto`
 - [x] 确定 sessiond 边界：单写者会话存储 + 跨 CLI 查询，不执行模型与工具
+- [x] 确定 TUI 选型：Node + Ink 全屏 viewport；Rust 作为触发条件后的备选
 
 **完成标志**：文档评审通过，接口定义无重大争议。当前文档已对齐，等待评审确认。
 
@@ -28,16 +29,18 @@
 
 目标：日常可用。
 
-- Ink TUI：Transcript / Composer / 状态栏 / 审批框
-- 流式增量渲染与节流
+- 全屏 Ink TUI：welcome card、transcript viewport、composer、status/footer
+- 消息单元：user/assistant、exec、diff、plan、notice；流式 markdown、表格 holdback 与 30fps 节流
+- 交互：slash/mention、审批、排队、transcript overlay、session/model/theme picker
+- alternate screen、resize 锚点、主题、默认键位、CJK/emoji
 - 上下文压缩（截断 → 丢弃 → 摘要 三级）
 - 会话 resume / fork
 - sessiond 常驻进程：Unix socket + JSON-RPC、写租约、会话索引
 - 跨 CLI 查询：`codingx sessions list/show/watch`
 - 工具：`glob`、`grep`、`write_file`、`apply_patch`、`update_plan`
-- 中断与取消（`Esc` / `Ctrl+C` 传导到子进程）
+- 中断与取消（`Esc` / `Ctrl+C` 首次中断；`Ctrl+C` 双击退出）
 
-**验收**：连续进行 30 轮以上对话不因上下文超限中断；中途 `Ctrl+C` 后 `--continue` 能接上；两个终端能看到同一会话状态且写租约互斥。
+**验收**：连续进行 30 轮以上对话不因上下文超限中断；中途 `Ctrl+C` 后 `--continue` 能接上；两个终端能看到同一会话状态且写租约互斥；80x24 / 120x40 核心流程可用，流式不闪烁，resize 后锚点稳定。
 
 ## M3 · 安全
 
@@ -45,6 +48,7 @@
 
 - 审批策略引擎（规范化动作 + 规则匹配 + 会话记忆）
 - sessiond 本地 IPC 加固（0700 / 0600、peer UID、项目配置禁改 socket、事件二次脱敏）
+- TUI 不可信输出脱敏（ANSI / OSC / 控制字符）与审批弹层防伪造
 - macOS Seatbelt 沙箱；Linux Landlock 沙箱
 - 环境变量白名单、凭证脱敏
 - `--full-auto` / `--yolo` 与降级告警
@@ -60,6 +64,7 @@
 - 第二个 Provider（OpenAI 兼容端点）
 - `AGENTS.md` 多层级加载
 - 配置热重载（仅限非会话中）
+- TUI 打磨：快捷键重映射、主题选择器、终端标题、通知、导出/复制增强、ASCII fallback
 
 ## M5 · 进阶能力
 
@@ -89,3 +94,5 @@
 | 插件市场 | 先有 MCP 与本地工具 |
 | 跨会话长期记忆 | 先把单会话上下文做扎实 |
 | 远程会话同步 / 多机共享 | sessiond 只服务本机单用户 |
+| 原生 scrollback / resize reflow | Ink 全屏 viewport 已覆盖核心；需要时按 [tui.md](tui.md) 切 Rust |
+| Codex 逐像素复刻（pets / plugins / voice） | 先对齐信息架构与核心交互 |

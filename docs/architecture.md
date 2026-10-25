@@ -31,9 +31,11 @@
 
 ### `tui/`
 
-- Ink 组件树：`<App>` 持有状态，`<Transcript>` 渲染历史，`<Composer>` 接收输入，`<ApprovalPrompt>` 阻塞等待确认
-- 流式渲染：模型输出按 token 增量追加，渲染层做节流（约 16ms 合并一次），避免高频重排
-- 非 TTY 或 `--plain` 时退化为逐行输出，不做光标控制，便于日志收集
+- 全屏 alternate screen：自绘固定高度 viewport，transcript 虚拟化，composer 固定在底部；非 TTY / `--plain` 退化逐行输出
+- 组件树：`<App>` / `<TranscriptViewport>` / `<BottomPane>` / `<Composer>` / `<OverlayHost>`，细节见 [tui.md](tui.md)
+- 单向状态：agent 发出 `UiEvent`，TUI 发出 `UiCommand`；组件不直接调用模型、工具或 sessiond
+- 渲染：文本 delta 16ms 合并、30fps 节流；完成单元按宽度缓存，resize 重渲染可见单元并保留滚动锚点
+- transcript overlay / session picker / approval / model-theme picker 复用同一套 selection list
 
 ### `agent/`
 
@@ -41,6 +43,7 @@
 - `turn.ts`：单轮状态机，维护 turn 的起止、取消信号、用量统计
 - `context.ts`：组装发给模型的 messages，处理裁剪与压缩
 - `system-prompt.ts`：系统提示词模板，注入环境信息（cwd、平台、git 状态、AGENTS.md）
+- 通过 `UiEvent` 向 TUI 暴露 turn、工具、审批与用量状态；TUI 不依赖 agent 的内部类型
 
 ### `providers/`
 
@@ -155,5 +158,6 @@ stop: end_turn              # 本轮结束，等待下一次用户输入
 
 - Agent 循环对 Provider 和 Tool 都是接口依赖，单元测试用脚本化的假 Provider 即可覆盖完整 turn
 - 沙箱与审批层可替换为空实现（`--yolo` 仅用于测试环境），保证 CI 无需交互
-- TUI 组件通过 Ink 的 `ink-testing-library` 做快照测试
+- TUI 组件通过 Ink 的 `ink-testing-library` 做快照测试；PTY + `@xterm/headless` 覆盖全屏、resize 与 paste
+- TUI 的 reducer 与 view model 做纯函数化，键盘、滚动与审批可脱离终端单测
 - sessiond 用临时 `CODINGX_HOME` 与脚本化客户端覆盖协议、租约、崩溃恢复与多客户端并发
