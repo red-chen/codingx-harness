@@ -8,7 +8,7 @@
 - [x] 确定首个 Provider 与默认模型：Anthropic Messages API，默认 `claude-opus-4-7`
 - [x] 确定沙箱在 macOS / Linux 上的降级行为：Seatbelt / Landlock，内核能力缺失时降级并告警，其他平台禁用 `--full-auto`
 - [x] 确定 sessiond 边界：单写者会话存储 + 跨 CLI 查询，不执行模型与工具
-- [x] 确定 TUI 选型：Node + Ink 全屏 viewport；Rust 作为触发条件后的备选
+- [x] 确定 TUI 选型：Node + 自研 Terminal；Rust 仅作为性能兜底
 
 **完成标志**：文档评审通过，接口定义无重大争议。当前文档已对齐，等待评审确认。
 
@@ -29,10 +29,11 @@
 
 目标：日常可用。
 
-- 全屏 Ink TUI：welcome card、transcript viewport、composer、status/footer
+- 自研 Terminal：alt screen / raw mode、cell buffer、ANSI 差分、输入解析、resize、异常恢复
+- 布局与 widgets：welcome、transcript viewport、composer、status/footer、固定键位
 - 消息单元：user/assistant、exec、diff、plan、notice；流式 markdown、表格 holdback 与 30fps 节流
-- 交互：slash/mention、审批、排队、transcript overlay、session/model/theme picker
-- alternate screen、resize 锚点、主题、默认键位、CJK/emoji
+- 交互：slash/mention、审批、排队、transcript overlay、session picker；无认证/配置
+- CJK/emoji、宽字符与 80x24 / 120x40 布局
 - 上下文压缩（截断 → 丢弃 → 摘要 三级）
 - 会话 resume / fork
 - sessiond 常驻进程：Unix socket + JSON-RPC、写租约、会话索引
@@ -64,7 +65,7 @@
 - 第二个 Provider（OpenAI 兼容端点）
 - `AGENTS.md` 多层级加载
 - 配置热重载（仅限非会话中）
-- TUI 打磨：快捷键重映射、主题选择器、终端标题、通知、导出/复制增强、ASCII fallback
+- TUI 打磨：复制/导出、transcript raw 模式、性能优化、可访问性
 
 ## M5 · 进阶能力
 
@@ -94,5 +95,6 @@
 | 插件市场 | 先有 MCP 与本地工具 |
 | 跨会话长期记忆 | 先把单会话上下文做扎实 |
 | 远程会话同步 / 多机共享 | sessiond 只服务本机单用户 |
-| 原生 scrollback / resize reflow | Ink 全屏 viewport 已覆盖核心；需要时按 [tui.md](tui.md) 切 Rust |
+| 原生 scrollback / resize reflow | 自研 Terminal 的 alt screen 已覆盖核心；需要时按 [tui.md](tui.md) 切 Rust |
 | Codex 逐像素复刻（pets / plugins / voice） | 先对齐信息架构与核心交互 |
+| TUI 认证 / 配置 / 主题选择器 | TUI 只做终端与交互，这些不属于核心 |

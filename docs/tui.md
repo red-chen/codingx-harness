@@ -1,41 +1,123 @@
 # TUI 设计
 
-目标是做一套与 Codex CLI 同级、同信息架构的终端界面：欢迎卡、消息流、底部 composer、状态行、审批弹层、diff/plan 单元、会话选择器，以及一套可预期的键盘操作。
+这份文档只定义 TUI：终端内核、布局、消息单元、composer、状态行、overlay 与键盘。
 
-不是逐像素复刻 Codex，也不在第一版复制它的全部外围能力（pets、plugins、voice、side conversation、多 Agent 面板等）。
+**TUI 不包含认证、登录、配置文件、设置页、主题选择器、模型选择器或可配置键位。** 模型、cwd、session 由 core 通过事件传入；TUI 只负责显示与交互。
 
-## 先给结论：Node + Ink
+## 结论：Node + 自研 Terminal
 
-**TUI 继续用 Node + Ink，不把 codingx 改成 Rust。**
+TUI 继续用 Node/TypeScript，但**不用 Ink**，自己实现 Terminal 层：cell buffer、ANSI 差分渲染、alt screen、raw mode、输入解析、resize 与恢复。
 
-理由：
+为什么不是 Rust：
 
-- codingx 的 agent loop、工具、审批、sessiond 都在 Node；TUI 同进程可以直接消费类型化事件，不需要再定义一套跨语言 UI 协议、再维护一个 Rust 工具链和一套平台二进制分发。
-- Codex 默认使用 alternate screen，也就是全屏应用；它最复杂的“把已完成历史插入终端 scrollback、resize 时重排 scrollback”能力，并不是全屏模式必须的。Ink 自己维护一个虚拟化 viewport 就能得到同样的视觉与交互。
-- Codex TUI 的体感主要来自信息层级、留白、前缀、流式节奏、状态机和键盘细节，这些是产品设计问题，不是 Rust 独有能力。
-- 参考实现的 `codex-rs/tui` 约 30 万行 Rust（含测试代码），依赖 ratatui/crossterm、自研 terminal、app-server 协议；直接复刻或 fork 的成本远高于用 Ink 重做核心交互。
+- codingx 的 agent、工具、审批、sessiond 都在 Node；TUI 同进程可以共享类型和生命周期，不需要第二套工具链、IPC 和平台二进制分发。
+- 自研 Terminal 的工作量主要在 cell buffer、diff、输入状态机和布局，不在语言；Node 处理 80x24 / 120x40 的逐帧 diff 足够。
+- `npx codingx` 的单文件分发是现有目标；Rust TUI 会把它拆成 Node + 平台二进制。
 
-Ink 的明确短板与对策：
+Rust 只在一种情况下值得：TUI 成为独立产品，且实测 Node 的输入延迟、帧时间或宽字符处理无法达标。届时把 terminal/renderer 拆成独立 Rust 进程，保留 `UiEvent`/`UiCommand` 协议。
 
-| 短板 | 对策 |
-| --- | --- |
-| 没有 cell-level buffer / 同步输出 API | 只渲染可视区，30fps 节流，减少整屏重绘；出现可见闪烁再评估 Rust |
-| 没有原生的 scrollback 插入与 resize reflow | 默认 alternate screen，自己做 viewport 与 transcript overlay；v1 不承诺原生 scrollback |
-| 没有现成的多行 composer | 自研 `TextEditor`：grapheme、宽字符、软换行、历史、粘贴、光标 |
-| 没有 ratatui 级别的表格/高亮原语 | markdown/diff/表格用 Node 解析器生成 styled spans，缓存渲染结果 |
+## 参考 Codex 的哪些部分
 
-**什么时候应该改用 Rust：** 如果“相同”被定义为必须拥有 Codex 的终端原生 scrollback、resize reflow、cell 级增量渲染或同步输出，或 Ink 在 80x24、SSH/tmux 下稳定掉帧/闪烁，那就把 TUI 拆成独立 Rust 进程，不要继续在 Ink 上加补丁。
+参考核心结构，不复制认证、配置、app-server 和全部外围功能：
 
-## Codex TUI 的可借鉴结构
+- 全屏 + 底部固定：上方 transcript，下方状态行、composer、footer。
+- 两级 transcript：已完成的 `HistoryCell` 是不可变、可按宽度重渲染的源；正在流式的 active cell 可变，只重绘尾部。
+- 流式按行提交：完整换行/块边界才从 tail 提升为 stable；表格整块 holdback。
+- 统一 selection list：审批、`/resume`、帮助都复用同一套列表状态机。
+- 自研 terminal：自己管理 cell buffer、ANSI 输出、光标、resize 与恢复，而不是依赖 TUI 框架。
 
-Codex 的几个结构值得直接借用，而不是照抄实现：
+## Terminal 内核
 
-- **全屏 + 底部固定**：上方是 transcript，下方是状态行、composer、footer；welcome 卡是第一条历史单元。
-- **两级 transcript**：已完成的 `HistoryCell` 是不可变、可按宽度重渲染的源；正在流式的 `active cell` 是可变的，只重绘尾部。
-- **流式按行提交**：只在完整换行/块边界把内容从 tail 提升为 stable，避免半行 markdown 反复变形；表格必须整块 holdback。
-- **列表选择器统一**：审批、`/model`、`/resume`、`/theme`、快捷键帮助都复用同一套 selection list（编号、方向键、enter、esc）。
-- **状态行与 footer 分离**：状态行描述“正在发生什么”，footer 描述“现在能按什么”；两者按宽度逐级折叠。
-- **键盘是主交互**：没有鼠标依赖；`Esc` 中断、`Tab` 排队、`Ctrl+T` transcript、`Ctrl+G` 外部编辑器、`Ctrl+O` 复制。
+```text
+src/tui/
+├── terminal/
+│   ├── session.ts      // alt screen / raw mode / 恢复
+│   ├── buffer.ts       // Cell / 双缓冲 / 宽字符
+│   ├── renderer.ts     // ANSI 差分 / SGR / 光标
+│   ├── input.ts        // CSI / SS3 / paste / resize
+│   └── width.ts        // grapheme / string-width
+├── layout/             // Rect / split / constraints
+├── widgets/            // welcome / transcript / composer / status / footer
+├── text/               // wrap / truncate / grapheme
+├── markdown/           // AST → styled lines
+├── diff/               // unified diff → lines
+├── state/              // UiEvent / UiCommand / TuiApp
+└── app.ts              // 事件循环与帧调度
+```
+
+### 生命周期
+
+- 启动：进入 alternate screen、raw mode、隐藏光标、开启 bracketed paste；保存终端状态。
+- 退出或异常：恢复光标、关闭 bracketed paste、离开 alternate screen、恢复 raw mode；恢复逻辑必须可重复执行。
+- 信号：处理 `SIGWINCH`（resize）、`SIGINT`、`SIGTERM`；`Ctrl+C` 由输入层转为应用事件，不直接杀进程。
+
+### Cell buffer
+
+```ts
+interface Cell {
+  symbol: string;      // grapheme cluster
+  fg: Color;
+  bg: Color;
+  attrs: number;       // bold / dim / italic / underline / reverse
+  width: 0 | 1 | 2;    // 0 = 宽字符的 continuation cell
+}
+```
+
+- 双缓冲：`front` 是当前屏幕，`back` 是下一帧；渲染只改 `back`，最后统一 diff。
+- 宽字符占两格，第二格写 continuation；覆盖/裁剪时成对处理，避免半字符残留。
+- grapheme 用 `Intl.Segmenter` 切分，宽度用 `string-width`；CJK、emoji、组合字符按显示宽度落格。
+- 每帧写完后交换 buffer；滚动/清屏也走同一套 cell 操作。
+
+### 差分渲染
+
+- 比较 `front` / `back`，按行合并连续变化区间，输出 `MoveTo + SGR + Print`，跳过未变化的 cell。
+- 每帧用 synchronized output（`\x1b[?2026h` ... `\x1b[?2026l`）包住，减少 tearing。
+- 光标位置独立于 cell 内容：composer 的 cursor 由布局层给出，renderer 在帧末设置。
+- 颜色能力分 truecolor / 256 / 16 / `NO_COLOR`；不支持的颜色降级，不输出空 SGR。
+
+### 输入
+
+- 原始 stdin 读取，自己解析 printable、C0、CSI、SS3、bracketed paste、focus 和 resize。
+- UTF-8 增量解码，避免多字节字符被拆到两次 read。
+- 输出统一 `KeyEvent { code, text, mods }`；`Esc` 单独按键与 escape 序列前缀要用超时区分。
+- 不启用鼠标；不依赖 readline 的行编辑，composer 自己维护文本、光标与历史。
+
+### 布局
+
+- `Rect { x, y, width, height }` + `split(area, constraints)`；约束支持 length / percent / min / max。
+- 每个 widget 实现 `desiredHeight(width)` 与 `render(area, frame)`；父级先量高，再分配区域。
+- 文本换行、截断、宽字符测量集中在 `text/` 与 `wrap/`，组件不各写一套。
+
+## 应用模型
+
+TUI 不直接调用模型或工具；核心通过 `UiEvent` 驱动，TUI 通过 `UiCommand` 回传：
+
+```ts
+type UiEvent =
+  | { type: 'turn.started'; turnId: string }
+  | { type: 'text.delta'; turnId: string; text: string }
+  | { type: 'tool.started'; call: ToolCall }
+  | { type: 'tool.output'; callId: string; chunk: string }
+  | { type: 'tool.finished'; result: ToolResult }
+  | { type: 'diff.updated'; files: FileChange[] }
+  | { type: 'plan.updated'; steps: PlanStep[] }
+  | { type: 'approval.requested'; request: ApprovalRequest }
+  | { type: 'usage.updated'; usage: TokenUsage }
+  | { type: 'turn.finished'; status: 'done' | 'aborted' | 'error' }
+  | { type: 'session.info'; sessionId: string; cwd: string; model: string }
+  | { type: 'session.status'; status: SessionStatus };
+
+type UiCommand =
+  | { type: 'submit'; text: string }
+  | { type: 'interrupt' }
+  | { type: 'approval'; decision: 'allow' | 'allow-session' | 'deny'; reason?: string }
+  | { type: 'resume'; sessionId: string }
+  | { type: 'fork'; sessionId: string };
+```
+
+`TuiApp` 是一个显式状态机：`mode`（main / transcript / session-picker / approval）、`transcript`、`activeCell`、`composer`、`status`、`overlay`。事件循环同时监听 stdin、core 事件和帧定时器；没有隐藏的全局单例。
+
+TUI 不持久化任何配置；所有颜色、键位、布局都是固定行为。模型与 cwd 只作为事件字段显示。终端渲染前对不可信文本做控制序列剥离，见 [security.md](security.md)。
 
 ## 主界面
 
@@ -43,7 +125,7 @@ Codex 的几个结构值得直接借用，而不是照抄实现：
 ╭──────────────────────────────────────────────────╮
 │ >_ codingx (v0.1.0)                              │
 │                                                  │
-│ model:     claude-opus-4-7   /model to change    │
+│ model:     claude-opus-4-7                       │
 │ directory: ~/work/codingx                        │
 ╰──────────────────────────────────────────────────╯
 
@@ -60,117 +142,76 @@ Codex 的几个结构值得直接借用，而不是照抄实现：
   ? for shortcuts                     72% context left
 ```
 
-布局规则：
-
 - 全屏，不做外框；只有 welcome 卡、选择和审批使用边框/底色。
-- 左侧统一 2 列 gutter：用户 `› `，助手 `• `，工具输出 `└ ` / `│ `，续行 2 空格。
-- 消息之间空一行；用户消息使用随终端背景推导的低对比底色，助手消息保持透明。
-- composer 固定在底部，高度 1–8 行；状态行在 composer 之上；footer 在 composer 之下，固定 1 行。
-- 窄于 60 列时：welcome 卡收窄、footer 折叠、状态行省略细节；窄于 40 列时只保留输入与最简状态。
+- 2 列 gutter：用户 `› `、助手 `• `、工具 `└ ` / `│ `，续行 2 空格。
+- 消息间空一行；用户消息使用低对比背景，助手消息透明。
+- composer 固定底部，1–8 行；状态行在 composer 上；footer 固定 1 行。
+- 窄于 60 列收窄卡片、折叠 footer；窄于 40 列只保留输入与最简状态。
 
-## 组件树
+## Widgets
 
 ```text
-<App>
-  <TerminalHost>                 // alt screen, raw mode, resize, paste, cursor
-    <MainView>
-      <TranscriptViewport>       // 虚拟化，只渲染可见 HistoryCell
-        <WelcomeCard/>
-        <UserCell/> <AssistantCell/> <ExecCell/>
-        <DiffCell/> <PlanCell/> <NoticeCell/>
-      </TranscriptViewport>
-      <BottomPane>
-        <StatusRow/>             // spinner / elapsed / interrupt hint
-        <QueuePreview/>          // 排队消息、待审批提示
-        <Composer/>              // 多行编辑器 + slash/mention popup
-        <Footer/>                // hints + context left
-      </BottomPane>
-    </MainView>
-    <OverlayHost>                // 同一时间只显示一个全屏 overlay
-      <TranscriptOverlay/> <SessionPicker/>
-      <ModelPicker/> <ThemePicker/> <HelpOverlay/>
-    </OverlayHost>
-  </TerminalHost>
-</App>
+TuiApp
+├── TranscriptViewport        // 虚拟化，只渲染可见 cell
+│   ├── WelcomeCard
+│   ├── UserCell / AssistantCell
+│   ├── ExecCell / DiffCell / PlanCell / NoticeCell
+│   └── ActiveCell            // 流式尾部
+├── BottomPane
+│   ├── StatusRow             // spinner / elapsed / interrupt
+│   ├── QueuePreview
+│   ├── Composer              // 多行编辑器 + slash 补全
+│   └── Footer
+└── OverlayHost
+    ├── ApprovalView
+    ├── TranscriptOverlay
+    ├── SessionPicker
+    └── HelpOverlay
 ```
 
-组件只做渲染与本地交互；会话、turn、审批决策都由上层 store/agent 决定。
+组件只做测量、绘制和本地交互；turn、审批决策、session 状态由上层状态机决定。
 
-## 状态与事件
-
-TUI 不直接调用模型或工具，只消费 `UiEvent`、发出 `UiCommand`：
-
-```ts
-type UiEvent =
-  | { type: 'turn.started'; turnId: string }
-  | { type: 'text.delta'; turnId: string; text: string }
-  | { type: 'tool.started'; call: ToolCall }
-  | { type: 'tool.output'; callId: string; chunk: string }
-  | { type: 'tool.finished'; result: ToolResult }
-  | { type: 'diff.updated'; files: FileChange[] }
-  | { type: 'plan.updated'; steps: PlanStep[] }
-  | { type: 'approval.requested'; request: ApprovalRequest }
-  | { type: 'usage.updated'; usage: TokenUsage }
-  | { type: 'turn.finished'; status: 'done' | 'aborted' | 'error' }
-  | { type: 'session.status'; status: SessionStatus; writer?: WriterInfo };
-
-type UiCommand =
-  | { type: 'submit'; text: string }
-  | { type: 'interrupt' }
-  | { type: 'approval'; decision: 'allow' | 'allow-session' | 'deny'; reason?: string }
-  | { type: 'resume'; sessionId: string; takeover?: boolean }
-  | { type: 'fork'; sessionId: string }
-  | { type: 'set-model'; model: string; effort?: string };
-```
-
-`TuiStore` 是一个纯 reducer；React 通过 `useSyncExternalStore` 订阅快照。这样 reducer 可以脱离终端做单测，未来如果 TUI 换成 Rust，只需要把 `UiEvent`/`UiCommand` 换成 JSON-RPC 传输。
-
-## 渲染管线
-
-1. 启动时进入 alternate screen、raw mode、隐藏光标、开启 bracketed paste；退出/异常时恢复。
-2. `TuiStore` 收到事件后更新 `transcript`、`activeCell`、`composer`、`status`、`overlay`。
-3. 文本 delta 先进入缓冲；每 16ms 合并一次，最多 30fps 触发 React 更新。
-4. 只在换行/代码块/表格边界把内容从 active tail 提升为 stable cell；表格从表头开始 holdback，避免列宽反复变化。
-5. `TranscriptViewport` 只挑选可见 cell（上下各多渲染一屏），按宽度缓存每个 cell 的渲染行数与行内容。
-6. 如果滚动锚点在底部，新内容到达时自动跟随；用户上滚后固定锚点，并显示“有新输出”提示。
-7. resize 后清空布局缓存，按新宽度重渲染可见 cell；保留“底部/顶部”锚点，避免跳变。
-
-不使用 Ink 的 `<Static>` 作为主 transcript：全屏 viewport 需要自己控制滚动、锚点和 overlay；`<Static>` 只适合 inline fallback。
-
-## 内容单元
+## 消息单元
 
 | 单元 | 渲染 |
 | --- | --- |
-| Welcome | 圆角边框，标题 `>_ codingx (vX)`、model、directory、permissions；宽度上限约 60 列 |
-| User | `› ` 前缀 + 背景 tint；保留换行，超宽 URL 强制拆分；末尾空行 |
-| Assistant | `• ` 前缀 + markdown；标题、列表、引用、代码块、表格、链接 |
-| Exec | `• Ran <command>`；输出 `│`/`└`，默认保留前 5 行，超出显示 `… +N lines`；stderr 用 error tone |
-| Diff | `• Edited N files (+a -b)`；按文件分组，行号 + gutter，add/del 主题色，按 hunk 语法高亮 |
-| Plan | `• Updated Plan`；说明 + `✔`/`□` 步骤，步骤按宽度换行并保持缩进 |
-| Notice/Error | 单行/多行提示，warning 用黄色或 dim，error 用红色；不抢占 composer |
+| Welcome | 圆角边框，标题、model、directory；宽度上限约 60 列 |
+| User | `› ` + 低对比背景；保留换行，超宽 URL 强制拆分 |
+| Assistant | `• ` + markdown；标题、列表、引用、代码块、表格、链接 |
+| Exec | `• Ran <command>`；输出 `│`/`└`，前 5 行，超出 `… +N lines`；stderr 用 error tone |
+| Diff | `• Edited N files (+a -b)`；文件分组、行号、gutter、add/del 颜色 |
+| Plan | `• Updated Plan`；说明 + `✔`/`□` 步骤 |
+| Notice | 单行/多行提示，不抢 composer |
 
-Markdown 解析推荐 `marked` 或 `micromark` 的 AST，再映射为 Ink spans；代码高亮先用 `lowlight`/`cli-highlight`，如果质量不够再评估 Shiki（注意 bundle 与冷启动）。表格需要单独做列宽分配，过窄时退化为 key/value 行。
+Markdown 用 `marked` 或 `micromark` 解析成 AST，再转 styled spans；代码高亮先用 `lowlight`/`cli-highlight`，表格单独做列宽分配，过窄时退化为 key/value 行。
 
-## 输入与键位
+## 流式渲染
 
-| 场景 | 默认键 |
+1. 文本 delta 进入缓冲；每 16ms 合并，最多 30fps 触发一次绘制。
+2. 只在完整换行、代码块结束或表格边界把内容从 active tail 提升为 stable cell。
+3. 表格从表头开始 holdback，直到表结束；避免列宽每来一行就重排。
+4. 已完成 cell 按 `(width, revision)` 缓存行数；resize 时清缓存，从源重渲染。
+5. 滚动锚点在底部时自动跟随；用户上滚后固定，并显示“有新输出”提示。
+
+## 输入
+
+| 场景 | 键 |
 | --- | --- |
 | 提交 | `Enter` |
 | 换行 | `Shift+Enter` / `Ctrl+J` / `Alt+Enter` |
 | 任务中排队 | `Tab` |
-| 中断 / 关闭弹层 | `Esc` / `Ctrl+C`（任务运行时首次按下也中断） |
-| 退出 | `Ctrl+C` 双击 / `Ctrl+D`（空 composer 时） |
+| 中断 / 关闭弹层 | `Esc` / `Ctrl+C`（首次） |
+| 退出 | `Ctrl+C` 双击 / `Ctrl+D`（空 composer） |
 | 历史搜索 | `Ctrl+R` |
 | Transcript overlay | `Ctrl+T` |
 | 复制最后回复 | `Ctrl+O` |
 | 外部编辑器 | `Ctrl+G` |
 | 清屏 | `Ctrl+L` |
-| 快捷键帮助 | `?` |
-| slash / mention | 行首 `/`、任意位置 `@` |
-| 滚动 | `PgUp` / `PgDn`，`Shift+↑/↓` 逐行 |
-| 审批 | `y` 允许、`a` 本会话允许、`esc` 拒绝，或数字 1–3 |
+| 帮助 | `?` |
+| 滚动 | `PgUp` / `PgDn` / `Shift+↑/↓` |
+| 审批 | `y` / `a` / `esc`，或数字 1–3 |
 
-Composer 在空输入时 `↑/↓` 走历史；有内容时走光标；`Ctrl+A/E`、`Ctrl+W`、`Ctrl+K/U` 等 readline 键位保留。审批弹层打开时，所有按键只进入审批，模型输出不能伪造或抢焦点。
+Composer 空输入时 `↑/↓` 走历史；有内容时走光标；保留 `Ctrl+A/E`、`Ctrl+W`、`Ctrl+K/U`。审批打开时所有按键只进入审批。
 
 ## Overlay
 
@@ -187,82 +228,54 @@ Composer 在空输入时 `↑/↓` 走历史；有内容时走光标；`Ctrl+A/E
   3. No, and tell codingx what to do differently (esc)
 ```
 
-审批替换 composer 区域，保留底部上下文；显示规范化命令、cwd、涉及文件/网络和风险摘要。决策回到 agent 后，结果作为一条历史单元留下。
+审批替换 composer，显示规范化命令、cwd、涉及文件/网络与风险摘要；模型输出不能伪造选项。
 
-### Slash / mention
+### Slash
 
-Slash popup 浮在 composer 上方，最多 8 行；每行命令 + 一句描述，支持模糊过滤、↑/↓、enter、tab 补全、esc 关闭、数字 1–9 直选。`@` 只做文件/目录补全，不执行任意脚本。
+Slash 补全浮在 composer 上方，最多 8 行；命令 + 一句描述，支持过滤、↑/↓、enter、tab、esc、数字 1–9。只做 TUI 自身动作：`/resume`、`/diff`、`/clear`、`/help`、`/quit`。
 
-### Transcript overlay
+### Transcript
 
-`Ctrl+T` 打开全屏只读 transcript：`j/k`/`PgUp/PgDn`/`g/G` 滚动，`/` 搜索，`q`/esc 关闭；提供 raw/rich 切换，raw 用于复制。它不改变主 transcript 状态。
+`Ctrl+T` 打开全屏只读 transcript：`j/k`、`PgUp/PgDn`、`g/G` 滚动，`/` 搜索，`q`/esc 关闭；raw/rich 切换用于复制。
 
 ### Session picker
 
-`/resume` 或 `--resume` 打开列表：ID、更新时间、cwd、branch、最后一条用户消息；输入过滤，`tab` 切换排序，enter 恢复，`ctrl+f` fork；跨终端会显示 writer/observers，被占用时提示 `--takeover` 或只读观察。会话列表来自 sessiond，见 [session-manager.md](session-manager.md)。
+`/resume` 打开列表：ID、更新时间、cwd、branch、最后一条用户消息；输入过滤，enter 恢复，`ctrl+f` fork；显示 writer/observers。数据来自 core/sessiond，TUI 不做认证。
 
-### Model / theme / help
+## 颜色与终端
 
-`/model` 显示模型与 reasoning effort；`/theme` 实时预览；`?` 显示当前上下文所有快捷键。三者复用 selection list。
-
-## 主题与终端
-
-- 语义色：`accent`、`muted`、`success`、`warning`、`error`、`userBg`、`planBg`、`diffAdd`、`diffDel`、`border`；不直接在组件里写颜色。
-- `theme = auto` 时通过 OSC 11 查询背景色；查询失败或超时按暗色处理；支持 `dark`、`light` 和自定义语法主题。
-- 颜色能力分 truecolor / 256 / 16 / `NO_COLOR`；diff 在 16 色下只保留前景色区分。
-- Unicode 为主；`--ascii` 时把 `› • └ │ ✔ □ …` 降级为 ASCII。
-- 宽字符/emoji/CJK 用 `string-width` 和 `Intl.Segmenter` 计算；tab 固定 4 列；不做未定义宽度的猜测。
-- 终端标题：`codingx · <cwd basename> · <activity>`；写入前去除控制字符，退出时恢复。
-- 通知：仅在失焦且 turn 结束时发 OSC 9/777 或终端 bell；默认不包含 prompt 内容。
-
-## 配置
-
-```toml
-[tui]
-alternate_screen = "auto"    # auto | always | never（never 为 inline/plain fallback）
-theme = "auto"               # auto | dark | light | <syntax theme>
-animations = true
-notifications = true
-status_line = ["model", "cwd", "context"]
-```
-
-TUI 配置属于个人偏好，只从全局配置读取；项目配置不得覆盖。完整配置项见 [config.md](config.md)。命令行提供 `--no-alt-screen` 作为一次性降级。
+- 语义色：`accent`、`muted`、`success`、`warning`、`error`、`userBg`、`planBg`、`diffAdd`、`diffDel`、`border`；组件不写死颜色。
+- 通过 OSC 11 查询背景色，失败按暗色；支持 truecolor / 256 / 16 / `NO_COLOR`。
+- Unicode 为主；宽字符、emoji、CJK 由 `string-width` + `Intl.Segmenter` 处理。
+- 不做主题选择器，不读主题配置；颜色只由终端能力与内置语义表决定。
 
 ## 性能预算
 
-- 流式渲染 30fps；动画/输入反馈 60fps；p95 帧时间 < 33ms（80x24，200 个可见单元）。
-- 按键到界面反馈 < 50ms；首屏（含 welcome）< 150ms。
-- transcript 保存 50k 单元仍可滚动；只渲染可见区，内存目标 < 200MB。
-- 单条消息流式时只重算 active cell；已完成 cell 的布局按 `(width, revision)` 缓存。
-- 超过预算时先降帧、再降动画，最后才考虑 Rust。
+- 流式 30fps；输入反馈 60fps；p95 帧 < 33ms（80x24，200 个可见单元）。
+- 按键到反馈 < 50ms；首屏 < 150ms。
+- 50k transcript 单元仍可滚动；只渲染可见区，内存 < 200MB。
+- 单条消息流式时只重算 active cell；cell diff 只输出变化区间。
 
 ## 测试
 
-- reducer/selector 单测：turn 状态、队列、审批、滚动锚点、宽窄布局。
-- `ink-testing-library` 组件快照：welcome、user/assistant、exec、diff、plan、approval、slash、footer。
-- PTY 集成测试：`node-pty` + `@xterm/headless` 读取屏幕 buffer，覆盖 alt screen、resize、paste、CJK/emoji、40/80/120/200 列。
-- 关键帧走 golden 文件；比较前剥离时间、spinner 帧等非确定内容。
-- 性能基准：1k/10k/50k cells、连续 30 turn、不同宽度。
+- cell buffer / diff 单测：宽字符、续格、SGR、光标、清屏、滚动。
+- 输入解析单测：CSI/SS3、bracketed paste、UTF-8 分段、Esc 超时、resize。
+- 布局与 widget 快照：直接比较 cell buffer 或 ANSI 帧，不依赖终端。
+- PTY 集成：`node-pty` + `@xterm/headless` 覆盖 alt screen、resize、paste、CJK/emoji。
+- 性能基准：1k/10k/50k cells、40/80/120/200 列、连续 30 turn。
 
-## 里程碑与验收
+## 里程碑
 
-- **M2（核心）**：welcome、transcript viewport、composer、status/footer、流式 markdown、exec/diff/plan、slash/mention、审批、queue、transcript overlay、session picker、alt screen、主题、默认键位。
-- **M4（打磨）**：主题选择器、快捷键重映射、终端标题、通知、复制/导出、raw 模式、ASCII fallback、可访问性。
-- **验收**：80x24 与 120x40 下核心流程可用；30 轮对话流式不闪烁；审批/恢复/跨终端状态正确；resize 后锚点不跳；CJK/emoji 不变形；`--plain` 仍可用于 CI。
+- **TUI 1**：terminal 生命周期、cell buffer、diff renderer、输入解析、layout、resize、异常恢复。
+- **TUI 2**：welcome、transcript、composer、status/footer、流式 markdown、exec/diff/plan、slash、审批、queue。
+- **TUI 3**：transcript overlay、session picker、help、复制、外部编辑器、CJK/emoji 打磨。
+- **集成**：接 `UiEvent`/`UiCommand`；`--plain` 保持纯文本；TUI 不引入 auth/config。
+
+**验收**：80x24 与 120x40 核心流程可用；30 轮流式不闪烁；输入延迟达标；resize 不跳；CJK/emoji 不变形。
 
 ## 非目标
 
-- 第一版不做原生 scrollback 插入、resize reflow、鼠标、pets、plugins、voice、图片、side conversation、多 Agent 面板。
-- 不逐像素对齐 Codex；只对齐信息架构、主要状态与键盘手感。
-- 不把业务逻辑放进组件；TUI 只消费 `UiEvent`。
-
-## 如果最终选 Rust
-
-只有满足以下任一条件才值得：必须保留终端原生 scrollback / reflow；Ink 在目标终端上无法稳定 30fps；必须复用 ratatui/crossterm 的 cell 级能力。
-
-届时建议：
-
-- `codingx-core` 继续 Node，提供 `UiEvent` / `UiCommand` 的 NDJSON JSON-RPC（UDS 或 stdio）。
-- `codingx-tui` 用 Rust + ratatui/crossterm，只做渲染与输入；不复刻 agent 逻辑。
-- 按平台分发 TUI 二进制（npm optional dependency 或独立安装包），`codingx` 负责选择/拉起。
-- 参考 Codex 的组件划分与交互，但不要直接 fork 整个 `codex-rs/tui`：它与 app-server 协议、认证、配置深度耦合。
+- 不做登录、认证、配置、设置页、主题/模型选择器、可配置键位。
+- 不做 pets、plugins、voice、图片、side conversation、多 Agent 面板。
+- 不做原生 scrollback / resize reflow；transcript 由 TUI 自己管理，`Ctrl+T` 查看历史。
+- 不逐像素复制 Codex；只对齐信息架构、状态与键盘手感。

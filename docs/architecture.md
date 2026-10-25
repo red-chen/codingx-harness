@@ -16,7 +16,7 @@
 └──────────────────────────────────────────────────────┘
 ```
 
-**依赖方向自上而下，禁止反向依赖。** 上层通过接口调用下层，下层不感知上层的存在。例如 `agent` 只依赖 `Provider` 与 `Tool` 接口，不 import 具体的 Anthropic SDK 或 Ink 组件——这让 Agent 循环可以在测试里用假 Provider 驱动。
+**依赖方向自上而下，禁止反向依赖。** 上层通过接口调用下层，下层不感知上层的存在。例如 `agent` 只依赖 `Provider` 与 `Tool` 接口，不 import 具体的 Anthropic SDK 或 TUI 实现——这让 Agent 循环可以在测试里用假 Provider 驱动。
 
 `sessiond` 不在这张分层图内：它是独立进程，通过本机 IPC 为 `session/` 提供单写者存储；CLI 默认不再直接写 rollout，只有 `sessiond.enabled = false` 的嵌入式模式例外。见 [session-manager.md](session-manager.md)。
 
@@ -31,11 +31,14 @@
 
 ### `tui/`
 
-- 全屏 alternate screen：自绘固定高度 viewport，transcript 虚拟化，composer 固定在底部；非 TTY / `--plain` 退化逐行输出
-- 组件树：`<App>` / `<TranscriptViewport>` / `<BottomPane>` / `<Composer>` / `<OverlayHost>`，细节见 [tui.md](tui.md)
-- 单向状态：agent 发出 `UiEvent`，TUI 发出 `UiCommand`；组件不直接调用模型、工具或 sessiond
-- 渲染：文本 delta 16ms 合并、30fps 节流；完成单元按宽度缓存，resize 重渲染可见单元并保留滚动锚点
-- transcript overlay / session picker / approval / model-theme picker 复用同一套 selection list
+- 自研 Terminal：alt screen / raw mode、cell buffer、ANSI 差分、输入解析、resize、异常恢复；不依赖 Ink
+- 非 TTY / `--plain` 退化逐行输出，不进入自研 Terminal
+- 布局：`Rect` / `split`、widget 的 `desiredHeight(width)` 与 `render(area, frame)`、宽字符与 grapheme 测量
+- 组件：welcome、transcript viewport、composer、status/footer、approval/transcript/session overlay
+- 单向状态：core 发出 `UiEvent`，TUI 发出 `UiCommand`；组件不直接调用模型、工具或 sessiond
+- 无认证 / 配置：TUI 只接收 session、model、cwd 等事件字段，不读配置文件、不做设置页
+- 流式：文本 delta 16ms 合并、30fps；active/stable 两级 cell，表格 holdback，resize 重渲染可见单元
+- 细节见 [tui.md](tui.md)
 
 ### `agent/`
 
@@ -158,6 +161,6 @@ stop: end_turn              # 本轮结束，等待下一次用户输入
 
 - Agent 循环对 Provider 和 Tool 都是接口依赖，单元测试用脚本化的假 Provider 即可覆盖完整 turn
 - 沙箱与审批层可替换为空实现（`--yolo` 仅用于测试环境），保证 CI 无需交互
-- TUI 组件通过 Ink 的 `ink-testing-library` 做快照测试；PTY + `@xterm/headless` 覆盖全屏、resize 与 paste
-- TUI 的 reducer 与 view model 做纯函数化，键盘、滚动与审批可脱离终端单测
+- Terminal 的 cell buffer、diff、输入解析与布局做纯单测；PTY + `@xterm/headless` 覆盖 alt screen、resize 与 paste
+- TUI 状态机与 widget 渲染可脱离终端，直接对 cell buffer 做 golden 帧
 - sessiond 用临时 `CODINGX_HOME` 与脚本化客户端覆盖协议、租约、崩溃恢复与多客户端并发

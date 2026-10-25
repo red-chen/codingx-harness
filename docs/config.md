@@ -10,7 +10,7 @@
 4. 全局配置 `~/.codingx/config.toml`
 5. 内置默认值
 
-项目配置只允许覆盖**行为类**设置（模型、审批、工具开关、MCP、联网），不允许覆盖凭证——避免从远程仓库克隆来的项目配置窃取本地密钥。凭证只从 `codingx login` 的 `auth.json` 或环境变量读取，不写入 `config.toml`。整个 `[sessiond]` 段与 `session.dir` / `retention_days` 是例外：只允许来自全局配置或环境变量，项目配置不得覆盖。`[tui]` 属于个人终端偏好，同样只从全局配置读取。
+项目配置只允许覆盖**行为类**设置（模型、审批、工具开关、MCP、联网），不允许覆盖凭证——避免从远程仓库克隆来的项目配置窃取本地密钥。凭证只从 `codingx login` 的 `auth.json` 或环境变量读取，不写入 `config.toml`。整个 `[sessiond]` 段与 `session.dir` / `retention_days` 是例外：只允许来自全局配置或环境变量，项目配置不得覆盖。
 
 ## 完整示例
 
@@ -74,13 +74,6 @@ autostart = true
 idle_timeout_seconds = 1800  # 无连接且无租约时退出；0 表示常驻
 log = "~/.codingx/logs/sessiond.log"
 
-[tui]
-alternate_screen = "auto"    # auto | always | never（never 为 inline/plain fallback）
-theme = "auto"               # auto | dark | light | <syntax theme>
-animations = true
-notifications = true
-status_line = ["model", "cwd", "context"]
-
 [mcp]
 # 外部工具服务器
 servers = []
@@ -98,7 +91,7 @@ servers = []
 - `never`：从不询问；未显式允许的非只读操作一律拒绝，适合 CI 与 `exec`
 - `always-ask`：任何工具调用都询问，包括只读工具
 
-`web_fetch` 仅在 `web.enabled = true` 时注册；请求只允许 https，域名必须命中 `allowed_domains`，重定向目标同样校验，解析到私网 / 回环地址的域名一律拒绝。TUI 的布局、键位与渲染策略见 [tui.md](tui.md)。
+`web_fetch` 仅在 `web.enabled = true` 时注册；请求只允许 https，域名必须命中 `allowed_domains`，重定向目标同样校验，解析到私网 / 回环地址的域名一律拒绝。
 
 ## 项目配置
 
@@ -185,8 +178,6 @@ codingx [options] [prompt]
       --full-auto           跳过审批询问（沙箱仍生效）
       --yolo                关闭审批与沙箱（危险）
       --plain               纯文本输出，不启用 TUI
-      --no-alt-screen       不进入 alternate screen（inline/plain fallback）
-      --ascii               使用 ASCII 图标与分隔符
       --json                事件流以 JSON Lines 输出到 stdout
   -c, --continue            继续最近的会话
       --resume <id>         恢复指定会话
