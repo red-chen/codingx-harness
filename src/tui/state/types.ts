@@ -11,7 +11,7 @@ import { ansiColor, color256 } from '../terminal/buffer.js';
  * UiEvent; the TUI answers with UiCommand.
  */
 
-export type TuiMode = 'main' | 'transcript' | 'help' | 'ask';
+export type TuiMode = 'main' | 'transcript' | 'help' | 'ask' | 'approval';
 
 export type TuiStatusState = 'idle' | 'working' | 'awaiting';
 export type TuiTurnOutcome = 'done' | 'error' | 'aborted';
@@ -161,6 +161,41 @@ export interface TuiSessionState {
   readonly home?: string;
   /** Short derived title; defaults to the first user prompt. */
   readonly title?: string;
+  /** Active permission profile shown in the meta row. */
+  readonly permissionProfile?: string;
+  /** Active approval policy shown in the meta row. */
+  readonly approvalPolicy?: string;
+}
+
+export type TuiApprovalChoice = 'once' | 'session' | 'prefix' | 'deny' | 'deny-reason';
+
+/** The subset of a policy action the approval panel needs for display. */
+export interface TuiApprovalAction {
+  readonly kind: string;
+  readonly tool: string;
+  readonly path?: string;
+  readonly command?: string;
+  readonly cwd?: string;
+  readonly network?: boolean;
+}
+
+export interface TuiApprovalRequest {
+  readonly requestId: string;
+  readonly tool: string;
+  readonly action: TuiApprovalAction;
+  readonly reason?: string;
+  readonly risk: 'low' | 'medium' | 'high';
+  /** True when this action can be approved as a reusable exec prefix. */
+  readonly allowPrefix: boolean;
+}
+
+/** Modal approval state. Choices are fixed by the app; model output cannot add or reorder them. */
+export interface TuiApprovalState {
+  readonly request: TuiApprovalRequest;
+  readonly choiceIndex: number;
+  readonly editingReason: boolean;
+  readonly reason: string;
+  readonly cursor: number;
 }
 
 export interface TuiAppState {
@@ -175,6 +210,8 @@ export interface TuiAppState {
   readonly plan: readonly PlanStep[];
   /** Present while the ask overlay is open (mode === 'ask'). */
   readonly ask?: TuiAskState;
+  /** Present while the approval overlay is open (mode === 'approval'). */
+  readonly approval?: TuiApprovalState;
   readonly status: TuiStatus;
   readonly usage: TokenUsage;
   readonly queue: readonly QueueItem[];

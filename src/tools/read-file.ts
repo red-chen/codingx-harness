@@ -33,7 +33,7 @@ export const readFileTool: ToolDef<typeof schema> = {
   parallelSafe: true,
   approval: 'none',
   async execute(input, ctx) {
-    const resolved = await resolveWorkspacePath(ctx, input.path, { mustExist: true });
+    const resolved = await resolveWorkspacePath(ctx, input.path, { mustExist: true, access: 'read' });
     const info = await stat(resolved.absolute);
     if (!info.isFile()) throw new ToolError('Not a regular file: ' + input.path + '. Use ListDir for directories.');
     if (info.size > MAX_FILE_BYTES) {

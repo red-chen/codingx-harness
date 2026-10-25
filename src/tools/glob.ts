@@ -59,7 +59,7 @@ export const globTool: ToolDef<typeof schema> = {
     if (input.pattern.includes('\0')) throw new ToolError('Glob pattern must not contain NUL bytes.');
 
     const requested = input.path ?? '.';
-    const resolved = await resolveWorkspacePath(ctx, requested, { mustExist: true });
+    const resolved = await resolveWorkspacePath(ctx, requested, { mustExist: true, access: 'read' });
     const info = await stat(resolved.absolute);
     if (!info.isDirectory()) {
       throw new ToolError('Not a directory: ' + requested + '. Glob only searches directories; use ReadFile for a file.');
@@ -82,6 +82,7 @@ export const globTool: ToolDef<typeof schema> = {
       // Symlink safety: only report files whose real path stays in the workspace
       // (and inside the directory that was searched).
       const canonical = await canonicalizePath(absolute);
+      if (ctx.policy?.isPathDenied(canonical) === true) continue;
       if (!isPathInside(resolved.root, canonical)) continue;
       if (!isPathInside(resolved.absolute, canonical)) continue;
 

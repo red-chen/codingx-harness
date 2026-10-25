@@ -256,6 +256,20 @@ describe('ApplyPatch', () => {
     expect(await readText('a.txt')).toBe('safe\n');
   });
 
+  it('allows paths outside the workspace when --yolo is enabled', async () => {
+    const escaped = path.join(root, 'escaped.txt');
+    const patch = unified([
+      '--- /dev/null',
+      '+++ b/../escaped.txt',
+      '@@ -0,0 +1 @@',
+      '+escaped',
+    ]);
+
+    const result = await registry.execute('ApplyPatch', { patch }, { ...ctx, yolo: true });
+    expect(result.isError).toBeUndefined();
+    expect(await readFile(escaped, 'utf8')).toBe('escaped\n');
+  });
+
   it('rejects renames, deletions and no-newline markers', async () => {
     await put('old.txt', 'old\n');
     await read('old.txt');

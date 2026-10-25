@@ -4,6 +4,7 @@
 
 ```ts
 import type { z } from 'zod';
+import type { ApprovalHandler, PolicyRuntime } from '../policy/types.js';
 
 export interface ToolDef<S extends z.ZodType = z.ZodType> {
   /** 模型可见的名字，PascalCase */
@@ -31,6 +32,12 @@ export interface ToolContext {
   cwd: string;
   /** --add-dir 追加的可写根（已规范化的绝对路径） */
   additionalDirs?: readonly string[];
+  /** --yolo / :danger-full-access 时为 true：跳过文件路径限制 */
+  yolo?: boolean;
+  /** S1 接入：Permission profile + approval policy */
+  policy?: PolicyRuntime;
+  /** TUI/plain 审批回调；无回调时越界 fail closed */
+  approve?: ApprovalHandler;
   signal: AbortSignal;
   readTracker: ReadFileTracker;
   maxOutputChars: number;
@@ -43,14 +50,16 @@ export interface ToolContext {
 }
 ```
 
+> S1 已给 `ToolContext` 接入 `policy` 与 `approve`；工具用结构化 `Action` 描述副作用，`approval` 字段只作为 M2 兼容保留。S2 已由 TUI/plain 交互提供 `approve`。设计见 [permissions.md](permissions.md)。
+
 约定：
 
 - `description` 是模型选工具的唯一依据，必须写清楚边界。宁长勿短。
 - 入参用 zod 定义，JSON Schema 由 `zod-to-json-schema` 生成，避免两份定义漂移。
-- `approval` 只是默认粒度：`none` 无需审批（只读），`on-write` 仅在写时询问，`always` 每次询问；策略层可收紧，见 [security.md](security.md)。
+- `approval` 只是 M2 的默认粒度：`none` 无需审批（只读），`on-write` 仅在写时询问，`always` 每次询问。M3 起由 `Action` + Permission profile + Approval policy 统一判定，见 [permissions.md](permissions.md)。
 - `execute` 不抛异常处理「业务失败」（文件不存在、命令非零退出），统一走 `isError: true` 回填；只有真正的程序错误才 throw。
 - 输出默认裁剪到 30k 字符，超出部分保留头尾并标记省略行数。
-- 文件路径限制在 `cwd` 与 `--add-dir` 追加的允许根内；相对路径从 `cwd` 解析，绝对路径可指向任一允许根。符号链接会按真实路径校验，逃逸到允许根之外的文件仍被拒绝。
+- 文件路径由 Permission profile 决定：默认 `:workspace` 覆盖 `cwd`、`--add-dir` 与临时目录；命名 profile 可追加根。相对路径从 `cwd` 解析，符号链接按真实路径校验；敏感路径（`~/.ssh`、`.env*` 等）默认 deny。`--yolo` 跳过这层限制；它不是 OS 级沙箱，也不影响读后写等完整性检查。
 - 工具返回给模型的路径统一相对主 workspace（跨盘时为绝对路径），因此可以原样作为下一次工具调用的 `path` 入参。
 
 ## 内置工具清单
@@ -81,7 +90,23 @@ export interface ToolContext {
 | `Shell` | `command`, `cwd?`, `timeout_ms?`, `description?` | 执行命令，返回 stdout / stderr / 退出码 |
 | `ShellInteractive` | `command` | 长驻进程（dev server 等），返回会话句柄，后续可读取输出（M5） |
 
-`Shell` 的默认超时 120s，超时后向整个进程组发 `SIGTERM`，再等 5s 后 `SIGKILL`。工作目录限制在 workspace 根或 `--add-dir` 追加的目录内；当前构建仍无 OS 级沙箱，命令本身不受该限制。
+`Shell` 的默认超时 120s，超时后向整个进程组发 `SIGTERM`，再等 5s 后 `SIGKILL`。工作目录受 Permission profile 约束；S1 还会解析命令、拦截已知网络命令/重定向/硬拒绝，但**没有 OS 级沙箱**，任意程序仍可绕过策略。
+
+S5 起 `Shell` 增加提权字段（仅在沙箱拒绝后由模型重试时使用；S1 尚未实现）：
+
+```ts
+interface ShellExtras {
+  sandbox_permissions?: 'use_default' | 'with_additional_permissions' | 'require_escalated';
+  justification?: string;          // 给用户看的理由，不是授权凭证
+  additional_permissions?: {
+    file_system?: { read?: string[]; write?: string[] };
+    network?: { enabled?: boolean; domains?: string[] };
+  };
+  prefix_rule?: string[];          // 请求会话级命令前缀批准
+}
+```
+
+沙箱拒绝 → 结构化 `SANDBOX_DENIED` → 模型带理由重试 → 用户批准 → 本次调用放宽/无沙箱执行。详见 [permissions.md](permissions.md) 的提权章节。
 
 ### 其他
 

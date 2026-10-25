@@ -53,7 +53,7 @@ T03/T05/T06/T07 之间互不依赖，可并行实现；T09 依赖 T02 的消息�
 
 - **单目标路由**：`ProviderRouter` 目前解析出多个候选时要求 `--provider` / `--model` 收敛为一个；multi-target 的 failover / weighted / round-robin 在 M5 实现。配置示例中的 secondary target 在 M1 会得到明确错误而不是静默忽略。
 - **嵌入式会话存储**：M2 的 sessiond 尚未实现；M1 固定使用带文件锁的进程内存储。`sessiond.enabled = true` 会提示「M1 未实现，退回嵌入式存储」，不伪装成跨 CLI。
-- **无审批 / 无沙箱**：策略引擎与 Seatbelt/Landlock 属于 M3。M1 的 Shell 继承配置的 env 白名单，但**不提供 OS 级隔离**；不要在不可信仓库里使用。文件工具默认限制在 workspace 内（可用 `--add-dir` 显式追加可写目录），作为过渡护栏。
+- **无审批 / 无沙箱**：策略引擎与 Seatbelt/Landlock 属于 M3。M1 的 Shell 继承配置的 env 白名单，但**不提供 OS 级隔离**；不要在不可信仓库里使用。文件工具默认限制在 workspace 内（可用 `--add-dir` 显式追加可写目录），作为过渡护栏；`--yolo` / `--allow-dangerously-skip-permissions` 会关闭这层应用层限制并告警，但不会关闭尚未实现的审批与沙箱。
 - **无压缩**：上下文压缩属于 M2；M1 超长上下文由 Provider 错误暴露，不静默截断历史。
 - **无 TUI**：M2 自研 Terminal；M1 使用逐行纯文本。`--plain` 是默认形态。
 - **resume / fork**：M2；M1 通过 `log` 回放验证 rollout 可重建。

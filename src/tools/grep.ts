@@ -78,6 +78,8 @@ export interface BuiltinGrepOptions {
   maxMatches?: number;
   /** Base directory for the paths in the returned lines. Defaults to workspaceRoot. */
   displayRoot?: string;
+  /** Extra sensitive-path filter applied after workspace containment. */
+  denyPath?: (absolute: string) => boolean;
   signal?: AbortSignal;
 }
 
@@ -231,11 +233,17 @@ async function filterFilesByGlob(
   return files.filter((file) => allowed.has(path.resolve(file)));
 }
 
-async function fileHasMatch(file: string, matcher: LineMatcher, workspaceRoot: string, signal?: AbortSignal): Promise<boolean> {
+async function fileHasMatch(
+  file: string,
+  matcher: LineMatcher,
+  workspaceRoot: string,
+  signal?: AbortSignal,
+  denyPath?: (absolute: string) => boolean,
+): Promise<boolean> {
   if (signal?.aborted) throw abortError('grep aborted.');
   if (isBinaryName(file)) return false;
   const canonical = await verifyWorkspaceFile(file, workspaceRoot);
-  if (!canonical) return false;
+  if (!canonical || denyPath?.(canonical) === true) return false;
   const info = await stat(canonical).catch(() => undefined);
   if (!info || !info.isFile() || info.size > MAX_FALLBACK_FILE_BYTES) return false;
   const buffer = await readFile(canonical).catch(() => undefined);
@@ -266,7 +274,7 @@ export async function grepBuiltin(options: BuiltinGrepOptions): Promise<BuiltinG
 
     if (atLimit) {
       // Max matches are already collected; scan only to learn whether more exist.
-      if (await fileHasMatch(file, lineMatcher, options.workspaceRoot, options.signal)) {
+      if (await fileHasMatch(file, lineMatcher, options.workspaceRoot, options.signal, options.denyPath)) {
         truncated = true;
         break;
       }
@@ -275,7 +283,7 @@ export async function grepBuiltin(options: BuiltinGrepOptions): Promise<BuiltinG
 
     if (isBinaryName(file)) continue;
     const canonical = await verifyWorkspaceFile(file, options.workspaceRoot);
-    if (!canonical) continue;
+    if (!canonical || options.denyPath?.(canonical) === true) continue;
     const info = await stat(canonical).catch(() => undefined);
     if (!info || !info.isFile() || info.size > MAX_FALLBACK_FILE_BYTES) continue;
     const buffer = await readFile(canonical).catch(() => undefined);
@@ -336,6 +344,7 @@ async function parseRipgrepOutput(
   resolveRoot: string,
   allowedRoot: string,
   displayRoot: string,
+  denyPath?: (absolute: string) => boolean,
 ): Promise<BuiltinGrepResult> {
   const rawLines = stdout.split('\n');
   if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
@@ -353,7 +362,7 @@ async function parseRipgrepOutput(
     let display: string | null = null;
     try {
       const canonical = await canonicalizePath(path.resolve(resolveRoot, filePart));
-      if (isPathInside(allowedRoot, canonical)) {
+      if (isPathInside(allowedRoot, canonical) && denyPath?.(canonical) !== true) {
         const info = await stat(canonical);
         if (info.isFile()) display = toDisplayPath(displayRoot, canonical);
       }
@@ -581,7 +590,7 @@ export const grepTool: ToolDef<typeof schema> = {
   approval: 'none',
   async execute(input, ctx) {
     const requested = input.path ?? '.';
-    const resolved = await resolveWorkspacePath(ctx, requested, { mustExist: true });
+    const resolved = await resolveWorkspacePath(ctx, requested, { mustExist: true, access: 'read' });
     const info = await stat(resolved.absolute);
     if (!info.isFile() && !info.isDirectory()) {
       throw new ToolError('Not a file or directory: ' + requested + '.');
@@ -605,6 +614,9 @@ export const grepTool: ToolDef<typeof schema> = {
         context: input.context,
         maxMatches: MAX_MATCHES,
         displayRoot: resolved.workspaceRoot,
+        ...(ctx.policy === undefined
+          ? {}
+          : { denyPath: (candidate: string) => ctx.policy?.isPathDenied(candidate) === true }),
         signal: ctx.signal,
       });
       const formatted = grepResult(input, resolved.relative, 'builtin', result);
@@ -646,6 +658,9 @@ export const grepTool: ToolDef<typeof schema> = {
       resolved.workspaceRoot,
       resolved.root,
       resolved.workspaceRoot,
+      ctx.policy === undefined
+        ? undefined
+        : (candidate: string) => ctx.policy?.isPathDenied(candidate) === true,
     );
     return grepResult(input, resolved.relative, 'rg', parsed, run.outputTruncated);
   },

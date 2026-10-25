@@ -7,6 +7,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: '/help', description: 'show shortcuts' },
   { name: '/session', description: 'show session id and file' },
   { name: '/model', description: 'show or set model and reasoning effort' },
+  { name: '/permissions', description: 'show or switch the permission profile' },
   { name: '/clear', description: 'clear session history (UI + JSONL)' },
   { name: '/copy', description: 'copy transcript/status/input/meta' },
   { name: '/queue', description: 'show queued prompts' },

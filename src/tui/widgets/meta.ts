@@ -12,6 +12,8 @@ export interface MetaBarOptions {
   readonly cwd: string;
   readonly home?: string;
   readonly title?: string;
+  readonly permissionProfile?: string;
+  readonly approvalPolicy?: string;
 }
 
 const MODEL: Style = { fg: TUI_COLORS.accent, attrs: ATTR_BOLD };
@@ -54,14 +56,16 @@ export function metaText(options: MetaBarOptions, width: number): string {
   if (width < 40) return '';
   const model = oneLine(options.model) || 'model';
   const effort = options.reasoningEffort ? 'effort ' + options.reasoningEffort : '';
+  const profile = options.permissionProfile ? 'profile ' + options.permissionProfile : '';
+  const approval = options.approvalPolicy ? 'approval ' + options.approvalPolicy : '';
   const title = oneLine(options.title ?? '') || NEW_SESSION_TITLE;
   const cwd = options.cwd;
   if (width < 60) {
     const cwdMax = Math.max(8, Math.floor(width * 0.2));
-    return fit([model, effort, shortPath(cwd, cwdMax, options.home), title], width);
+    return fit([model, effort, profile, approval, shortPath(cwd, cwdMax, options.home), title], width);
   }
   const cwdMax = Math.max(12, Math.floor(width * 0.4));
-  return fit([model, effort, shortPath(cwd, cwdMax, options.home), title], width);
+  return fit([model, effort, profile, approval, shortPath(cwd, cwdMax, options.home), title], width);
 }
 
 export function renderMetaBar(area: Rect, frame: CellBuffer, options: MetaBarOptions): number {
@@ -70,17 +74,33 @@ export function renderMetaBar(area: Rect, frame: CellBuffer, options: MetaBarOpt
   const effort = options.reasoningEffort
     ? truncateToWidth('effort ' + options.reasoningEffort, Math.max(8, Math.floor(area.width * 0.18)))
     : '';
+  const profile = options.permissionProfile
+    ? truncateToWidth('profile ' + options.permissionProfile, Math.max(8, Math.floor(area.width * 0.2)))
+    : '';
+  const approval = options.approvalPolicy
+    ? truncateToWidth('approval ' + options.approvalPolicy, Math.max(8, Math.floor(area.width * 0.18)))
+    : '';
   const cwdBudget = Math.max(8, Math.floor(area.width * (area.width >= 60 ? 0.4 : 0.2)));
   const cwd = shortPath(options.cwd, cwdBudget, options.home);
-  const separators = ((cwd ? 1 : 0) + (effort ? 1 : 0) + 1) * displayWidth(META_SEPARATOR);
+  const separators =
+    ((cwd ? 1 : 0) + (effort ? 1 : 0) + (profile ? 1 : 0) + (approval ? 1 : 0) + 1) *
+    displayWidth(META_SEPARATOR);
   const titleBudget = Math.max(
     1,
-    area.width - displayWidth(model) - displayWidth(effort) - displayWidth(cwd) - separators,
+    area.width -
+      displayWidth(model) -
+      displayWidth(effort) -
+      displayWidth(profile) -
+      displayWidth(approval) -
+      displayWidth(cwd) -
+      separators,
   );
   const title = truncateToWidth(oneLine(options.title ?? '') || NEW_SESSION_TITLE, titleBudget);
   const pieces = [
     { text: model, style: MODEL },
     ...(effort ? [{ text: META_SEPARATOR + effort, style: MUTED }] : []),
+    ...(profile ? [{ text: META_SEPARATOR + profile, style: MUTED }] : []),
+    ...(approval ? [{ text: META_SEPARATOR + approval, style: MUTED }] : []),
     ...(cwd ? [{ text: META_SEPARATOR + cwd, style: MUTED }] : []),
     { text: META_SEPARATOR + title, style: TITLE },
   ];

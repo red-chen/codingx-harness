@@ -41,7 +41,7 @@ export const writeFileTool: ToolDef<typeof schema> = {
   parallelSafe: false,
   approval: 'on-write',
   async execute(input, ctx) {
-    const resolved = await resolveWorkspacePath(ctx, input.path);
+    const resolved = await resolveWorkspacePath(ctx, input.path, { access: 'write' });
     const relative = resolved.relative;
     const existing = await readLstat(resolved.absolute);
 

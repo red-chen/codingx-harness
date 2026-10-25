@@ -167,7 +167,10 @@ export class TuiRuntime {
 
   private resize(columns: number, rows: number): void {
     this.app.setSize(columns, rows);
-    this.front = new CellBuffer(columns, rows);
+    // Keep the previous front buffer so render() sees the dimension change and
+    // the renderer clears + repaints the screen. Replacing it with a blank
+    // buffer of the new size hides the resize from the diff: blank cells are
+    // "unchanged", so stale content from the old layout stays visible.
     this.render(true);
   }
 
@@ -177,9 +180,9 @@ export class TuiRuntime {
     if (!force && now - this.lastRender < 16) return;
     this.lastRender = now;
     const { frame, cursor } = this.app.frameWithCursor();
-    if (this.front === undefined || this.front.width !== frame.width || this.front.height !== frame.height) {
-      this.front = new CellBuffer(frame.width, frame.height);
-    }
+    // A size mismatch is intentional state: renderDiff emits a clear and full
+    // repaint for it. Do not replace front with a blank buffer here.
+    if (this.front === undefined) this.front = new CellBuffer(frame.width, frame.height);
     const output = this.renderer.render(this.front, frame, {
       cursor,
       cursorVisible: cursor !== null,

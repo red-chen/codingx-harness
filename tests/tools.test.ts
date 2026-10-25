@@ -119,6 +119,73 @@ describe('--add-dir roots', () => {
   });
 });
 
+describe('--yolo unrestricted paths', () => {
+  it('reads, edits, writes and shells outside every allowed root when yolo is on', async () => {
+    const outside = path.join(root, 'outside');
+    await mkdir(outside, { recursive: true });
+    const target = path.join(outside, 'note.txt');
+    await writeFile(target, 'outside note\n');
+    const yoloCtx: ToolContext = { ...ctx, yolo: true };
+
+    const denied = await registry.execute('ReadFile', { path: target }, ctx);
+    expect(denied.isError).toBe(true);
+    expect(denied.content).toMatch(/outside the workspace/);
+
+    const read = await registry.execute('ReadFile', { path: target }, yoloCtx);
+    expect(read.isError).toBeUndefined();
+    expect(read.content).toContain('outside note');
+
+    const edit = await registry.execute(
+      'EditFile',
+      { path: target, old_string: 'outside', new_string: 'yolo' },
+      yoloCtx,
+    );
+    expect(edit.isError).toBeUndefined();
+    expect(await readFile(target, 'utf8')).toBe('yolo note\n');
+
+    const created = path.join(outside, 'nested', 'created.txt');
+    const write = await registry.execute('WriteFile', { path: created, content: 'created\n' }, yoloCtx);
+    expect(write.isError).toBeUndefined();
+    expect(await readFile(created, 'utf8')).toBe('created\n');
+
+    const shell = await registry.execute('Shell', { command: 'pwd', cwd: outside }, yoloCtx);
+    expect(shell.isError).toBeUndefined();
+    expect(shell.content).toContain(await realpath(outside));
+  });
+
+  it('lists, globs and greps outside the workspace when yolo is on', async () => {
+    const outside = path.join(root, 'outside-search');
+    const file = path.join(outside, 'sub', 'findme.txt');
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, 'needle\n');
+    const yoloCtx: ToolContext = { ...ctx, yolo: true };
+    const relative = path.relative(cwd, file).split(path.sep).join('/');
+
+    const listed = await registry.execute('ListDir', { path: outside, depth: 2 }, yoloCtx);
+    expect(listed.isError).toBeUndefined();
+    expect(listed.content).toContain('findme.txt');
+
+    const glob = await registry.execute('Glob', { pattern: '**/*.txt', path: outside }, yoloCtx);
+    expect(glob.isError).toBeUndefined();
+    expect(glob.content).toBe(relative);
+
+    const grep = await registry.execute('Grep', { pattern: 'needle', path: outside }, yoloCtx);
+    expect(grep.isError).toBeUndefined();
+    expect(grep.content).toContain(relative + ':1:needle');
+  });
+
+  it('still rejects empty and NUL paths when yolo is on', async () => {
+    const yoloCtx: ToolContext = { ...ctx, yolo: true };
+    const empty = await registry.execute('ReadFile', { path: '' }, yoloCtx);
+    expect(empty.isError).toBe(true);
+    expect(empty.content).toMatch(/at least 1 character/);
+
+    const nul = await registry.execute('ReadFile', { path: 'a\0b' }, yoloCtx);
+    expect(nul.isError).toBe(true);
+    expect(nul.content).toMatch(/NUL/);
+  });
+});
+
 describe('ToolRegistry', () => {
   it('keeps registration order and generates stable JSON schemas', () => {
     expect(registry.list().map((tool) => tool.name)).toEqual([

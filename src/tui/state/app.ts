@@ -15,6 +15,8 @@ import type {
   TranscriptCell,
   TurnSummaryCell,
   TuiAppState,
+  TuiApprovalRequest,
+  TuiApprovalState,
   TuiAskState,
   TuiErrorInfo,
   TuiSessionState,
@@ -53,6 +55,19 @@ import {
   selectAskOption,
   selectAskOptionAt,
 } from './ask.js';
+import {
+  approvalChoices,
+  beginApprovalReason,
+  cancelApprovalReason,
+  createApprovalState,
+  currentApprovalChoice,
+  deleteApprovalReasonBackward,
+  deleteApprovalReasonForward,
+  insertApprovalReason,
+  moveApprovalChoice,
+  moveApprovalReasonCursor,
+  selectApprovalChoiceAt,
+} from './approval.js';
 import { transcriptHeight } from '../widgets/transcript.js';
 
 /**
@@ -180,6 +195,8 @@ export class TuiApp {
         ...(options.session.reasoningEffort ? { reasoningEffort: options.session.reasoningEffort } : {}),
         ...(options.session.home ? { home: options.session.home } : {}),
         ...(options.session.title ? { title: options.session.title } : {}),
+        ...(options.session.permissionProfile ? { permissionProfile: options.session.permissionProfile } : {}),
+        ...(options.session.approvalPolicy ? { approvalPolicy: options.session.approvalPolicy } : {}),
       },
       version: options.version,
       width,
@@ -299,6 +316,12 @@ export class TuiApp {
               : {}),
             ...(this.current.session.home ? { home: this.current.session.home } : {}),
             ...(this.current.session.title ? { title: this.current.session.title } : {}),
+            ...(this.current.session.permissionProfile
+              ? { permissionProfile: this.current.session.permissionProfile }
+              : {}),
+            ...(this.current.session.approvalPolicy
+              ? { approvalPolicy: this.current.session.approvalPolicy }
+              : {}),
           },
         });
         return;
@@ -459,8 +482,9 @@ export class TuiApp {
         transcript.push(summary);
         this.patch({
           activeAssistant: null,
-          ...(this.current.mode === 'ask' ? { mode: 'main' as const } : {}),
+          ...(this.current.mode === 'ask' || this.current.mode === 'approval' ? { mode: 'main' as const } : {}),
           ask: undefined,
+          approval: undefined,
           status,
           usage: copyUsage(event.usage),
           totalUsage: copyUsage(addUsage(this.current.totalUsage, event.usage)),
@@ -514,11 +538,14 @@ export class TuiApp {
         model: session.model,
         ...(session.reasoningEffort ? { reasoningEffort: session.reasoningEffort } : {}),
         ...(session.home ? { home: session.home } : {}),
+        ...(session.permissionProfile ? { permissionProfile: session.permissionProfile } : {}),
+        ...(session.approvalPolicy ? { approvalPolicy: session.approvalPolicy } : {}),
       },
       transcript: [],
       activeAssistant: null,
       plan: [],
       ask: undefined,
+      approval: undefined,
       status: { state: 'idle', elapsedMs: 0 },
       usage: copyUsage(EMPTY_USAGE),
       queue: [],
@@ -547,6 +574,19 @@ export class TuiApp {
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(session.home ? { home: session.home } : {}),
         ...(session.title ? { title: session.title } : {}),
+        ...(session.permissionProfile ? { permissionProfile: session.permissionProfile } : {}),
+        ...(session.approvalPolicy ? { approvalPolicy: session.approvalPolicy } : {}),
+      },
+    });
+  }
+
+  /** Update the permission profile shown in the meta row after /permissions. */
+  setPermission(permissionProfile: string, approvalPolicy: string): void {
+    this.patch({
+      session: {
+        ...this.current.session,
+        permissionProfile,
+        approvalPolicy,
       },
     });
   }
@@ -584,8 +624,9 @@ export class TuiApp {
     };
     this.patch({
       activeAssistant: null,
-      ...(this.current.mode === 'ask' ? { mode: 'main' as const } : {}),
+      ...(this.current.mode === 'ask' || this.current.mode === 'approval' ? { mode: 'main' as const } : {}),
       ask: undefined,
+      approval: undefined,
       status: {
         state: 'idle',
         elapsedMs: 0,
@@ -618,6 +659,95 @@ export class TuiApp {
       ask: undefined,
       ...(status.state === 'awaiting' ? { status: { ...status, state: 'working' as const } } : {}),
     });
+  }
+
+  /** Open the approval modal. The core awaits a matching approval UiCommand. */
+  showApproval(request: TuiApprovalRequest): void {
+    this.patch({
+      mode: 'approval',
+      approval: createApprovalState(request),
+      status: { ...this.current.status, state: 'awaiting' },
+      slashDismissed: true,
+    });
+  }
+
+  /** Close the approval modal and resume the working status. Idempotent. */
+  clearApproval(): void {
+    const status = this.current.status;
+    this.patch({
+      ...(this.current.mode === 'approval' ? { mode: 'main' as const } : {}),
+      approval: undefined,
+      ...(status.state === 'awaiting' ? { status: { ...status, state: 'working' as const } } : {}),
+    });
+  }
+
+  private finishApproval(): UiCommand | undefined {
+    const approval = this.current.approval;
+    if (approval === undefined) return undefined;
+    const choice = currentApprovalChoice(approval) ?? 'deny';
+    const reason = approval.reason.trim();
+    this.clearApproval();
+    if (choice === 'once') return { type: 'approval', decision: { decision: 'allow', scope: 'once' } };
+    if (choice === 'session') return { type: 'approval', decision: { decision: 'allow', scope: 'session' } };
+    if (choice === 'prefix') return { type: 'approval', decision: { decision: 'allow', scope: 'prefix' } };
+    if (choice === 'deny-reason') {
+      return {
+        type: 'approval',
+        decision: { decision: 'deny', ...(reason.length > 0 ? { reason } : { reason: 'denied by user' }) },
+      };
+    }
+    return { type: 'approval', decision: { decision: 'deny' } };
+  }
+
+  private handleApprovalKey(key: KeyEvent): UiCommand | undefined {
+    const approval = this.current.approval;
+    if (approval === undefined) return undefined;
+    if (isCtrl(key, 'c')) return { type: 'interrupt' };
+    if (isEscape(key)) {
+      if (approval.editingReason) {
+        this.patch({ approval: cancelApprovalReason(approval) });
+        return undefined;
+      }
+      this.clearApproval();
+      return { type: 'approval', decision: { decision: 'deny', reason: 'approval cancelled' } };
+    }
+
+    if (approval.editingReason) {
+      if (key.code === 'enter') return this.finishApproval();
+      if (key.code === 'backspace') {
+        this.patch({ approval: deleteApprovalReasonBackward(approval) });
+        return undefined;
+      }
+      if (key.code === 'delete') {
+        this.patch({ approval: deleteApprovalReasonForward(approval) });
+        return undefined;
+      }
+      if (key.code === 'left' || key.code === 'right' || key.code === 'home' || key.code === 'end') {
+        this.patch({ approval: moveApprovalReasonCursor(approval, key.code) });
+        return undefined;
+      }
+      if (key.text !== undefined && key.text.length > 0 && isPlainText(key)) {
+        this.patch({ approval: insertApprovalReason(approval, key.text) });
+      }
+      return undefined;
+    }
+
+    if (key.code === 'up' || key.code === 'down') {
+      this.patch({ approval: moveApprovalChoice(approval, key.code === 'up' ? -1 : 1) });
+      return undefined;
+    }
+    if (/^[1-9]$/u.test(key.code) && isPlainText(key)) {
+      this.patch({ approval: selectApprovalChoiceAt(approval, Number.parseInt(key.code, 10) - 1) });
+      return undefined;
+    }
+    if (key.code === 'enter') {
+      if (currentApprovalChoice(approval) === 'deny-reason') {
+        this.patch({ approval: beginApprovalReason(approval) });
+        return undefined;
+      }
+      return this.finishApproval();
+    }
+    return undefined;
   }
 
   /** Open the read-only help overlay. */
@@ -818,6 +948,7 @@ export class TuiApp {
     const mode = this.current.mode;
 
     if (mode === 'ask') return this.handleAskKey(key);
+    if (mode === 'approval') return this.handleApprovalKey(key);
 
     if (mode !== 'main') {
       if (isEscape(key) || isCtrl(key, 'c') || (mode === 'transcript' && isCtrl(key, 't')) || this.closeOverlayText(key)) {

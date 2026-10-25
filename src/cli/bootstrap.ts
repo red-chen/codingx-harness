@@ -14,11 +14,12 @@ import { createProvider } from '../providers/index.js';
 import { ProviderRouter, selectRouteTarget, type RouterPins } from '../routing/index.js';
 import { EmbeddedSessionStore, SessiondStore, ensureSessiond, type SessionStoreApi } from '../session/index.js';
 import { ToolRegistry, createBuiltinTools } from '../tools/index.js';
+import { createPolicyRuntime, type PolicyRuntime } from '../policy/index.js';
 import { loadSkills, type SkillRegistry } from '../skills/index.js';
 import { buildChildEnv } from '../exec/index.js';
 import { ConfigError } from '../util/errors.js';
 import { resolveApiKey } from '../util/auth.js';
-import { canonicalizePath, expandHome } from '../util/paths.js';
+import { canonicalizePath, expandHome, isPathInside } from '../util/paths.js';
 import { VERSION } from '../version.js';
 
 export interface BootstrapOptions {
@@ -26,6 +27,8 @@ export interface BootstrapOptions {
   cli?: ConfigOverrides;
   /** Extra directories writable alongside cwd (CLI --add-dir). */
   addDirs?: readonly string[];
+  /** Bypass all application-level permission checks (CLI --yolo). */
+  yolo?: boolean;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -35,6 +38,10 @@ export interface CliApp {
   cwd: string;
   /** Canonical extra writable directories from --add-dir. */
   additionalDirs: string[];
+  /** True when the selected profile has no filesystem sandbox (danger-full-access). */
+  yolo: boolean;
+  /** Resolved permission profile and approval policy. */
+  policy: PolicyRuntime;
   codingxHome: string;
   store: SessionStoreApi;
   router: ProviderRouter;
@@ -81,14 +88,69 @@ async function resolveAdditionalDirs(
 export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
   const cwd = path.resolve(options.cwd);
   const env = options.env ?? process.env;
-  const loaded = await loadConfig({ cwd, env, cli: options.cli });
+  const cli = { ...(options.cli ?? {}) };
+  if (options.yolo === true) {
+    if (
+      cli.approvalMode !== undefined ||
+      cli.approvalPolicy !== undefined ||
+      cli.approvalsReviewer !== undefined ||
+      cli.permissionProfile !== undefined ||
+      cli.sandboxMode !== undefined ||
+      cli.dangerouslyBypass === true
+    ) {
+      throw new ConfigError('--yolo cannot be combined with other permission flags.');
+    }
+    cli.dangerouslyBypass = true;
+  }
+  const loaded = await loadConfig({ cwd, env, cli });
   const warnings = [...loaded.warnings];
   const additionalDirs = await resolveAdditionalDirs(options.addDirs ?? [], cwd, env);
+  const policy = await createPolicyRuntime({
+    cwd,
+    additionalDirs,
+    env,
+    config: loaded.config.permissions,
+    approvalPolicy: loaded.config.approvalPolicy,
+    reviewer: loaded.config.approvalsReviewer,
+    alwaysAsk: loaded.config.approval.alwaysAsk,
+    sessionDir: loaded.config.session.dir,
+  });
+  const yolo = policy.yolo;
+  if (!yolo && additionalDirs.length > 0) {
+    const notAllowed = additionalDirs.filter(
+      (directory) => !policy.writeRoots.some((root) => isPathInside(root, directory)),
+    );
+    if (notAllowed.length > 0) {
+      throw new ConfigError(
+        '--add-dir "' + notAllowed[0] + '" is not allowed by permission profile "' + policy.profileName +
+          '". Use a profile that grants write access to that directory.',
+      );
+    }
+  }
+  const explicitYolo = options.yolo === true || loaded.overrides.dangerouslyBypass === true;
 
-  warnings.push(
-    'M1 has no approval prompts or OS-level sandbox; tool calls run with your user permissions. ' +
-      'Use it only in repositories you trust.',
-  );
+  if (yolo) {
+    warnings.push(
+      (explicitYolo
+        ? '--yolo: all permission checks are bypassed (except hard-deny rules).'
+        : 'Permission profile ":danger-full-access" bypasses the sandbox and approvals.') +
+        ' File and Shell tools can access any path your user can reach. ' +
+        'This build has no OS sandbox or approval prompts; use it only in a disposable, externally sandboxed environment.',
+    );
+  } else {
+    warnings.push(
+      'M3.1 enforces the permission profile for file tools, but there is no OS-level sandbox; ' +
+        'Shell commands run with your user permissions. Interactive approvals are available in TUI/plain mode; ' +
+        'non-interactive runs fail closed. Use it only in repositories you trust.',
+    );
+    warnings.push(
+      'Permission profile "' + policy.profileName + '" with approval policy "' + policy.approvalPolicy +
+        '" is enforced for file tools. OS-level sandboxing is not implemented yet, so Shell commands can still reach paths outside the profile.',
+    );
+    if (policy.reviewer === 'auto_review') {
+      warnings.push('approvals_reviewer = "auto_review" is not implemented yet; approvals fall back to fail-closed.');
+    }
+  }
   if (loaded.config.mcp.servers.length > 0) {
     warnings.push('MCP servers are configured but MCP tools are not implemented in M1; the servers are ignored.');
   }
@@ -135,6 +197,9 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
   const systemPrompt = buildSystemPrompt(snapshot, {
     skills: skills.summaries(),
     ...(additionalDirs.length > 0 ? { additionalDirs } : {}),
+    permissionProfile: policy.profileName,
+    approvalPolicy: policy.approvalPolicy,
+    ...(yolo ? { yolo: true } : {}),
   });
   const tools = new ToolRegistry(createBuiltinTools());
   const shellEnv = buildChildEnv(loaded.config.sandbox.envPassthrough, env);
@@ -158,6 +223,8 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
     config: loaded.config,
     cwd,
     additionalDirs,
+    yolo,
+    policy,
     codingxHome: loaded.codingxHome,
     store,
     router,

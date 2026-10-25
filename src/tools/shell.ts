@@ -39,7 +39,7 @@ export const shellTool: ToolDef<typeof schema> = {
   approval: 'always',
   async execute(input, ctx) {
     const requestedCwd = input.cwd ?? '.';
-    const resolved = await resolveWorkspacePath(ctx, requestedCwd, { mustExist: true });
+    const resolved = await resolveWorkspacePath(ctx, requestedCwd, { mustExist: true, access: 'read' });
     const info = await stat(resolved.absolute);
     if (!info.isDirectory()) throw new ToolError('shell cwd is not a directory: ' + requestedCwd + '.');
 

@@ -10,7 +10,7 @@
 4. 全局配置 `~/.codingx/config.toml`
 5. 内置默认值
 
-项目配置只允许覆盖**行为类**设置（模型、审批、工具开关、MCP、联网），不允许覆盖凭证——避免从远程仓库克隆来的项目配置窃取本地密钥。凭证只从 `codingx login` 的 `auth.json` 或环境变量读取，不写入 `config.toml`。整个 `[sessiond]` 段与 `session.dir` / `retention_days` 是例外：只允许来自全局配置或环境变量，项目配置不得覆盖。`[provider.<id>]` 含端点与凭证，也只允许全局配置；项目配置可以定义/选择 routes，但只能引用全局 provider id。
+项目配置只允许覆盖**行为类**设置（模型、工具开关、MCP、联网），且权限相关设置只能收紧（M3 起强制执行）：受信任项目可以追加更窄的 Permission profile / 审批规则，但不能放宽全局权限或网络白名单。项目配置不允许覆盖凭证——避免从远程仓库克隆来的项目配置窃取本地密钥。凭证只从 `codingx login` 的 `auth.json` 或环境变量读取，不写入 `config.toml`。整个 `[sessiond]` 段与 `session.dir` / `retention_days` 是例外：只允许来自全局配置或环境变量，项目配置不得覆盖。`[provider.<id>]` 含端点与凭证，也只允许全局配置；项目配置可以定义/选择 routes，但只能引用全局 provider id。
 
 ## 完整示例
 
@@ -59,7 +59,7 @@ model = "model-name-2"
 weight = 30
 
 [approval]
-mode = "on-request"          # on-request | never | always-ask
+mode = "on-request"          # on-request | never | always-ask（兼容旧键；推荐 approval_policy）
 # 会话内批准过的同类操作不再重复询问
 remember_in_session = true
 
@@ -109,13 +109,65 @@ servers = []
 # env = {}
 ```
 
-`sandbox.writable_roots` / `readable_roots` 预留给 M3 的 OS 级沙箱；当前构建中，文件与 Shell 工具的应用层可写根由启动时的 `--add-dir <DIR>` 显式追加（可重复）。
+## Permission profiles（S1 已解析）
 
-`approval.mode` 只控制「何时询问」，不能突破硬拒绝列表与沙箱；工具自身的 `approval` 声明（`none` / `on-write` / `always`）给出默认粒度：
+> 设计见 [permissions.md](permissions.md)。新模型用 Permission profile（边界）× Approval policy（何时问）× Approvals reviewer（谁答）；S1 已解析并接入文件工具，旧/新配置冲突会报错。OS 沙箱、网络代理、审批 UI 与自动审查尚未实现；项目配置不能覆盖这些权限键。
+
+```toml
+# 顶层：批准策略与默认 profile
+approval_policy = "on-request"       # on-request | never
+approvals_reviewer = "user"          # user | auto_review（后续）
+default_permissions = "project-edit" # 或 :read-only / :workspace / :danger-full-access
+
+[permissions.project-edit]
+extends = ":workspace"
+
+[permissions.project-edit.filesystem]
+":minimal" = "read"
+"~/.agents" = "write"
+
+[permissions.project-edit.filesystem.":workspace_roots"]
+"." = "write"
+"**/*.env" = "deny"
+
+[permissions.project-edit.network]
+enabled = true               # 示例：默认 false，仅按需为单个 profile 开启
+
+[permissions.project-edit.network.domains]
+"registry.npmjs.org" = "allow"
+```
+
+迁移映射：
+
+| 旧配置 | 新配置 |
+| --- | --- |
+| `[sandbox].mode = "read-only"` | `default_permissions = ":read-only"` |
+| `[sandbox].mode = "workspace-write"` | `default_permissions = ":workspace"` |
+| `[sandbox].mode = "danger-full-access"` | `default_permissions = ":danger-full-access"` |
+| `[approval].mode = "on-request"` | `approval_policy = "on-request"` |
+| `[approval].mode = "never"` | `approval_policy = "never"` |
+| `[approval].mode = "always-ask"` | 弃用：`on-request` + 对所有写/执行规则 `prompt` |
+| `[approval].allow` / `deny` | S5 的 `[approval.rules]`；之后再兼容 Codex `.rules` |
+| `[sandbox].writable_roots` / `network` | 并入命名 profile；与 `default_permissions` 冲突时报错 |
+
+`--add-dir` 只追加可写根；profile 不允许扩展时启动报错，不静默忽略。S1 已解析 `network.enabled` / `domains` 并对已知网络命令做启发式检查；没有代理或 OS 网络隔离，任意程序仍可绕过。
+
+受信任项目记录在全局配置中（路径必须是绝对路径；项目配置不能自证可信）：
+
+```toml
+[projects."/Users/me/work/repo"]
+trust_level = "trusted"
+```
+
+S1 同时解析旧配置与新键：`[approval]` / `[sandbox]` 仍兼容，新键优先；`sandbox.writable_roots` / `readable_roots` 等 OS 沙箱字段仍预留给 S3/S4，不参与当前路径策略。
+
+`approval.mode` 是兼容旧键（S1 仍支持，推荐迁移到 `approval_policy`）；它只控制「何时询问」，不能突破硬拒绝列表与沙箱。工具自身的 `approval` 声明（`none` / `on-write` / `always`）是 M2 的默认粒度，M3 起由结构化 `Action` + profile 判定取代：
 
 - `on-request`：按工具声明与规则，在需要时询问（默认）
 - `never`：从不询问；未显式允许的非只读操作一律拒绝，适合 CI 与 `exec`
-- `always-ask`：任何工具调用都询问，包括只读工具
+- `always-ask`：任何工具调用都询问，包括只读工具（M3 弃用，迁移为 `on-request` + 写/执行 prompt 规则）
+
+当前构建只有应用层路径检查：`--yolo` / `--allow-dangerously-skip-permissions` 关闭文件工具与 Shell `cwd` 的 workspace / `--add-dir` 限制并输出告警；审批引擎与 OS 沙箱尚未接入，因此该选项也不会关闭它们。M3 目标语义、预设与提权流程见 [permissions.md](permissions.md)，任务拆分见 [implementation-plan-m3.md](implementation-plan-m3.md)。
 
 `WebFetch` 仅在 `web.enabled = true` 时注册；请求只允许 https，域名必须命中 `allowed_domains`，重定向目标同样校验，解析到私网 / 回环地址的域名一律拒绝。
 
@@ -225,8 +277,16 @@ codingx [options] [prompt]
   -m, --model <name>        覆盖目标模型名
   -p, --provider <id>       在 route 内固定 Provider id
   -C, --cd <path>           指定工作目录
-      --full-auto           跳过审批询问（沙箱仍生效）
-      --yolo                关闭审批与沙箱（危险）
+      --add-dir <DIR>       追加文件与 Shell 工具的可写目录（可重复）
+  -s, --sandbox <mode>      read-only | workspace-write | danger-full-access
+  -a, --ask-for-approval <policy>
+                            on-request | never
+  -P, --permission-profile <name>
+                            选择命名 Permission profile
+      --approve-for-me      越界请求交给自动 reviewer（接口已接受；自动审查未实现）
+      --full-auto           :workspace + auto_review 的兼容别名（自动审查未实现）
+      --yolo, --allow-dangerously-skip-permissions
+                            关闭审批与沙箱（危险；当前无 OS 沙箱，文件工具不受限）
       --plain               纯文本输出，不启用 TUI
       --json                事件流以 JSON Lines 输出到 stdout
   -c, --continue            继续最近的会话

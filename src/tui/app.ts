@@ -9,6 +9,7 @@ import { renderTranscript } from './widgets/transcript.js';
 import { renderHelpOverlay } from './widgets/overlay.js';
 import { TRANSCRIPT_COPY_HINT } from './hints.js';
 import { renderAskPanel } from './widgets/ask.js';
+import { renderApprovalPanel } from './widgets/approval.js';
 import { renderSlashMenu } from './widgets/slash-menu.js';
 import { slashMenuHeight, slashMatches } from './state/slash.js';
 
@@ -160,6 +161,7 @@ export function composeFrameWithCursor(state: TuiAppState, options: ComposeFrame
     turnNumber: state.turnNumber,
     currentTurnSteps: state.currentTurnSteps,
     contextPercent: state.contextPercent,
+    awaitingKind: state.mode === 'approval' ? 'approval' : 'answer',
     now,
   });
   renderQueuePreview(layout.queue, frame, state.queue);
@@ -173,8 +175,14 @@ export function composeFrameWithCursor(state: TuiAppState, options: ComposeFrame
     ...(state.session.reasoningEffort ? { reasoningEffort: state.session.reasoningEffort } : {}),
     ...(state.session.home ? { home: state.session.home } : {}),
     ...(state.session.title ? { title: state.session.title } : {}),
+    ...(state.session.permissionProfile ? { permissionProfile: state.session.permissionProfile } : {}),
+    ...(state.session.approvalPolicy ? { approvalPolicy: state.session.approvalPolicy } : {}),
   });
   if (state.mode === 'help') renderHelpOverlay(frame, width, height);
+  if (state.mode === 'approval' && state.approval !== undefined) {
+    const panel = renderApprovalPanel(frame, width, height, state.approval);
+    return { frame, cursor: panel.cursor };
+  }
   if (state.mode === 'ask' && state.ask !== undefined) {
     const panel = renderAskPanel(frame, width, height, state.ask);
     return { frame, cursor: panel.cursor };

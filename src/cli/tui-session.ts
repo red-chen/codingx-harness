@@ -1,7 +1,11 @@
 import type { TurnResult } from '../agent/index.js';
+import { SessionGrants, approvalPrefixFor } from '../policy/index.js';
+import type { ApprovalDecision, ApprovalRequest } from '../policy/types.js';
 import type { SessionHandle } from '../session/index.js';
 import type { AskAnswer, AskQuestion } from '../tools/index.js';
 import { abortError } from '../util/errors.js';
+import { generateRequestId } from '../util/ids.js';
+import type { TuiApprovalRequest } from '../tui/state/types.js';
 import { TuiRuntime } from '../tui/runtime.js';
 import type { TerminalIO } from '../tui/terminal/session.js';
 import type { TuiApp, TuiCopyTarget } from '../tui/state/app.js';
@@ -15,6 +19,12 @@ export interface TuiModelController {
   set(selection: ModelSelection): Promise<void> | void;
 }
 
+export interface TuiPermissionController {
+  list(): readonly string[];
+  current(): { profile: string; approvalPolicy: string };
+  set(profile: string): Promise<void>;
+}
+
 export interface TuiSessionOptions {
   app: TuiApp;
   io: TerminalIO;
@@ -22,6 +32,8 @@ export interface TuiSessionOptions {
   runTurn: (text: string, signal: AbortSignal) => Promise<TurnResult>;
   /** Model/effort control backed by the router and AgentLoop. */
   model?: TuiModelController;
+  /** Permission profile listing/switching backed by the CLI bootstrap. */
+  permissions?: TuiPermissionController;
   /** Reset agent-loop state after the rollout is cleared. */
   onClear?: () => void;
   initialPrompt?: string;
@@ -37,25 +49,38 @@ export class TuiSession {
   private readonly session: SessionHandle;
   private readonly runTurn: (text: string, signal: AbortSignal) => Promise<TurnResult>;
   private readonly model: TuiModelController | undefined;
+  private readonly permissions: TuiPermissionController | undefined;
   private readonly onClear: (() => void) | undefined;
   private readonly initialPrompt: string | undefined;
   private active: AbortController | undefined;
   private clearing = false;
   private changingModel = false;
+  private changingPermission = false;
   private exiting = false;
   private finished = false;
   private resolveRun: ((code: number) => void) | undefined;
   private exitCode = 0;
   private lastCtrlC = 0;
   private pendingAsk: { resolve: (answers: readonly AskAnswer[] | null) => void } | undefined;
+  private pendingApproval:
+    | {
+        requestId: string;
+        request: ApprovalRequest;
+        resolve: (decision: ApprovalDecision) => void;
+        reject: (error: unknown) => void;
+      }
+    | undefined;
+  private readonly grants: SessionGrants;
 
   constructor(options: TuiSessionOptions) {
     this.app = options.app;
     this.session = options.session;
     this.runTurn = options.runTurn;
     this.model = options.model;
+    this.permissions = options.permissions;
     this.onClear = options.onClear;
     this.initialPrompt = options.initialPrompt;
+    this.grants = new SessionGrants(options.app.state.session.cwd);
     this.runtime = new TuiRuntime({
       app: options.app,
       io: options.io,
@@ -88,6 +113,8 @@ export class TuiSession {
     if (this.exiting) return;
     this.exiting = true;
     this.exitCode = code;
+    const pending = this.pendingApproval;
+    if (pending !== undefined) pending.reject(abortError('Session exiting.'));
     this.active?.abort();
     this.runtime.stop();
     if (this.active === undefined) this.finish();
@@ -139,6 +166,144 @@ export class TuiSession {
     });
   }
 
+  /**
+   * Show the approval panel and wait for a decision. Session/prefix grants are
+   * kept in memory only; every request/decision is also written to the rollout.
+   */
+  async approve(request: ApprovalRequest, signal?: AbortSignal): Promise<ApprovalDecision> {
+    if (this.exiting) return { decision: 'deny', reason: 'The session is exiting.' };
+    if (signal?.aborted === true) throw abortError('Approval cancelled.');
+    if (this.grants.permits(request.action)) {
+      void this.session.append({
+        type: 'approval.decided',
+        requestId: generateRequestId(),
+        ...(request.turnId === undefined ? {} : { turnId: request.turnId }),
+        ...(request.callId === undefined ? {} : { callId: request.callId }),
+        decision: 'allow',
+        scope: 'once',
+        decidedBy: 'session-grant',
+      });
+      return { decision: 'allow', scope: 'once' };
+    }
+
+    this.pendingApproval?.reject(abortError('Approval superseded.'));
+    const requestId = generateRequestId();
+    const cwd = this.app.state.session.cwd;
+    const allowPrefix = approvalPrefixFor(request.action, request.action.cwd ?? cwd) !== undefined;
+    const uiRequest: TuiApprovalRequest = {
+      requestId,
+      tool: request.tool,
+      action: {
+        kind: request.action.kind,
+        tool: request.action.tool,
+        ...(request.action.path === undefined ? {} : { path: request.action.path }),
+        ...(request.action.command === undefined ? {} : { command: request.action.command }),
+        ...(request.action.cwd === undefined ? {} : { cwd: request.action.cwd }),
+        ...(request.action.network === undefined ? {} : { network: request.action.network }),
+      },
+      ...(request.reason === undefined ? {} : { reason: request.reason }),
+      risk: request.risk,
+      allowPrefix,
+    };
+
+    await this.session.append({
+      type: 'approval.requested',
+      requestId,
+      ...(request.turnId === undefined ? {} : { turnId: request.turnId }),
+      ...(request.callId === undefined ? {} : { callId: request.callId }),
+      tool: request.tool,
+      action: request.action,
+      risk: request.risk,
+      ...(request.reason === undefined ? {} : { reason: request.reason }),
+    });
+
+    return new Promise<ApprovalDecision>((resolve, reject) => {
+      let settled = false;
+      let pending:
+        | {
+            requestId: string;
+            request: ApprovalRequest;
+            resolve: (decision: ApprovalDecision) => void;
+            reject: (error: unknown) => void;
+          }
+        | undefined;
+      const release = (): void => {
+        if (this.pendingApproval !== pending) return;
+        this.pendingApproval = undefined;
+        signal?.removeEventListener('abort', onAbort);
+        this.app.clearApproval();
+        this.render();
+      };
+      const settle = (decision: ApprovalDecision): void => {
+        if (settled) return;
+        settled = true;
+        release();
+        resolve(decision);
+      };
+      const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
+        release();
+        void this.session.append({
+          type: 'approval.decided',
+          requestId,
+          ...(request.turnId === undefined ? {} : { turnId: request.turnId }),
+          ...(request.callId === undefined ? {} : { callId: request.callId }),
+          decision: 'deny',
+          reason: 'aborted',
+          decidedBy: 'user',
+        });
+        reject(abortError('Approval cancelled.'));
+      };
+
+      if (signal?.aborted === true) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener('abort', onAbort, { once: true });
+      pending = { requestId, request, resolve: settle, reject: (error) => {
+        if (settled) return;
+        settled = true;
+        release();
+        reject(error);
+      } };
+      this.pendingApproval = pending;
+      this.app.showApproval(uiRequest);
+      this.render();
+    });
+  }
+
+  private resolveApproval(decision: ApprovalDecision): void {
+    const pending = this.pendingApproval;
+    if (pending === undefined) return;
+    this.pendingApproval = undefined;
+    const granted =
+      decision.decision === 'allow' && decision.scope !== 'once'
+        ? this.grants.grant(pending.request.action, decision.scope)
+        : false;
+    this.app.clearApproval();
+    this.render();
+    void this.session.append({
+      type: 'approval.decided',
+      requestId: pending.requestId,
+      ...(pending.request.turnId === undefined ? {} : { turnId: pending.request.turnId }),
+      ...(pending.request.callId === undefined ? {} : { callId: pending.request.callId }),
+      decision: decision.decision,
+      ...(decision.decision === 'allow' ? { scope: decision.scope } : {}),
+      ...(decision.decision === 'deny' && decision.reason !== undefined ? { reason: decision.reason } : {}),
+      decidedBy: 'user',
+    });
+    if (granted && decision.decision === 'allow') {
+      void this.session.append({
+        type: 'permission.granted',
+        requestId: pending.requestId,
+        scope: decision.scope,
+        action: pending.request.action,
+      });
+    }
+    pending.resolve(decision);
+  }
+
   handleCommand(command: UiCommand): void {
     if (this.exiting) return;
     switch (command.type) {
@@ -161,6 +326,8 @@ export class TuiSession {
         this.pendingAsk?.resolve(null);
         return;
       case 'approval':
+        this.resolveApproval(command.decision);
+        return;
       case 'resume':
       case 'fork':
         this.app.addNotice('This overlay is not available in this build.', 'warning');
@@ -188,6 +355,10 @@ export class TuiSession {
     }
     if (line === '/model' || line.startsWith('/model ')) {
       this.handleModelCommand(line);
+      return;
+    }
+    if (line === '/permissions' || line.startsWith('/permissions ')) {
+      this.handlePermissionsCommand(line);
       return;
     }
     if (line === '/clear') {
@@ -221,6 +392,61 @@ export class TuiSession {
       model: session.model,
       ...(session.reasoningEffort ? { reasoningEffort: session.reasoningEffort } : {}),
     };
+  }
+
+  private handlePermissionsCommand(line: string): void {
+    if (this.permissions === undefined) {
+      this.app.addNotice('Permission switching is not available in this build.', 'warning');
+      this.render();
+      return;
+    }
+    const current = this.permissions.current();
+    if (line === '/permissions') {
+      const profiles = this.permissions.list();
+      this.app.addNotice(
+        'Permission profile: ' + current.profile + '\n' +
+          'Approval policy: ' + current.approvalPolicy + '\n' +
+          'Available profiles: ' + profiles.join(', ') + '\n' +
+          'Use /permissions <name> to switch.',
+      );
+      this.render();
+      return;
+    }
+    if (this.active !== undefined) {
+      this.app.addNotice('Cannot change permissions while a turn is running.', 'warning');
+      this.render();
+      return;
+    }
+    if (this.changingPermission) return;
+    const name = line.slice('/permissions '.length).trim();
+    if (name.length === 0) {
+      this.handlePermissionsCommand('/permissions');
+      return;
+    }
+    void this.applyPermissionProfile(name);
+  }
+
+  private async applyPermissionProfile(name: string): Promise<void> {
+    if (this.permissions === undefined) return;
+    this.changingPermission = true;
+    try {
+      await this.permissions.set(name);
+      const current = this.permissions.current();
+      this.app.setPermission(current.profile, current.approvalPolicy);
+      this.app.addNotice(
+        'Permission profile updated: ' + current.profile + ' (' + current.approvalPolicy + ').' +
+          (current.profile === ':danger-full-access' ? ' Full access is active.' : ''),
+        current.profile === ':danger-full-access' ? 'warning' : 'info',
+      );
+    } catch (error) {
+      this.app.addNotice(
+        'Failed to update permission profile: ' + (error instanceof Error ? error.message : String(error)),
+        'error',
+      );
+    } finally {
+      this.changingPermission = false;
+      this.render();
+    }
   }
 
   private handleModelCommand(line: string): void {
@@ -275,6 +501,7 @@ export class TuiSession {
       // once the rollout rewrite succeeded, otherwise replay would disagree.
       await this.session.clear();
       this.onClear?.();
+      this.grants.clear();
       this.app.resetSession();
       this.app.addNotice('Session cleared: conversation and rollout history were reset.');
     } catch (error) {

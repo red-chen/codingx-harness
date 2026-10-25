@@ -11,6 +11,7 @@ import type { Message, ModelClient, ReasoningEffort, StopReason, TokenUsage, Too
 import { assistantMessage, toolResultsMessage } from '../providers/types.js';
 import { estimateToolsTokens } from '../providers/tokens.js';
 import { estimateTokens } from '../util/tokens.js';
+import type { ApprovalHandler, PolicyRuntime } from '../policy/types.js';
 import type { RouterSelection } from '../routing/router.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { ReadFileTracker } from '../tools/read-tracker.js';
@@ -60,6 +61,12 @@ export interface AgentLoopOptions {
   readTracker?: ReadFileTracker;
   /** Extra writable roots from --add-dir, in addition to cwd. */
   additionalDirs?: readonly string[];
+  /** True when --yolo disabled every workspace path check. */
+  yolo?: boolean;
+  /** Permission policy for this invocation. */
+  policy?: PolicyRuntime;
+  /** Approval callback; absent when the UI cannot ask (exec/CI). */
+  approve?: ApprovalHandler;
   /** UI callback for AskUserQuestion; absent in non-interactive runs. */
   ask?: AskHandler;
   /** Skills loaded for this session; absent when none are configured. */
@@ -98,13 +105,13 @@ export class AgentLoop {
   private readonly messages: Message[];
   private readonly toolSchemas: ToolSchema[];
   readonly readTracker: ReadFileTracker;
-  private readonly toolContextBase: Omit<ToolContext, 'signal' | 'plan'>;
+  private toolContextBase: Omit<ToolContext, 'signal' | 'plan'>;
   private planSteps: PlanStep[];
   private readonly contextWindow: number;
   private readonly compression: AgentCompressionOptions;
   private readonly summaryMaxTokens: number;
   private readonly summaryEnabled: boolean;
-  private readonly requestOverheadTokens: number;
+  private requestOverheadTokens: number;
 
   constructor(options: AgentLoopOptions) {
     if (options.maxSteps < 1) throw new Error('maxSteps must be at least 1.');
@@ -127,6 +134,9 @@ export class AgentLoop {
       ...(options.additionalDirs === undefined || options.additionalDirs.length === 0
         ? {}
         : { additionalDirs: options.additionalDirs }),
+      ...(options.yolo === true ? { yolo: true } : {}),
+      ...(options.policy === undefined ? {} : { policy: options.policy }),
+      ...(options.approve === undefined ? {} : { approve: options.approve }),
       ...(options.ask === undefined ? {} : { ask: options.ask }),
       ...(options.skills === undefined ? {} : { skills: options.skills }),
     };
@@ -166,6 +176,19 @@ export class AgentLoop {
   /** Change reasoning effort; undefined restores the provider default. */
   setReasoningEffort(effort: ReasoningEffort | undefined): void {
     this.options.reasoningEffort = effort;
+  }
+
+  /** Swap the active permission runtime after a /permissions change. */
+  setPolicy(policy: PolicyRuntime): void {
+    this.options.policy = policy;
+    this.toolContextBase = { ...this.toolContextBase, policy };
+  }
+
+  /** Replace the system prompt after permission metadata changes. */
+  setSystemPrompt(systemPrompt: string): void {
+    this.options.systemPrompt = systemPrompt;
+    this.requestOverheadTokens =
+      estimateTokens(systemPrompt) + estimateToolsTokens(this.toolSchemas) + this.options.maxOutputTokens;
   }
 
   async runTurn(input: string, runOptions: RunTurnOptions = {}): Promise<TurnResult> {
@@ -350,7 +373,33 @@ export class AgentLoop {
           });
 
           const startedAt = Date.now();
-          const result = await this.options.tools.execute(call.name, call.input, toolContext);
+          const approve = this.options.approve;
+          const callContext: ToolContext =
+            approve === undefined
+              ? toolContext
+              : {
+                  ...toolContext,
+                  approve: async (request, approvalSignal) => {
+                    await this.options.session.append({
+                      type: 'turn.status',
+                      turnId,
+                      status: 'awaiting_approval',
+                    });
+                    try {
+                      return await approve(
+                        { ...request, turnId, callId: call.id },
+                        approvalSignal ?? signal,
+                      );
+                    } finally {
+                      await this.options.session.append({
+                        type: 'turn.status',
+                        turnId,
+                        status: 'executing',
+                      });
+                    }
+                  },
+                };
+          const result = await this.options.tools.execute(call.name, call.input, callContext);
           const durationMs = Date.now() - startedAt;
 
           await this.options.session.append({
@@ -363,6 +412,16 @@ export class AgentLoop {
             ...(result.meta ? { meta: result.meta } : {}),
             durationMs,
           });
+          const policy = result.meta?.policy;
+          if (typeof policy === 'object' && policy !== null && !Array.isArray(policy)) {
+            await this.options.session.append({
+              type: 'permission.decision',
+              turnId,
+              callId: call.id,
+              name: call.name,
+              ...(policy as Record<string, unknown>),
+            });
+          }
           this.emit({
             type: 'tool.finished',
             turnId,

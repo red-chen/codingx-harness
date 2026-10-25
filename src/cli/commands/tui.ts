@@ -1,20 +1,22 @@
 import path from 'node:path';
-import { latestModelSelection, rebuildHistory, restoreReadTracker } from '../../agent/index.js';
+import { buildSystemPrompt, latestModelSelection, rebuildHistory, restoreReadTracker } from '../../agent/index.js';
 import type { Message, ReasoningEffort, TokenUsage } from '../../providers/types.js';
 import {
   type SessionHandle,
   type SessionStoreApi,
   type SessionSummary,
 } from '../../session/index.js';
+import { createPolicyRuntime } from '../../policy/index.js';
 import { ReadFileTracker, type PlanStep } from '../../tools/index.js';
 import { SessionError } from '../../util/errors.js';
+import { isPathInside } from '../../util/paths.js';
 import { createProcessTerminalIO, restoreTranscript, TuiApp } from '../../tui/index.js';
 import type { TextSink } from '../../ui/plain.js';
 import { VERSION } from '../../version.js';
 import type { InteractiveCommandOptions } from './interactive.js';
 import { bootstrap } from '../bootstrap.js';
 import { createLoop } from '../runtime.js';
-import { TuiSession } from '../tui-session.js';
+import { TuiSession, type TuiPermissionController } from '../tui-session.js';
 
 async function findLatestResumable(
   store: SessionStoreApi,
@@ -158,10 +160,12 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
     cwd: options.cwd,
     env,
     ...(options.addDirs && options.addDirs.length > 0 ? { addDirs: options.addDirs } : {}),
+    ...(options.yolo ? { yolo: true } : {}),
     cli: {
       ...(options.route ? { route: options.route } : {}),
       ...(options.model ? { model: options.model } : {}),
       ...(options.provider ? { provider: options.provider } : {}),
+      ...(options.cli ?? {}),
     },
   });
   for (const warning of app.warnings) stderr.write('warning: ' + warning + '\n');
@@ -185,6 +189,8 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
         ...(resumed.reasoningEffort ? { reasoningEffort: resumed.reasoningEffort } : {}),
         ...(env.HOME ? { home: env.HOME } : {}),
         ...(resumed.title ? { title: resumed.title } : {}),
+        permissionProfile: app.policy.profileName,
+        approvalPolicy: app.policy.approvalPolicy,
         ...(resumed.turnCount ? { initialTurnNumber: resumed.turnCount } : {}),
         ...(resumed.usage ? { initialUsage: resumed.usage } : {}),
         ...(resumed.transcript ? { initialTranscript: resumed.transcript } : {}),
@@ -209,18 +215,78 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
         ...(resumed.reasoningEffort ? { reasoningEffort: resumed.reasoningEffort } : {}),
         ask: (questions, signal) =>
           controller === undefined ? Promise.resolve(null) : controller.ask(questions, signal),
+        approve: (request, signal) =>
+          controller === undefined
+            ? Promise.resolve({ decision: 'deny', reason: 'The approval UI is not ready.' })
+            : controller.approve(request, signal),
       },
     );
     tuiApp.handleEvent({
       type: 'session.info',
       session: { sessionId: session.id, cwd: app.cwd, model: app.router.selection.model },
     });
+    if (app.yolo) {
+      tuiApp.addNotice(
+        'Full access is active (:danger-full-access + never). File tools are unrestricted; Shell has no OS sandbox.',
+        'warning',
+      );
+    }
+
+    const profiles = Object.keys(app.config.permissions.profiles).sort();
+    const permissions: TuiPermissionController = {
+      list: () => profiles,
+      current: () => ({ profile: app.policy.profileName, approvalPolicy: app.policy.approvalPolicy }),
+      set: async (name) => {
+        if (!profiles.includes(name)) throw new Error('Unknown permission profile: ' + name);
+        const policy = await createPolicyRuntime({
+          cwd: app.cwd,
+          additionalDirs: app.additionalDirs,
+          env,
+          config: { ...app.config.permissions, defaultProfile: name },
+          approvalPolicy: app.config.approvalPolicy,
+          reviewer: app.config.approvalsReviewer,
+          alwaysAsk: app.config.approval.alwaysAsk,
+          sessionDir: app.config.session.dir,
+        });
+        if (!policy.yolo && app.additionalDirs.length > 0) {
+          const disallowed = app.additionalDirs.find(
+            (directory) => !policy.writeRoots.some((root) => isPathInside(root, directory)),
+          );
+          if (disallowed !== undefined) {
+            throw new Error(
+              'Permission profile "' + name + '" does not allow the existing --add-dir root ' + disallowed + '.',
+            );
+          }
+        }
+        const previous = app.policy.profileName;
+        app.policy = policy;
+        app.yolo = policy.yolo;
+        app.config.permissions = { ...app.config.permissions, defaultProfile: name };
+        await activeSession.append({
+          type: 'profile.changed',
+          from: previous,
+          to: name,
+          source: 'tui',
+        });
+        loop.setPolicy(policy);
+        const prompt = buildSystemPrompt(app.snapshot, {
+          skills: app.skills.summaries(),
+          ...(app.additionalDirs.length > 0 ? { additionalDirs: app.additionalDirs } : {}),
+          permissionProfile: policy.profileName,
+          approvalPolicy: policy.approvalPolicy,
+          ...(policy.yolo ? { yolo: true } : {}),
+        });
+        app.systemPrompt = prompt;
+        loop.setSystemPrompt(prompt);
+      },
+    };
 
     controller = new TuiSession({
       app: tuiApp,
       io: createProcessTerminalIO(),
       session,
       runTurn: (text, signal) => loop.runTurn(text, { signal }),
+      permissions,
       model: {
         get: () => ({
           model: app.router.selection.model,

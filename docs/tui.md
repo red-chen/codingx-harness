@@ -112,14 +112,21 @@ type UiCommand =
   | { type: 'interrupt' }
   | { type: 'answer'; answers: AskAnswer[] }
   | { type: 'cancel-ask' }
-  | { type: 'approval'; decision: 'allow' | 'allow-session' | 'deny'; reason?: string }
+  | {
+      type: 'approval';
+      decision:
+        | { decision: 'allow'; scope: 'once' | 'session' | 'prefix' }
+        | { decision: 'deny'; reason?: string };
+    }
   | { type: 'resume'; sessionId: string }
   | { type: 'fork'; sessionId: string };
 ```
 
-`TuiApp` 是一个显式状态机：`mode`（main / transcript / ask / session-picker / approval）、`transcript`、`activeCell`、`composer`、`status`、`overlay`。事件循环同时监听 stdin、core 事件和帧定时器；没有隐藏的全局单例。
+`TuiApp` 是一个显式状态机：`mode`（main / transcript / help / ask / approval）、`transcript`、`activeCell`、`composer`、`status`、`overlay`。事件循环同时监听 stdin、core 事件和帧定时器；没有隐藏的全局单例。
 
 `ask` 模式由 `AskUserQuestion` 工具触发：core 通过 `AskHandler` 调用 `TuiSession.ask()`，TUI 打开提问面板并等待 `answer` / `cancel-ask`；`Esc` 取消，`Ctrl+C` 仍然中断整个 turn。
+
+`approval` 模式由权限策略触发：底部弹层展示工具、归一化命令/路径、cwd、网络目标、理由与风险，支持允许一次 / 本会话 / 命令前缀 / 拒绝 / 拒绝并说明原因 / Esc 取消；长命令在面板内换行展示。审批通过会写入 rollout，并在内存中建立会话/前缀授权。`/permissions` 是本地命令：不带参数列出当前 profile 与可选 profile，带参数切换；meta 行显示 profile 与 approval policy，Full Access 在启动时给出 warning notice。选择器 overlay 与长命令全屏视图仍待补。审批弹层由应用状态机绘制，模型输出不能伪造。完整语义见 [permissions.md](permissions.md)。
 
 TUI 不持久化任何配置；所有颜色、键位、布局都是固定行为。模型与 cwd 只作为事件字段显示。终端渲染前对不可信文本做控制序列剥离，见 [security.md](security.md)。
 

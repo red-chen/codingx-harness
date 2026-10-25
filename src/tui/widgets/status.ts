@@ -16,6 +16,8 @@ export interface StatusRowOptions {
   readonly turnNumber?: number;
   readonly currentTurnSteps?: number;
   readonly contextPercent?: number;
+  /** Distinguish an approval wait from an AskUserQuestion wait. */
+  readonly awaitingKind?: 'answer' | 'approval';
   readonly now?: number;
 }
 
@@ -100,7 +102,12 @@ export function usageLabel(usage: TokenUsage): string {
 }
 
 /** Left-hand status label, already adapted to the viewport width. */
-export function statusLabel(status: TuiStatus, now = 0, width = 80): string {
+export function statusLabel(
+  status: TuiStatus,
+  now = 0,
+  width = 80,
+  awaitingKind: 'answer' | 'approval' = 'answer',
+): string {
   const elapsed = statusElapsedMs(status, now);
   if (status.state === 'working') {
     if (width < 40) return 'Working';
@@ -109,8 +116,9 @@ export function statusLabel(status: TuiStatus, now = 0, width = 80): string {
   }
 
   if (status.state === 'awaiting') {
-    if (width < 40) return 'Awaiting';
-    return '! Awaiting answer (' + formatElapsed(elapsed) + ')';
+    const label = awaitingKind === 'approval' ? 'approval' : 'answer';
+    if (width < 40) return awaitingKind === 'approval' ? 'Approval' : 'Awaiting';
+    return '! Awaiting ' + label + ' (' + formatElapsed(elapsed) + ')';
   }
 
   if (status.outcome === 'aborted') {
@@ -160,7 +168,10 @@ export function renderStatusRow(area: Rect, frame: CellBuffer, options: StatusRo
   const right = [context, total].filter((part): part is string => part !== undefined).join(' · ') || undefined;
   const rightWidth = right === undefined ? 0 : displayWidth(right);
   const leftLimit = right === undefined ? area.width : Math.max(1, area.width - rightWidth - 2);
-  let left = truncateToWidth(statusLabel(options.status, now, area.width), leftLimit);
+  let left = truncateToWidth(
+    statusLabel(options.status, now, area.width, options.awaitingKind ?? 'answer'),
+    leftLimit,
+  );
   if (options.turnNumber !== undefined && options.turnNumber > 0) {
     const step = Math.max(0, Math.floor(options.currentTurnSteps ?? 0));
     left = truncateToWidth(left + ' · turn ' + options.turnNumber + ' · step ' + step, leftLimit);

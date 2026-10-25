@@ -176,7 +176,7 @@ stop: end_turn              # 本轮结束，等待下一次用户输入
 ## 可测试性
 
 - Agent 循环对 Provider 和 Tool 都是接口依赖，单元测试用脚本化的假 Provider 即可覆盖完整 turn
-- 沙箱与审批层可替换为空实现（`--yolo` 仅用于测试环境），保证 CI 无需交互
+- 沙箱与审批层可替换为测试实现（固定 allow/deny reviewer 或命名 profile），CI 不依赖交互；`--yolo` 只用于一次性、外部已隔离的环境
 - Terminal 的 cell buffer、diff、输入解析与布局做纯单测；PTY + `@xterm/headless` 覆盖 alt screen、resize 与 paste
 - TUI 状态机与 widget 渲染可脱离终端，直接对 cell buffer 做 golden 帧
 - ProviderRouter 用假 Provider 覆盖策略、熔断、half-open、首包前/后 failover 与并发选路

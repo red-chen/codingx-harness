@@ -2,7 +2,7 @@
 
 依据 [roadmap.md](roadmap.md) 的 M2 范围，在 M1 的可运行循环之上继续拆分。M1 计划与结果见 [implementation-plan.md](implementation-plan.md)。
 
-> 状态：G1-G5 验收全部 DONE。E3 的表格 holdback、E4 的 session picker/审批 overlay、E5 的 mention，以及 F4 的慢订阅者背压，列为 M2.1 增强，不影响 M2 验收结论。E4 的 AskUserQuestion 提问面板已完成，Skills 按需加载已接入。
+> 状态：G1-G5 验收全部 DONE。E3 的表格 holdback、E4 的 session picker、E5 的 mention，以及 F4 的慢订阅者背压，列为 M2.1 增强，不影响 M2 验收结论；审批 overlay 移至 M3（见 [implementation-plan-m3.md](implementation-plan-m3.md)）。E4 的 AskUserQuestion 提问面板已完成，Skills 按需加载已接入。
 
 ## 目标
 
@@ -65,7 +65,7 @@ M2 结束时：
 | E1 | `UiEvent`/`UiCommand` 契约与 TuiApp 状态机 | mode/transcript/activeCell/composer/status 显式 | DONE |
 | E2 | welcome、transcript viewport、composer、status/meta | 固定底部；虚拟化只渲染可见单元 | DONE |
 | E3 | 消息单元：user/assistant/exec/diff/plan/notice | 流式 markdown、表格 holdback、diff 着色 | DOING（markdown/code/diff 已完成；表格 holdback 待补） |
-| E4 | overlay：审批、transcript、session picker、help、ask | 模型输出不能伪造选项 | DOING（help 静态 overlay、transcript 全屏模式、ask 提问面板已完成；审批/session picker 待做） |
+| E4 | overlay：审批、transcript、session picker、help、ask | 模型输出不能伪造选项 | DOING（help 静态 overlay、transcript 全屏模式、ask 提问面板已完成；session picker 待做；审批 overlay 移至 M3） |
 | E5 | 键位、slash/mention、排队、中断/双击退出 | 键盘与滚动符合 tui.md | DOING（编辑/历史/滚动/中断/队列/双击退出/slash 补全菜单已完成；mention 待做） |
 | E6 | 接入 CLI；非 TTY/--plain 退化 | TUI 不读配置/凭证；plain 路径保持 | DONE |
 
@@ -100,7 +100,7 @@ Wave D ─┴─────────────────────┘
 Wave F（sessiond）依赖 A 的续接语义，可与 D/E 并行
 ```
 
-当前推进：**Wave A/B/C、Wave D、Wave E1/E2/E4（ask 面板）、Wave E5（除 mention）、Wave E6、Wave F（除背压）、G2/G3/G4/G5 已完成**；剩余 mention、session picker/审批 overlay、表格 holdback、慢订阅者背压。
+当前推进：**Wave A/B/C、Wave D、Wave E1/E2/E4（ask 面板）、Wave E5（除 mention）、Wave E6、Wave F（除背压）、G2/G3/G4/G5 已完成**；剩余 mention、session picker、表格 holdback、慢订阅者背压；审批 overlay 移至 M3。
 
 ## 本轮结果（Round 6）
 
@@ -108,7 +108,7 @@ Wave F（sessiond）依赖 A 的续接语义，可与 D/E 并行
 - **TUI slash 补全**：`/help|/session|/queue|/quit` 过滤菜单、↑/↓ 选择、Tab/Enter 补全、Esc 关闭；84x24 帧内渲染。
 - **`sessions prune`**：daemon 注册表按 ended + 更新时间 + 无 writer/observer 安全清理；支持 `--older-than`、`--dry-run`、`--json`；CLI E2E 覆盖。
 - `sessions list/show/watch`、`sessiond start/stop/status/restart` 均保留通过。
-- 仍待：mention、session picker/审批 overlay、表格 holdback、慢订阅者背压。
+- 仍待：mention、session picker、表格 holdback、慢订阅者背压；审批 overlay 移至 M3。
 
 ## 本轮结果（Skills 与 AskUserQuestion）
 

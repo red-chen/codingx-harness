@@ -552,7 +552,7 @@ export const applyPatchTool: ToolDef<typeof schema> = {
     const seen = new Set<string>();
 
     for (const filePatch of filePatches) {
-      const resolved = await resolveWorkspacePath(ctx, filePatch.newPath, { mustExist: !filePatch.created });
+      const resolved = await resolveWorkspacePath(ctx, filePatch.newPath, { mustExist: !filePatch.created, access: 'write' });
       if (seen.has(resolved.absolute)) {
         throw new ToolError('Patch changes the same file more than once: ' + resolved.relative + '.');
       }

@@ -1,6 +1,7 @@
 import { Command, CommanderError } from 'commander';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
+import type { ConfigOverrides } from '../config/index.js';
 import { ConfigError, describeError } from '../util/errors.js';
 import { VERSION } from '../version.js';
 import type { TextSink } from '../ui/plain.js';
@@ -34,6 +35,50 @@ function collectDir(value: string, previous: string[] | undefined): string[] {
   return [...(previous ?? []), value];
 }
 
+const SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
+const APPROVAL_POLICIES = new Set(['on-request', 'never']);
+
+/** Translate the permission-related CLI flags into config overrides. */
+function permissionOverrides(options: Record<string, unknown>): ConfigOverrides {
+  const yolo = options.yolo === true || options.allowDangerouslySkipPermissions === true;
+  const sandbox = typeof options.sandbox === 'string' ? options.sandbox : undefined;
+  const approval = typeof options.askForApproval === 'string' ? options.askForApproval : undefined;
+  const profile = typeof options.permissionProfile === 'string' ? options.permissionProfile : undefined;
+  const fullAuto = options.fullAuto === true;
+  const approveForMe = options.approveForMe === true;
+
+  if (sandbox !== undefined && !SANDBOX_MODES.has(sandbox)) {
+    throw new ConfigError('--sandbox must be read-only, workspace-write or danger-full-access.');
+  }
+  if (approval !== undefined && !APPROVAL_POLICIES.has(approval)) {
+    throw new ConfigError('--ask-for-approval must be on-request or never.');
+  }
+  if (yolo && (sandbox !== undefined || approval !== undefined || profile !== undefined || fullAuto || approveForMe)) {
+    throw new ConfigError('--yolo cannot be combined with other permission flags.');
+  }
+  if (profile !== undefined && sandbox !== undefined) {
+    throw new ConfigError('Use either --permission-profile or --sandbox, not both.');
+  }
+  if (fullAuto && (sandbox !== undefined || profile !== undefined || approval !== undefined)) {
+    throw new ConfigError('--full-auto cannot be combined with --sandbox, --permission-profile or --ask-for-approval.');
+  }
+
+  const overrides: ConfigOverrides = {};
+  if (yolo) overrides.dangerouslyBypass = true;
+  if (sandbox !== undefined) overrides.sandboxMode = sandbox as NonNullable<ConfigOverrides['sandboxMode']>;
+  if (approval !== undefined) {
+    overrides.approvalPolicy = approval as NonNullable<ConfigOverrides['approvalPolicy']>;
+  }
+  if (profile !== undefined) overrides.permissionProfile = profile;
+  if (fullAuto) {
+    overrides.permissionProfile = ':workspace';
+    overrides.approvalPolicy = 'on-request';
+    overrides.approvalsReviewer = 'auto_review';
+  }
+  if (approveForMe) overrides.approvalsReviewer = 'auto_review';
+  return overrides;
+}
+
 /** Parse argv and execute one command. Returns the process exit code. */
 export async function runCli(argv: string[], io: Partial<CliIo> = {}): Promise<number> {
   const stdout = io.stdout ?? process.stdout;
@@ -52,6 +97,16 @@ export async function runCli(argv: string[], io: Partial<CliIo> = {}): Promise<n
       'additional directories that should be writable alongside the primary workspace (repeatable)',
       collectDir,
     )
+    .option(
+      '--yolo',
+      'bypass approvals and the filesystem policy (off by default); hard-deny rules still apply; intended for disposable sandboxes',
+    )
+    .option('--allow-dangerously-skip-permissions', 'alias for --yolo')
+    .option('-s, --sandbox <mode>', 'read-only | workspace-write | danger-full-access')
+    .option('-a, --ask-for-approval <policy>', 'on-request | never')
+    .option('-P, --permission-profile <name>', 'select a named permission profile')
+    .option('--approve-for-me', 'route approval requests through automatic review (not implemented yet)')
+    .option('--full-auto', 'compatibility preset: :workspace + auto_review (auto review not implemented yet)')
     .option('--route <name>', 'select a configured provider route')
     .option('-m, --model <name>', 'override the target model')
     .option('-p, --provider <id>', 'pin a provider inside the selected route')
@@ -70,10 +125,12 @@ export async function runCli(argv: string[], io: Partial<CliIo> = {}): Promise<n
       if (resumeModes > 1) throw new ConfigError('Use only one of --continue, --resume or --fork.');
       const cwd = await resolveCwd(options.cd as string | undefined);
       const addDirs = (options.addDir as string[] | undefined) ?? [];
+      const cli = permissionOverrides(options as Record<string, unknown>);
       const initialPrompt = promptParts?.join(' ');
       exitCode = await runInteractive({
         cwd,
         ...(addDirs.length > 0 ? { addDirs } : {}),
+        cli,
         ...(initialPrompt ? { initialPrompt } : {}),
         json: Boolean(options.json),
         ...(options.continue ? { continueSession: true } : {}),
@@ -111,10 +168,12 @@ export async function runCli(argv: string[], io: Partial<CliIo> = {}): Promise<n
       }
       const cwd = await resolveCwd(options.cd as string | undefined);
       const addDirs = (options.addDir as string[] | undefined) ?? [];
+      const cli = permissionOverrides(options as Record<string, unknown>);
       exitCode = await runExec({
         prompt: promptParts.join(' '),
         cwd,
         ...(addDirs.length > 0 ? { addDirs } : {}),
+        cli,
         json: Boolean(options.json),
         ...(options.route ? { route: options.route as string } : {}),
         ...(options.model ? { model: options.model as string } : {}),

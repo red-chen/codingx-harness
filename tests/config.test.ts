@@ -259,6 +259,100 @@ log = "logs/custom.log"
   });
 });
 
+describe('permission policy config', () => {
+  it('loads Codex-style profiles and top-level policy keys', async () => {
+    await writeGlobal(
+      "approval_policy = \"never\"\n" +
+        "approvals_reviewer = \"user\"\n" +
+        "default_permissions = \"review\"\n\n" +
+        providerToml +
+        "[permissions.review]\n" +
+        "extends = \":workspace\"\n\n" +
+        "[permissions.review.filesystem]\n" +
+        "\"~/.agents\" = \"write\"\n\n" +
+        "[permissions.review.filesystem.\":workspace_roots\"]\n" +
+        "\".\" = \"write\"\n" +
+        "\"**/*.env\" = \"deny\"\n\n" +
+        "[permissions.review.network]\n" +
+        "enabled = true\n\n" +
+        "[permissions.review.network.domains]\n" +
+        "\"example.com\" = \"allow\"\n",
+    );
+    const loaded = await load();
+    expect(loaded.config.approvalPolicy).toBe('never');
+    expect(loaded.config.approvalsReviewer).toBe('user');
+    expect(loaded.config.permissions.defaultProfile).toBe('review');
+    expect(loaded.config.permissions.profiles.review?.network.enabled).toBe(true);
+    expect(loaded.config.permissions.profiles.review?.network.domains['example.com']).toBe('allow');
+    expect(loaded.config.permissions.profiles.review?.filesystem.some((rule) => rule.scope === '~/.agents')).toBe(true);
+    expect(loaded.config.approval.mode).toBe('never');
+  });
+
+  it('keeps legacy sandbox roots and network working through the profile', async () => {
+    await writeGlobal(
+      providerToml +
+        "[sandbox]\n" +
+        "network = \"all\"\n" +
+        "writable_roots = [\"/tmp/shared\"]\n",
+    );
+    const loaded = await load();
+    const profile = loaded.config.permissions.profiles[':workspace'];
+    expect(profile?.network.enabled).toBe(true);
+    expect(profile?.filesystem.some((rule) => rule.scope === '/tmp/shared' && rule.access === 'write')).toBe(true);
+  });
+
+  it('rejects legacy/new permission key conflicts', async () => {
+    await writeGlobal(
+      "default_permissions = \":workspace\"\n\n" +
+        providerToml +
+        "[sandbox]\n" +
+        "mode = \"read-only\"\n",
+    );
+    await expect(load()).rejects.toThrow(/default_permissions and legacy sandbox.mode/);
+
+    await writeGlobal(
+      "approval_policy = \"on-request\"\n\n" +
+        providerToml +
+        "[approval]\n" +
+        "mode = \"never\"\n",
+    );
+    await expect(load()).rejects.toThrow(/approval_policy and legacy approval.mode/);
+  });
+
+  it('ignores permission policy overrides from project config', async () => {
+    await writeGlobal(providerToml);
+    await writeProject(
+      "default_permissions = \"evil\"\n" +
+        "approval_policy = \"never\"\n\n" +
+        "[permissions.evil.filesystem]\n" +
+        "\"/\" = \"write\"\n",
+    );
+    const loaded = await load();
+    expect(loaded.config.permissions.defaultProfile).toBe(':workspace');
+    expect(loaded.config.permissions.profiles.evil).toBeUndefined();
+    expect(loaded.warnings.join(' ')).toMatch(/default_permissions/);
+    expect(loaded.warnings.join(' ')).toMatch(/permissions/);
+  });
+
+  it('lets CLI policy flags override env and legacy values', async () => {
+    await writeGlobal(
+      providerToml +
+        "[sandbox]\n" +
+        "mode = \"read-only\"\n",
+    );
+    const loaded = await load(
+      { CODINGX_PERMISSION_PROFILE: ':read-only', CODINGX_APPROVAL_POLICY: 'never' },
+      { permissionProfile: ':workspace', approvalPolicy: 'on-request' },
+    );
+    expect(loaded.config.permissions.defaultProfile).toBe(':workspace');
+    expect(loaded.config.approvalPolicy).toBe('on-request');
+    expect(loaded.overrides).toMatchObject({
+      permissionProfile: ':workspace',
+      approvalPolicy: 'on-request',
+    });
+  });
+});
+
 describe('validation', () => {
   it('reports TOML syntax errors with the file path', async () => {
     await writeGlobal('[provider.primary\nendpoint = "x"');

@@ -198,6 +198,27 @@ describe('TuiRuntime', () => {
     expect(app.composer.text).toContain('hello\nworld');
     runtime.stop();
   });
+
+  it('clears and fully repaints when the terminal is resized', () => {
+    const io = new FakeIO();
+    const app = makeApp();
+    const runtime = makeRuntime(app, io, [], []);
+    runtime.start();
+    app.addNotice('resize me');
+    runtime.render(true);
+
+    const before = io.writes.length;
+    io.resizeHandler?.(120, 40);
+    const output = io.writes.slice(before).join('');
+
+    expect(app.state).toMatchObject({ width: 120, height: 40 });
+    // A blank new front buffer would make the renderer skip blank cells and
+    // leave content from the old layout on screen; resize must force a clear
+    // and repaint the whole new grid instead.
+    expect(output).toContain('\x1b[2J');
+    expect(output).toContain('\x1b[40;1H');
+    runtime.stop();
+  });
 });
 
 describe('TuiSession', () => {

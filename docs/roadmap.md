@@ -57,19 +57,27 @@
 
 **验收**：连续进行 30 轮以上对话不因上下文超限中断；中途 `Ctrl+C` 后 `--continue` 能接上；两个终端能看到同一会话状态且写租约互斥；80x24 / 120x40 核心流程可用，流式不闪烁，resize 后锚点稳定。当前 30 轮压缩、Ctrl+C 续接、双 CLI 租约、TUI 帧/按键预算均有自动测试；80x24/120x40 + CJK/emoji + resize 有 PTY 冒烟。
 
-## M3 · 安全
+## M3 · 安全（M3.0 设计完成，M3.1 策略内核与 M3.2 审批交互基础版已落地）
 
 目标：可以放心在真实项目上跑。
 
-- 审批策略引擎（规范化动作 + 规则匹配 + 会话记忆）
-- sessiond 本地 IPC 加固（0700 / 0600、peer UID、项目配置禁改 socket、事件二次脱敏）
-- TUI 不可信输出脱敏（ANSI / OSC / 控制字符）与审批弹层防伪造
-- macOS Seatbelt 沙箱；Linux Landlock 沙箱
+- [x] 权限模型设计：Permission profile × Approval policy × Approvals reviewer × sandbox backend，已对照 Codex 0.153.x 校准；见 [permissions.md](permissions.md)
+- [x] Permission profiles：`:read-only` / `:workspace` / `:danger-full-access` + 命名 profile、文件系统规则（S1 已接入文件工具；网络规则待 S6）
+- [x] Approval policy：`on-request` / `never` + 非交互 fail closed（S1）；`approvals_reviewer` 接口保留，自动审查待 S7
+- [x] Action 规范化 + 基础硬拒绝/Shell tokenizer（S1）
+- [ ] exec policy 规则、提权重试、前缀/会话授权（S5）
+- [x] TUI/plain 审批弹层、会话/前缀授权、`/permissions` 列表/切换、profile 状态行与断线/写租约语义（选择器 overlay 与长命令全屏视图待补）
+- [ ] macOS Seatbelt；Linux Landlock + seccomp；网络代理与域名白名单
+- [x] `--yolo` / `--allow-dangerously-skip-permissions` 映射到 `:danger-full-access` + `never` 并告警（S1；OS 降级保护待 S3/S4）
+- [ ] sessiond 本地 IPC 加固（0700 / 0600、peer UID、项目配置禁改 socket、事件二次脱敏）
+- [ ] TUI 不可信输出脱敏（ANSI / OSC / 控制字符）与审批弹层防伪造
 - [x] 环境变量白名单、凭证脱敏（M1 已提前实现）
-- `--full-auto` / `--yolo` 与降级告警
 - [x] 审计视图：`codingx log --session <id>`（M1 已提前实现）
+- [x] `permission.decision` / `approval.requested` / `approval.decided` / `permission.granted` / `profile.changed` 审计；`sandbox.denied` 待 S3
 
-**验收**：默认配置下，模型尝试写 workspace 外文件或访问网络时被拦截，且拦截原因对模型可见。
+**验收**：默认配置下，文件工具越界已被拦截且原因对模型可见；交互审批、会话/前缀授权与非交互 fail closed 已有测试；**网络隔离与 OS 沙箱仍未完成**，因此 M3 验收尚未达成，剩余工作见 [implementation-plan-m3.md](implementation-plan-m3.md)。
+
+**设计**：[permissions.md](permissions.md)。**任务拆分**：[implementation-plan-m3.md](implementation-plan-m3.md)。
 
 ## M4 · 扩展性
 

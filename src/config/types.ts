@@ -1,4 +1,5 @@
 import type { Protocol } from '../providers/types.js';
+import type { ApprovalPolicy, ApprovalsReviewer, PermissionsConfig } from '../policy/types.js';
 
 export type ApprovalMode = 'on-request' | 'never' | 'always-ask';
 export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
@@ -31,6 +32,8 @@ export interface RouteConfig {
 export interface ApprovalConfig {
   mode: ApprovalMode;
   rememberInSession: boolean;
+  /** Legacy always-ask compatibility: ask for every tool call. */
+  alwaysAsk: boolean;
   allow: { exec: string[]; write: string[] };
   deny: { exec: string[]; write: string[] };
 }
@@ -90,6 +93,10 @@ export interface AgentConfig {
 export interface Config {
   model: ModelConfig;
   agent: AgentConfig;
+  /** New-style approval policy (Codex-aligned); legacy [approval].mode is kept for compatibility. */
+  approvalPolicy: ApprovalPolicy;
+  approvalsReviewer: ApprovalsReviewer;
+  permissions: PermissionsConfig;
   providers: Record<string, ProviderConfig>;
   routes: Record<string, RouteConfig>;
   approval: ApprovalConfig;
@@ -105,7 +112,17 @@ export interface ConfigOverrides {
   route?: string;
   model?: string;
   provider?: string;
+  /** Legacy approval.mode override (CODINGX_APPROVAL / CLI compatibility). */
   approvalMode?: ApprovalMode;
+  /** New-style on-request / never override. */
+  approvalPolicy?: ApprovalPolicy;
+  approvalsReviewer?: ApprovalsReviewer;
+  /** Named permission profile (or a built-in ":name"). */
+  permissionProfile?: string;
+  /** Legacy sandbox mode shorthand; maps to a built-in profile. */
+  sandboxMode?: SandboxMode;
+  /** --yolo: danger-full-access + never. */
+  dangerouslyBypass?: boolean;
 }
 
 export interface ConfigFilePaths {

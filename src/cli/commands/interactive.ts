@@ -7,6 +7,9 @@ import {
   restoreReadTracker,
   type TurnResult,
 } from '../../agent/index.js';
+import type { ConfigOverrides } from '../../config/index.js';
+import { SessionGrants, approvalPrefixFor } from '../../policy/index.js';
+import type { ApprovalDecision, ApprovalRequest } from '../../policy/types.js';
 import type { Message, ReasoningEffort } from '../../providers/types.js';
 import {
   type SessionHandle,
@@ -14,7 +17,8 @@ import {
   type SessionSummary,
 } from '../../session/index.js';
 import { ReadFileTracker, type PlanStep } from '../../tools/index.js';
-import { SessionError } from '../../util/errors.js';
+import { abortError, SessionError } from '../../util/errors.js';
+import { generateRequestId } from '../../util/ids.js';
 import { PlainRenderer, type TextSink } from '../../ui/plain.js';
 import { VERSION } from '../../version.js';
 import { bootstrap, type CliApp } from '../bootstrap.js';
@@ -26,6 +30,10 @@ export interface InteractiveCommandOptions {
   cwd: string;
   /** Extra writable directories alongside cwd (from --add-dir). */
   addDirs?: readonly string[];
+  /** Bypass all application-level permission checks (--yolo). */
+  yolo?: boolean;
+  /** Permission/config overrides from CLI flags. */
+  cli?: ConfigOverrides;
   initialPrompt?: string;
   json?: boolean;
   route?: string;
@@ -161,10 +169,12 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
       cwd: options.cwd,
       env,
       ...(options.addDirs && options.addDirs.length > 0 ? { addDirs: options.addDirs } : {}),
+      ...(options.yolo ? { yolo: true } : {}),
       cli: {
         ...(options.route ? { route: options.route } : {}),
         ...(options.model ? { model: options.model } : {}),
         ...(options.provider ? { provider: options.provider } : {}),
+        ...(options.cli ?? {}),
       },
     });
     for (const warning of app.warnings) stderr.write('warning: ' + warning + '\n');
@@ -202,7 +212,10 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
     }
 
     if (!session) throw new SessionError('Failed to open a session.');
+    if (!app) throw new SessionError('Failed to initialize the CLI.');
 
+    const currentSession = session;
+    const currentApp = app;
     const readTracker = new ReadFileTracker();
     let initialMessages: readonly Message[] | undefined;
     let rebuiltPlan: readonly PlanStep[] | undefined;
@@ -246,11 +259,127 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
     }
     if (resumedModel && !options.model) app.router.setModel(resumedModel);
 
+    const grants = new SessionGrants(currentApp.cwd);
+    const readApprovalLine = (signal: AbortSignal | undefined): Promise<string | null> => {
+      if (signal?.aborted === true) return Promise.reject(abortError('Approval cancelled.'));
+      return new Promise<string | null>((resolve, reject) => {
+        let settled = false;
+        const finish = (): void => {
+          if (settled) return;
+          settled = true;
+          signal?.removeEventListener('abort', onAbort);
+        };
+        const onAbort = (): void => {
+          finish();
+          reject(abortError('Approval cancelled.'));
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+        void nextLine().then(
+          (value) => {
+            finish();
+            resolve(value);
+          },
+          (error) => {
+            finish();
+            reject(error);
+          },
+        );
+      });
+    };
+    const approve = async (
+      request: ApprovalRequest,
+      signal?: AbortSignal,
+    ): Promise<ApprovalDecision> => {
+      if (grants.permits(request.action)) return { decision: 'allow', scope: 'once' };
+      const requestId = generateRequestId();
+      const target =
+        request.action.command ?? request.action.path ?? request.action.tool;
+      await currentSession.append({
+        type: 'approval.requested',
+        requestId,
+        ...(request.turnId === undefined ? {} : { turnId: request.turnId }),
+        ...(request.callId === undefined ? {} : { callId: request.callId }),
+        tool: request.tool,
+        action: request.action,
+        risk: request.risk,
+        ...(request.reason === undefined ? {} : { reason: request.reason }),
+      });
+      stderr.write(
+        '\n[approval] ' + request.tool + ': ' + target + '\n' +
+          '  risk: ' + request.risk + '\n' +
+          (request.reason === undefined ? '' : '  reason: ' + request.reason + '\n') +
+          '  [a]llow once  [s]ession  [p]refix  [d]eny  [r]eason > ',
+      );
+      let raw: string | null;
+      try {
+        raw = await readApprovalLine(signal);
+      } catch (error) {
+        await currentSession.append({
+          type: 'approval.decided',
+          requestId,
+          decision: 'deny',
+          reason: 'aborted',
+          decidedBy: 'user',
+        });
+        throw error;
+      }
+      let decision: ApprovalDecision = { decision: 'deny' };
+      const choice = raw?.trim().toLowerCase() ?? '';
+      const canPrefix =
+        request.action.kind === 'exec' &&
+        approvalPrefixFor(request.action, request.action.cwd ?? currentApp.cwd) !== undefined;
+      if (choice === 'a' || choice === 'y' || choice === 'yes') {
+        decision = { decision: 'allow', scope: 'once' };
+      } else if (choice === 's') {
+        decision = { decision: 'allow', scope: 'session' };
+      } else if (choice === 'p' && canPrefix) {
+        decision = { decision: 'allow', scope: 'prefix' };
+      } else if (choice === 'r') {
+        stderr.write('  reason > ');
+        try {
+          const reasonLine = await readApprovalLine(signal);
+          decision = { decision: 'deny', reason: reasonLine?.trim() || 'denied by user' };
+        } catch (error) {
+          await currentSession.append({
+            type: 'approval.decided',
+            requestId,
+            decision: 'deny',
+            reason: 'aborted',
+            decidedBy: 'user',
+          });
+          throw error;
+        }
+      }
+      if (decision.decision === 'allow' && decision.scope !== 'once') {
+        grants.grant(request.action, decision.scope);
+      }
+      await currentSession.append({
+        type: 'approval.decided',
+        requestId,
+        ...(request.turnId === undefined ? {} : { turnId: request.turnId }),
+        ...(request.callId === undefined ? {} : { callId: request.callId }),
+        decision: decision.decision,
+        ...(decision.decision === 'allow' ? { scope: decision.scope } : {}),
+        ...(decision.decision === 'deny' && decision.reason !== undefined ? { reason: decision.reason } : {}),
+        decidedBy: 'user',
+      });
+      if (decision.decision === 'allow' && decision.scope !== 'once') {
+        await currentSession.append({
+          type: 'permission.granted',
+          requestId,
+          scope: decision.scope,
+          action: request.action,
+        });
+      }
+      return decision;
+    };
+
     const loop = createLoop(app, session, (event) => renderer.render(event), {
       readTracker,
       ...(initialMessages ? { initialMessages } : {}),
       ...(rebuiltPlan ? { initialPlan: rebuiltPlan } : {}),
       ...(resumedEffort ? { reasoningEffort: resumedEffort } : {}),
+      ...(json ? {} : { approve }),
     });
     renderer.render({
       type: 'session.info',
@@ -325,6 +454,7 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
       if (line === '/clear') {
         try {
           await session.clear();
+          grants.clear();
           loop.clearHistory();
           commandOut.write('Session cleared: conversation and rollout history were reset.\n');
         } catch (error) {

@@ -145,6 +145,16 @@ describe('buildSystemPrompt', () => {
     expect(prompt).not.toContain('File tools are confined to the workspace');
   });
 
+  it('describes unrestricted access when --yolo is enabled', () => {
+    const prompt = buildSystemPrompt(snapshot(), {
+      additionalDirs: ['/work/shared'],
+      yolo: true,
+    });
+    expect(prompt).toContain('Permission checks are disabled for this session (--yolo)');
+    expect(prompt).not.toContain('File tools are confined to the workspace');
+    expect(prompt).not.toContain('additional writable directories');
+  });
+
   it('renders missing optional values explicitly and deterministically', () => {
     const first = buildSystemPrompt(snapshot());
     const second = buildSystemPrompt(snapshot());

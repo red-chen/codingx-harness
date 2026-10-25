@@ -10,6 +10,7 @@ import {
   type AgentModelClient,
   type UiEvent,
 } from '../src/agent/index.js';
+import type { PolicyRuntime } from '../src/policy/types.js';
 import type { Message, ModelEvent, ModelRequest, StopReason } from '../src/providers/types.js';
 import type { AppendEventInput, RolloutEvent, SessionHandle } from '../src/session/types.js';
 import type { RouterSelection } from '../src/routing/router.js';
@@ -250,6 +251,58 @@ describe('TurnState', () => {
   it('rejects impossible transitions from the start', () => {
     const state = new TurnState('turn-2');
     expect(() => state.transition('executing')).toThrow(/Invalid turn transition/);
+  });
+});
+
+describe('AgentLoop approvals', () => {
+  it('marks awaiting_approval, correlates the request, and records the decision', async () => {
+    const session = new RecordingSession();
+    const ui: UiEvent[] = [];
+    const requests: Array<{ tool: string; turnId?: string; callId?: string }> = [];
+    const policy: PolicyRuntime = {
+      profileName: ':workspace',
+      approvalPolicy: 'on-request',
+      reviewer: 'user',
+      yolo: false,
+      cwd,
+      additionalDirs: [],
+      readRoots: [],
+      writeRoots: [],
+      rootsFor: () => [],
+      isPathDenied: () => false,
+      evaluate: async () => ({
+        verdict: 'ask',
+        code: 'APPROVAL_REQUIRED',
+        reason: 'needs approval',
+        action: { kind: 'tool', tool: 'echo' },
+        risk: 'low',
+      }),
+    };
+    const client = new ScriptedClient([
+      toolStep([{ id: 'call-1', name: 'echo', input: { text: 'hi' } }]),
+      textStep('done'),
+    ]);
+    const loop = createLoop(client, session, ui, {
+      policy,
+      approve: async (request) => {
+        requests.push({ tool: request.tool, ...(request.turnId ? { turnId: request.turnId } : {}), ...(request.callId ? { callId: request.callId } : {}) });
+        return { decision: 'allow', scope: 'once' };
+      },
+    });
+
+    const result = await loop.runTurn('run the tool');
+    expect(result.status).toBe('done');
+    expect(requests).toEqual([{ tool: 'echo', turnId: expect.any(String), callId: 'call-1' }]);
+
+    const statuses = session.events
+      .filter((event) => event.type === 'turn.status')
+      .map((event) => event.status);
+    expect(statuses).toContain('awaiting_approval');
+    expect(statuses).toContain('executing');
+    expect(statuses.lastIndexOf('executing')).toBeGreaterThan(statuses.indexOf('awaiting_approval'));
+
+    const toolResult = session.events.find((event) => event.type === 'tool.result');
+    expect(toolResult?.meta).toMatchObject({ policy: { verdict: 'allow', profile: ':workspace' } });
   });
 });
 

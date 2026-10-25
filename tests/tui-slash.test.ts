@@ -75,7 +75,7 @@ describe('slash completion', () => {
 
     app.clearComposer();
     type(app, '/');
-    expect(app.slashMenu).toHaveLength(7);
+    expect(app.slashMenu).toHaveLength(8);
     expect(app.slashSelected).toBe(0);
     app.handleKey(key('down'));
     expect(app.slashSelected).toBe(1);
@@ -90,7 +90,7 @@ describe('slash completion', () => {
   it('dismisses with Escape and reopens when editing continues', () => {
     const app = makeApp();
     type(app, '/');
-    expect(app.slashMenu).toHaveLength(7);
+    expect(app.slashMenu).toHaveLength(8);
     app.handleKey(key('escape'));
     expect(app.slashMenu).toEqual([]);
     expect(app.state.slashDismissed).toBe(true);
@@ -111,7 +111,7 @@ describe('slash completion', () => {
   });
 
   it('handles a bare slash and empty query matching all commands', () => {
-    expect(slashMatches('/')).toHaveLength(7);
+    expect(slashMatches('/')).toHaveLength(8);
     expect(slashMatches('/x')).toEqual([]);
     expect(slashMatches('/help now')).toEqual([]);
     expect(slashMatches('hello')).toEqual([]);

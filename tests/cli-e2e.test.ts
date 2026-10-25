@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
 import type { ServerResponse } from 'node:http';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
+import { PassThrough } from 'node:stream';
 import path from 'node:path';
 import { runExec } from '../src/cli/commands/exec.js';
 import { runCli } from '../src/cli/index.js';
@@ -217,7 +218,7 @@ describe('codingx exec end-to-end', () => {
     expect(stderr.value).toContain('• EditFile: src/util.ts');
     expect(stderr.value).toContain('• Shell: grep -q');
     expect(stderr.value).toContain('[tokens:');
-    expect(stderr.value).toContain('warning: M1 has no approval prompts');
+    expect(stderr.value).toContain('warning: M3.1 enforces the permission profile');
 
     expect(server.bodies).toHaveLength(4);
     const firstBody = server.bodies[0];
@@ -334,6 +335,248 @@ describe('codingx exec end-to-end', () => {
 
     expect(code).not.toBe(0);
     expect(stderr.value).toContain('Additional directory does not exist');
+    expect(server.bodies).toHaveLength(0);
+  });
+
+  it('bypasses workspace confinement with --yolo and warns about it', async () => {
+    const outside = await mkdtemp(path.join(os.tmpdir(), 'codingx-yolo-'));
+    roots.push(outside);
+    const outsideFile = path.join(outside, 'note.txt');
+    const server = await startServer([
+      toolResponse('toolu_yolo', 'WriteFile', { path: outsideFile, content: 'written outside\n' }),
+      textResponse('Wrote the note outside the workspace.'),
+    ]);
+    const { home, workspace } = await setupWorkspace(server.url);
+
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+    const code = await runCli(
+      ['--cd', workspace, '--yolo', 'exec', 'write a note outside the workspace'],
+      { stdout, stderr, env: envFor(home, workspace) },
+    );
+
+    expect(code).toBe(0);
+    expect(await readFile(outsideFile, 'utf8')).toBe('written outside\n');
+    expect(stdout.value).toBe('Wrote the note outside the workspace.\n');
+    expect(stderr.value).toContain('warning: --yolo: all permission checks are bypassed');
+    expect(stderr.value).not.toContain('M3.1 enforces the permission profile');
+
+    const systemText = (server.bodies[0]?.system as Array<{ text?: string }>)
+      .map((block) => block.text ?? '')
+      .join('');
+    expect(systemText).toContain('Permission checks are disabled for this session (--yolo)');
+    expect(systemText).not.toContain('File tools are confined to the workspace');
+  });
+
+  it('accepts --allow-dangerously-skip-permissions as an alias for --yolo', async () => {
+    const outside = await mkdtemp(path.join(os.tmpdir(), 'codingx-yolo-alias-'));
+    roots.push(outside);
+    const outsideFile = path.join(outside, 'alias.txt');
+    const server = await startServer([
+      toolResponse('toolu_alias', 'WriteFile', { path: outsideFile, content: 'alias\n' }),
+      textResponse('Wrote the alias note.'),
+    ]);
+    const { home, workspace } = await setupWorkspace(server.url);
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+
+    const code = await runCli(
+      ['--cd', workspace, '--allow-dangerously-skip-permissions', 'exec', 'write via the alias'],
+      { stdout, stderr, env: envFor(home, workspace) },
+    );
+
+    expect(code).toBe(0);
+    expect(await readFile(outsideFile, 'utf8')).toBe('alias\n');
+    expect(stderr.value).toContain('warning: --yolo: all permission checks are bypassed');
+  });
+
+  it('passes --yolo through the plain interactive mode', async () => {
+    const outside = await mkdtemp(path.join(os.tmpdir(), 'codingx-yolo-interactive-'));
+    roots.push(outside);
+    const outsideFile = path.join(outside, 'interactive.txt');
+    const server = await startServer([
+      toolResponse('toolu_interactive_yolo', 'WriteFile', { path: outsideFile, content: 'interactive\n' }),
+      textResponse('Wrote the interactive note.'),
+    ]);
+    const { home, workspace } = await setupWorkspace(server.url);
+    const stdin = new PassThrough();
+    stdin.end('write a note outside\n/quit\n');
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+
+    const code = await runCli(['--cd', workspace, '--yolo'], {
+      stdin,
+      stdout,
+      stderr,
+      env: envFor(home, workspace),
+    });
+
+    expect(code).toBe(0);
+    expect(await readFile(outsideFile, 'utf8')).toBe('interactive\n');
+    expect(stdout.value).toContain('Wrote the interactive note.');
+    expect(stderr.value).toContain('warning: --yolo: all permission checks are bypassed');
+  });
+
+  it('fails closed for workspace-outside writes without an interactive approver', async () => {
+    const responses: string[] = [];
+    const server = await startServer(responses);
+    const { root, home, workspace } = await setupWorkspace(server.url);
+    const tmpDir = path.join(root, 'tmp');
+    const outside = path.join(root, 'outside');
+    await mkdir(tmpDir, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    const target = path.join(outside, 'note.txt');
+    responses.push(
+      toolResponse('toolu_policy_denied', 'WriteFile', { path: target, content: 'outside\n' }),
+      textResponse('I could not write outside the workspace.'),
+    );
+
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+    const code = await runCli(['--cd', workspace, 'exec', 'write outside the workspace'], {
+      stdout,
+      stderr,
+      env: { ...envFor(home, workspace), TMPDIR: tmpDir },
+    });
+
+    expect(code).toBe(0);
+    await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(stdout.value).toContain('I could not write outside the workspace.');
+    expect(stderr.value).toContain('Approval required');
+    expect(stderr.value).toContain('Permission profile ":workspace"');
+
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const summaries = await store.listSessions();
+    const sessionId = summaries[0]?.id;
+    if (!sessionId) throw new Error('missing session id');
+    const events = await store.replaySession(sessionId);
+    const decision = events.find((event) => event.type === 'permission.decision');
+    expect(decision).toMatchObject({
+      name: 'WriteFile',
+      verdict: 'deny',
+      code: 'APPROVAL_REQUIRED',
+      profile: ':workspace',
+      approvalPolicy: 'on-request',
+    });
+    const result = events.find((event) => event.type === 'tool.result');
+    expect(result).toMatchObject({ isError: true });
+    expect((result?.meta as Record<string, unknown> | undefined)?.code).toBe('APPROVAL_REQUIRED');
+  });
+
+  it('honors --ask-for-approval never for outside writes', async () => {
+    const responses: string[] = [];
+    const server = await startServer(responses);
+    const { root, home, workspace } = await setupWorkspace(server.url);
+    const tmpDir = path.join(root, 'tmp');
+    const outside = path.join(root, 'outside-never');
+    await mkdir(tmpDir, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    const target = path.join(outside, 'note.txt');
+    responses.push(
+      toolResponse('toolu_never', 'WriteFile', { path: target, content: 'outside\n' }),
+      textResponse('Denied by the never policy.'),
+    );
+
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+    const code = await runCli(
+      ['--cd', workspace, '--ask-for-approval', 'never', 'exec', 'write outside the workspace'],
+      { stdout, stderr, env: { ...envFor(home, workspace), TMPDIR: tmpDir } },
+    );
+
+    expect(code).toBe(0);
+    await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(stderr.value).toContain('Permission denied');
+    expect(stderr.value).not.toContain('Approval required');
+
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const summaries = await store.listSessions();
+    const sessionId = summaries[0]?.id;
+    if (!sessionId) throw new Error('missing session id');
+    const events = await store.replaySession(sessionId);
+    expect(events.find((event) => event.type === 'permission.decision')).toMatchObject({
+      verdict: 'deny',
+      code: 'PERMISSION_DENIED',
+      approvalPolicy: 'never',
+    });
+  });
+
+  it('honors --sandbox read-only for in-workspace writes', async () => {
+    const server = await startServer([
+      toolResponse('toolu_read_only', 'WriteFile', { path: 'blocked.txt', content: 'blocked\n' }),
+      textResponse('The write was blocked.'),
+    ]);
+    const { home, workspace } = await setupWorkspace(server.url);
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+
+    const code = await runCli(['--cd', workspace, '--sandbox', 'read-only', 'exec', 'write a file'], {
+      stdout,
+      stderr,
+      env: envFor(home, workspace),
+    });
+
+    expect(code).toBe(0);
+    await expect(stat(path.join(workspace, 'blocked.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(stderr.value).toContain('Approval required');
+    expect(stderr.value).toContain('but not writing');
+
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const summaries = await store.listSessions();
+    const sessionId = summaries[0]?.id;
+    if (!sessionId) throw new Error('missing session id');
+    const events = await store.replaySession(sessionId);
+    expect(events.find((event) => event.type === 'permission.decision')).toMatchObject({
+      code: 'APPROVAL_REQUIRED',
+      profile: ':read-only',
+    });
+  });
+
+  it('allows a named profile to grant an extra write root', async () => {
+    const responses: string[] = [];
+    const server = await startServer(responses);
+    const { root, home, workspace } = await setupWorkspace(server.url);
+    const extra = path.join(root, 'extra');
+    await mkdir(extra, { recursive: true });
+    const target = path.join(extra, 'note.txt');
+    await appendFile(
+      path.join(home, 'config.toml'),
+      '[permissions.review.filesystem]\n' + JSON.stringify(extra) + ' = "write"\n',
+      'utf8',
+    );
+    responses.push(
+      toolResponse('toolu_named_profile', 'WriteFile', { path: target, content: 'custom root\n' }),
+      textResponse('Wrote through the custom profile.'),
+    );
+
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+    const code = await runCli(
+      ['--cd', workspace, '--permission-profile', 'review', 'exec', 'write through the custom profile'],
+      { stdout, stderr, env: envFor(home, workspace) },
+    );
+
+    expect(code).toBe(0);
+    expect(await readFile(target, 'utf8')).toBe('custom root\n');
+    expect(stdout.value).toContain('Wrote through the custom profile.');
+    expect(stderr.value).toContain('Permission profile "review"');
+  });
+
+  it('rejects --add-dir when the selected profile does not allow extra roots', async () => {
+    const server = await startServer([]);
+    const { root, home, workspace } = await setupWorkspace(server.url);
+    const extra = path.join(root, 'extra');
+    await mkdir(extra, { recursive: true });
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+
+    const code = await runCli(
+      ['--cd', workspace, '--sandbox', 'read-only', '--add-dir', extra, 'exec', 'hello'],
+      { stdout, stderr, env: envFor(home, workspace) },
+    );
+
+    expect(code).toBe(2);
+    expect(stderr.value).toContain('is not allowed by permission profile ":read-only"');
     expect(server.bodies).toHaveLength(0);
   });
 
@@ -510,6 +753,12 @@ describe('CLI parsing', () => {
     expect(helpOut.value).toContain('Usage: codingx');
     expect(helpOut.value).toContain('exec');
     expect(helpOut.value).toContain('--add-dir');
+    expect(helpOut.value).toContain('--yolo');
+    expect(helpOut.value).toContain('--allow-dangerously-skip-permissions');
+    expect(helpOut.value).toContain('--sandbox');
+    expect(helpOut.value).toContain('--ask-for-approval');
+    expect(helpOut.value).toContain('--permission-profile');
+    expect(helpOut.value).toContain('--full-auto');
   });
 
   it('returns 2 for a missing prompt and a bad working directory', async () => {

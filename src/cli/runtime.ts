@@ -1,4 +1,5 @@
 import { AgentLoop, type UiEvent } from '../agent/index.js';
+import type { ApprovalHandler } from '../policy/types.js';
 import type { Message, ReasoningEffort } from '../providers/types.js';
 import type { SessionHandle } from '../session/index.js';
 import type { AskHandler, PlanStep, ReadFileTracker } from '../tools/index.js';
@@ -14,6 +15,8 @@ export interface CreateLoopOptions {
   reasoningEffort?: ReasoningEffort;
   /** Present only when the caller can collect answers mid-turn (TUI). */
   ask?: AskHandler;
+  /** Present only when the caller can collect approval decisions mid-turn (TUI). */
+  approve?: ApprovalHandler;
 }
 
 /** Build an AgentLoop with the resolved app config (shared by exec and interactive). */
@@ -39,8 +42,11 @@ export function createLoop(
     shell: { env: app.shellEnv, timeoutMs: DEFAULT_SHELL_TIMEOUT_MS },
     skills: app.skills,
     ...(app.additionalDirs.length > 0 ? { additionalDirs: app.additionalDirs } : {}),
+    ...(app.yolo ? { yolo: true } : {}),
+    policy: app.policy,
     ...(options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }),
     ...(options.ask === undefined ? {} : { ask: options.ask }),
+    ...(options.approve === undefined ? {} : { approve: options.approve }),
     ...(options.readTracker ? { readTracker: options.readTracker } : {}),
     ...(options.initialMessages ? { initialMessages: options.initialMessages } : {}),
     ...(options.initialPlan ? { initialPlan: options.initialPlan } : {}),

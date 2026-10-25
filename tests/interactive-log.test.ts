@@ -76,6 +76,39 @@ function textResponse(text: string): string {
   );
 }
 
+function toolResponse(id: string, name: string, input: unknown): string {
+  return (
+    sse('message_start', {
+      type: 'message_start',
+      message: {
+        id: 'msg_tool',
+        type: 'message',
+        role: 'assistant',
+        model: 'test-model',
+        content: [],
+        usage: { input_tokens: 4, output_tokens: 0 },
+      },
+    }) +
+    sse('content_block_start', {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'tool_use', id, name, input: {} },
+    }) +
+    sse('content_block_delta', {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+    }) +
+    sse('content_block_stop', { type: 'content_block_stop', index: 0 }) +
+    sse('message_delta', {
+      type: 'message_delta',
+      delta: { stop_reason: 'tool_use' },
+      usage: { output_tokens: 2 },
+    }) +
+    sse('message_stop', { type: 'message_stop' })
+  );
+}
+
 async function startServer(responses: string[]): Promise<FakeServer> {
   let requestCount = 0;
   const bodies: Array<Record<string, unknown>> = [];
@@ -207,6 +240,53 @@ describe('interactive mode', () => {
 
     const reopened = await store.attachSession(id, 'write');
     await reopened.close();
+  });
+
+  it('prompts for approval in plain interactive mode and honors allow-once', async () => {
+    const responses: string[] = [];
+    const server = await startServer(responses);
+    const { home, workspace } = await setup(server.url);
+    const root = path.dirname(workspace);
+    const tmpDir = path.join(root, 'tmp');
+    await mkdir(tmpDir, { recursive: true });
+    const target = path.join(root, 'plain-outside.txt');
+    responses.push(
+      toolResponse('toolu_plain_approval', 'WriteFile', { path: target, content: 'approved in plain mode\n' }),
+      textResponse('Wrote it.'),
+    );
+    const input = new PassThrough();
+    input.end('write outside the workspace\na\n/quit\n');
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+
+    const code = await runInteractive({
+      cwd: workspace,
+      env: { ...envFor(home, workspace), TMPDIR: tmpDir },
+      stdin: input,
+      stdout,
+      stderr,
+    });
+
+    expect(code).toBe(0);
+    expect(await readFile(target, 'utf8')).toBe('approved in plain mode\n');
+    expect(stdout.value).toContain('Wrote it.');
+    expect(stderr.value).toContain('[approval] WriteFile: ');
+    expect(stderr.value).toContain('plain-outside.txt');
+    expect(stderr.value).toContain('[a]llow once');
+
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const sessions = await store.listSessions();
+    const sessionId = sessions[0]?.id;
+    if (!sessionId) throw new Error('missing session');
+    const events = await store.replaySession(sessionId);
+    expect(events.find((event) => event.type === 'approval.requested')).toMatchObject({
+      tool: 'WriteFile',
+    });
+    expect(events.find((event) => event.type === 'approval.decided')).toMatchObject({
+      decision: 'allow',
+      scope: 'once',
+      decidedBy: 'user',
+    });
   });
 
   it('supports /help, /session and /quit without calling the provider', async () => {

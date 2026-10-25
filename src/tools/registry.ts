@@ -1,5 +1,8 @@
+import path from 'node:path';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
+import { approvalRequestFor } from '../policy/index.js';
+import type { PolicyDecision } from '../policy/types.js';
 import type { ToolSchema } from '../providers/types.js';
 import { abortError, isAbortError, ToolError } from '../util/errors.js';
 import { truncateMiddle } from '../util/tokens.js';
@@ -12,6 +15,42 @@ function toInputSchema(schema: z.ZodTypeAny): Record<string, unknown> {
   }) as Record<string, unknown>;
   const { $schema: _schema, definitions: _definitions, ...rest } = generated;
   return rest;
+}
+
+function policyMeta(decision: PolicyDecision, ctx: ToolContext): Record<string, unknown> {
+  return {
+    verdict: decision.verdict,
+    ...(decision.code === undefined ? {} : { code: decision.code }),
+    ...(decision.reason === undefined ? {} : { reason: decision.reason }),
+    ...(decision.rule === undefined ? {} : { rule: decision.rule }),
+    risk: decision.risk,
+    profile: ctx.policy?.profileName ?? 'none',
+    approvalPolicy: ctx.policy?.approvalPolicy ?? 'none',
+    action: {
+      kind: decision.action.kind,
+      tool: decision.action.tool,
+      ...(decision.action.path === undefined ? {} : { path: decision.action.path }),
+      ...(decision.action.command === undefined ? {} : { command: decision.action.command }),
+      ...(decision.action.cwd === undefined ? {} : { cwd: decision.action.cwd }),
+      ...(decision.action.network === undefined ? {} : { network: decision.action.network }),
+    },
+  };
+}
+
+function deniedMessage(tool: string, decision: PolicyDecision): string {
+  const label =
+    decision.code === 'POLICY_FORBIDDEN'
+      ? 'Blocked by policy'
+      : decision.code === 'APPROVAL_REQUIRED'
+        ? 'Approval required'
+        : 'Permission denied';
+  const hint =
+    decision.code === 'POLICY_FORBIDDEN'
+      ? ' This action is on the hard deny list and cannot be approved.'
+      : decision.code === 'APPROVAL_REQUIRED'
+        ? ' Run interactively to approve it, widen the permission profile, or use --yolo only in a disposable environment.'
+        : ' Use --add-dir, a wider permission profile, or --yolo only in a disposable environment.';
+  return label + ' for tool "' + tool + '": ' + (decision.reason ?? 'the permission policy rejected this action.') + hint;
 }
 
 function formatIssues(error: z.ZodError): string {
@@ -90,9 +129,66 @@ export class ToolRegistry {
       };
     }
 
+    let decision: PolicyDecision | undefined;
+    let executeCtx = ctx;
+    if (ctx.policy) {
+      decision = await ctx.policy.evaluate(name, parsed.data);
+      if (decision.verdict === 'ask') {
+        if (ctx.approve === undefined) {
+          decision = {
+            ...decision,
+            verdict: 'deny',
+            code: 'APPROVAL_REQUIRED',
+            reason:
+              (decision.reason ?? 'This action needs approval.') +
+              ' No interactive approver is available in this run.',
+          };
+        } else {
+          try {
+            const answer = await ctx.approve(approvalRequestFor(decision), ctx.signal);
+            if (answer.decision === 'allow') {
+              decision = { ...decision, verdict: 'allow', code: undefined, rule: 'approval.' + answer.scope };
+              const root = decision.action.path;
+              if (root !== undefined) {
+                const extra = new Set(ctx.additionalDirs ?? []);
+                extra.add(path.dirname(root));
+                extra.add(root);
+                executeCtx = { ...ctx, additionalDirs: [...extra] };
+              }
+            } else {
+              decision = {
+                ...decision,
+                verdict: 'deny',
+                code: 'PERMISSION_DENIED',
+                reason: answer.reason ?? 'The user denied this action.',
+              };
+            }
+          } catch (error) {
+            if (isAbortError(error) || ctx.signal.aborted) throw error;
+            decision = {
+              ...decision,
+              verdict: 'deny',
+              code: 'PERMISSION_DENIED',
+              reason: 'Approval failed: ' + (error instanceof Error ? error.message : String(error)),
+            };
+          }
+        }
+      }
+      if (decision.verdict !== 'allow') {
+        return {
+          content: deniedMessage(name, decision),
+          isError: true,
+          meta: { code: decision.code ?? 'PERMISSION_DENIED', policy: policyMeta(decision, ctx) },
+        };
+      }
+    }
+
     try {
-      const result = await definition.execute(parsed.data, ctx);
-      return this.bound(result, ctx);
+      const result = await definition.execute(parsed.data, executeCtx);
+      const bounded = this.bound(result, ctx);
+      return decision === undefined
+        ? bounded
+        : { ...bounded, meta: { ...(bounded.meta ?? {}), policy: policyMeta(decision, ctx) } };
     } catch (error) {
       if (isAbortError(error)) throw error;
       if (ctx.signal.aborted) throw abortError('Tool "' + name + '" aborted.');

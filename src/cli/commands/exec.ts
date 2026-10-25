@@ -1,4 +1,5 @@
 import type { TurnResult } from '../../agent/index.js';
+import type { ConfigOverrides } from '../../config/index.js';
 import { ConfigError } from '../../util/errors.js';
 import { PlainRenderer, type TextSink } from '../../ui/plain.js';
 import { VERSION } from '../../version.js';
@@ -10,6 +11,10 @@ export interface ExecCommandOptions {
   cwd: string;
   /** Extra writable directories alongside cwd. */
   addDirs?: readonly string[];
+  /** Bypass all application-level permission checks (--yolo). */
+  yolo?: boolean;
+  /** Permission/config overrides from CLI flags. */
+  cli?: ConfigOverrides;
   json?: boolean;
   route?: string;
   model?: string;
@@ -39,10 +44,12 @@ export async function runExec(options: ExecCommandOptions): Promise<number> {
     cwd: options.cwd,
     env,
     ...(options.addDirs && options.addDirs.length > 0 ? { addDirs: options.addDirs } : {}),
+    ...(options.yolo ? { yolo: true } : {}),
     cli: {
       ...(options.route ? { route: options.route } : {}),
       ...(options.model ? { model: options.model } : {}),
       ...(options.provider ? { provider: options.provider } : {}),
+      ...(options.cli ?? {}),
     },
   });
 

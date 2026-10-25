@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import type { ApprovalHandler, PolicyRuntime } from '../policy/types.js';
 import type { ReadFileTracker } from './read-tracker.js';
 
 export interface ShellToolContext {
@@ -69,6 +70,12 @@ export interface ToolContext {
   cwd: string;
   /** Extra writable roots from --add-dir (canonical absolute paths). */
   additionalDirs?: readonly string[];
+  /** True when --yolo disabled every workspace path check. */
+  yolo?: boolean;
+  /** Permission policy for this invocation; absent in direct tool unit tests. */
+  policy?: PolicyRuntime;
+  /** Present only when the caller can collect approval decisions (S2 TUI). */
+  approve?: ApprovalHandler;
   signal: AbortSignal;
   readTracker: ReadFileTracker;
   maxOutputChars: number;

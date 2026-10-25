@@ -24,7 +24,7 @@ export const editFileTool: ToolDef<typeof schema> = {
   parallelSafe: false,
   approval: 'on-write',
   async execute(input, ctx) {
-    const resolved = await resolveWorkspacePath(ctx, input.path, { mustExist: true });
+    const resolved = await resolveWorkspacePath(ctx, input.path, { mustExist: true, access: 'write' });
     const rel = resolved.relative;
 
     if (!ctx.readTracker.hasRead(resolved.absolute)) {

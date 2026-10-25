@@ -3,6 +3,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import ignore from 'ignore';
 import { ToolError } from '../util/errors.js';
+import { canonicalizePath } from '../util/paths.js';
 import { resolveWorkspacePath } from './paths.js';
 import type { ToolDef } from './types.js';
 
@@ -59,7 +60,7 @@ export const listDirTool: ToolDef<typeof schema> = {
   async execute(input, ctx) {
     const requested = input.path ?? '.';
     const depth = input.depth ?? 2;
-    const resolved = await resolveWorkspacePath(ctx, requested, { mustExist: true });
+    const resolved = await resolveWorkspacePath(ctx, requested, { mustExist: true, access: 'read' });
     const info = await stat(resolved.absolute);
     if (!info.isDirectory()) throw new ToolError('Not a directory: ' + requested + '. Use ReadFile for files.');
 
@@ -95,6 +96,7 @@ export const listDirTool: ToolDef<typeof schema> = {
       for (const entry of entries) {
         if (truncated) return;
         const absolute = path.join(directory, entry.name);
+        if (ctx.policy?.isPathDenied(await canonicalizePath(absolute)) === true) continue;
         const relativeToRoot = path.relative(root, absolute).split(path.sep).join('/');
         const ignoreKey = relativeToRoot + (entry.isDirectory() ? '/' : '');
         try {

@@ -19,89 +19,49 @@
 
 任何一道失效，另一道仍然有效。审批是可被社会工程绕过的（用户疲劳点击「允许」），沙箱是可被内核漏洞绕过的，但两者同时失守的概率低得多。
 
-## 审批策略
+## 权限模型
 
-每个工具声明 `approval` 级别，策略层再按规则升级或降级：
+详细设计、配置与错误码见 [permissions.md](permissions.md)。目标态采用 Codex 0.153.x 的三层模型：
 
-| 级别 | 含义 |
-| --- | --- |
-| `none` | 从不询问（只读工具） |
-| `on-write` | 写文件时询问，读时放行 |
-| `always` | 每次执行都询问 |
+- **Permission profile**：声明文件系统与网络边界，内置 `:read-only` / `:workspace` / `:danger-full-access`，也支持命名 profile。默认 `:workspace` + 网络关闭。
+- **Approval policy**：`on-request`（默认，越界时才问）或 `never`（不问，越界直接拒绝）。`granular` 预留给细分审批。
+- **Approvals reviewer**：`user`（默认）或后续的 `auto_review`；绝不由产生动作的同一模型自批。
+- **Exec policy**：在 profile 之前按规范化命令前缀给出 `forbidden` / `prompt` / `allow`，`forbidden` 不可被批准覆盖。
+- **Sandbox backend**：Seatbelt / Landlock + seccomp / Windows 受限令牌；沙箱缺失时强制审批并拒绝 `--yolo`。
 
-工具声明只给出默认粒度；`approval.mode`（`on-request` / `never` / `always-ask`，见 [config.md](config.md)）在此基础上决定询问时机。无论模式如何，硬拒绝列表与沙箱始终生效，模式不能绕过它们。
+策略输入是结构化 `Action`（文件读写、argv、cwd、网络目标），不是整条 shell 字符串；Shell 必须解析后再判定。判定顺序：硬拒绝/forbidden → prompt 规则 → profile 是否允许 → 审批 → 沙箱执行。拒绝原因以结构化错误回填，模型应换方案而不是原样重试。
 
-策略的输入是结构化的，不是自然语言：
-
-```ts
-interface ApprovalRequest {
-  tool: string;
-  /** 规范化后的关键动作，用于规则匹配与展示 */
-  action: { kind: 'write' | 'exec' | 'network' | 'read'; target: string };
-  /** 模型给出的理由，仅展示，不参与判定 */
-  rationale?: string;
-}
-```
-
-`Shell` 的 `action.target` 由命令解析器得出——不是拿整条命令字符串做正则匹配，而是拆出可执行文件、子命令、参数中的路径与 URL。这避免了 `rm -rf /` 与 `rm  -rf /` 之类的绕过，也让「允许 `npm test`」这条规则不会顺带允许 `npm test; curl evil.sh`。
-
-### 判定顺序
-
-1. 硬拒绝列表（不可覆盖）：`rm -rf /`、写 `/etc`、`~/.ssh` 之外的凭证路径、`curl | sh`
-2. 配置中的显式拒绝规则
-3. 配置中的显式允许规则
-4. 会话内已批准过的同类操作（同一 `action` 在本次会话内只问一次）
-5. 落到默认值：只读 allow，写与执行 ask
-
-### 交互形态
-
-- TUI 下弹出审批框，展示工具名、规范化命令、目标路径、模型理由
-- 选项：`允许一次` / `本会话内允许同类` / `拒绝` / `拒绝并说明原因`
-- 「拒绝并说明原因」的文本会作为 `tool_result` 回填，让模型知道为什么被拒，从而换方案而不是重试同一动作
-- 非交互模式（`exec`、CI）下没有 ask 选项：默认 deny，除非配置里显式允许。这是刻意的——CI 里无人值守，沉默即拒绝
+审批弹层展示工具、归一化命令/路径、cwd、网络目标、模型理由与风险；选项为允许一次 / 本会话 / 命令前缀 / 拒绝 / 拒绝并说明原因。非交互（`exec`、CI、`--json`）没有 ask：需要审批的动作返回 `APPROVAL_REQUIRED`，绝不等待 stdin。断线或 CLI 崩溃按拒绝处理。
 
 ### `--yolo` / `--full-auto`
 
-两个逃生阀，语义不同：
+- `--yolo` / `--allow-dangerously-skip-permissions` = `:danger-full-access` + `never`；关闭审批与文件系统/网络沙箱，启动告警。它仍不绕过 exec policy 的 `forbidden`（灾难命令、凭证外传）。
+- `--full-auto` 是兼容别名，目标语义为 `:workspace` + `auto_review`；在 auto-review 落地前，交互模式等价于 `:workspace` + `on-request`，非交互对越界动作拒绝。Codex 0.153.x 已移除该 CLI 选项，codingx 仅为兼容保留。
 
-- `--full-auto`：审批层跳过 ask，全部 allow；**沙箱仍然生效**
-- `--yolo`：审批与沙箱都关闭
+`--yolo` 仅建议在一次性、外部已隔离的容器中使用。
 
-`--yolo` 仅建议在一次性容器中使用，启动时打印醒目警告。CI 中推荐 `--full-auto` 配合沙箱。
+### 当前构建（M3.1 / M3.2）
+
+文件工具已接入 Permission profile / approval policy：默认 `:workspace` + `on-request`，workspace 外读写、敏感路径与 `:read-only` 写入会被拒绝或要求审批；非交互没有 approver 时返回 `APPROVAL_REQUIRED`。TUI 底部弹层与 plain 交互提示都支持允许一次 / 本会话 / 命令前缀 / 拒绝并说明原因，授权只存在当前进程内存。`--yolo` 映射到 `:danger-full-access` + `never`（文件工具无限制）并告警。
+
+仍未实现：Seatbelt/Landlock、网络代理、exec policy 规则与自动审查。Shell 只做保守命令解析与硬拒绝；**任意程序仍可绕过**，不能把它当成 OS 隔离。实现状态见 [implementation-plan-m3.md](implementation-plan-m3.md)。
 
 ## 沙箱
 
-按平台选择实现，接口统一：
+按平台选择实现，接口、profile 解析与网络策略见 [permissions.md](permissions.md)。核心约束：
 
-```ts
-export interface Sandbox {
-  readonly kind: 'seatbelt' | 'landlock' | 'none';
-  wrap(cmd: string, opts: SandboxPolicy): { argv: string[]; env: Record<string, string> };
-  readonly policy: SandboxPolicy;
-}
+- macOS：Seatbelt（`sandbox-exec`），默认 deny，按 profile 放行读写路径；网络默认 deny，域名白名单由回环代理执行。
+- Linux：Landlock + seccomp；内核能力不足时降级并强制审批，不能静默变成无沙箱。
+- Windows / 其他：M3 暂不支持；显式提示并强制审批，`--yolo` 拒绝启动。
 
-export interface SandboxPolicy {
-  writableRoots: string[];      // 默认：workspace 根 + 临时目录
-  readableRoots: string[];      // 默认：workspace 根 + 系统只读路径
-  network: 'none' | 'loopback' | 'all';
-  envPassthrough: string[];     // 显式透传的环境变量白名单
-}
-```
+默认边界：
 
-| 平台 | 实现 |
-| --- | --- |
-| macOS | `sandbox-exec` + Seatbelt profile（`(deny default)` 起步，按策略放行） |
-| Linux | Landlock + seccomp，内核不支持时降级并告警 |
-| 其他 | 无沙箱；审批强制询问，拒绝 `--full-auto` / `--yolo` |
+- 可写：workspace 根、`--add-dir`、`$TMPDIR`（`/tmp` 由 profile 决定）
+- 可读：workspace 根 + `:minimal` 系统/运行时路径
+- 默认 deny：`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.codingx`、session 目录、`.env*`、私钥
+- 网络：默认 `none`；需要时由 profile 按域名 allow/deny，deny 优先
 
-默认策略：
-
-- 可写：workspace 根、`$TMPDIR`
-- 可读：workspace 根、`/usr`、`/bin`、`/lib`、Node 安装路径
-- 不可读：`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.codingx`、`session.dir`、`.env` 系列（除非显式加入白名单）
-- 网络：默认 `none`；需要联网的命令（`npm install`、`git push`）由用户在审批时单次放行
-
-当前构建尚未接入上述沙箱。`--add-dir` 只扩展应用层文件/Shell 工具的允许根，不会限制 `Shell` 命令自身可访问的路径；不要把它当成 OS 级隔离。
+当前构建尚未接入上述 OS 沙箱；`--add-dir` 只在 profile 的 `:workspace_roots` 允许时扩展（`:read-only` 会直接报错）。文件工具已受 profile 约束，但 `--yolo` 会取消这层约束；Shell 始终以当前用户权限运行。
 
 ### 环境变量
 
@@ -141,7 +101,7 @@ TUI 会把模型输出、工具输出、用户输入与粘贴内容直接画到�
 
 - 外部文本先剥离 CSI / OSC / DCS 等控制序列，只保留换行、tab 与普通字符；颜色、粗体等样式由 TUI 的样式对象生成
 - markdown 链接只允许 http / https，文件链接只做展示；禁止模型输出触发 OSC 52 剪贴板写入或任意 OSC 命令
-- 审批弹层由应用状态机绘制，模型输出无法伪造按钮、改变选项顺序或抢占焦点
+- 审批弹层与 `/permissions` 由应用状态机绘制，模型输出无法伪造按钮、改变选项顺序、切换 profile 或抢占焦点
 - 通知、终端标题与剪贴板内容使用应用生成的文本，默认不包含 prompt、工具输出或文件内容
 - TUI 不直接执行工具；所有写操作与命令仍经过 policy 与 sandbox，`--yolo` 的警告也由 TUI 之外的状态决定
 
@@ -164,4 +124,4 @@ TUI 会把模型输出、工具输出、用户输入与粘贴内容直接画到�
 
 ## 审计
 
-rollout 是完整的审计日志，包含：每次模型请求的 token 用量、每次工具调用的规范化参数、审批决策与决策者（策略 / 用户）、执行耗时与退出码。`codingx log --session <id>` 可读回任意历史会话。sessiond 自身日志只记录连接、租约与追加元数据，不记录 prompt 与工具输出。
+rollout 是完整的审计日志，包含：每次模型请求的 token 用量、每次工具调用的结构化 Action、命中的规则、profile 与 approval policy、审批请求与决策（决策者：策略 / 用户 / reviewer）、临时授权、沙箱拒绝原因、执行耗时与退出码。受策略约束的工具调用会写 `permission.decision`（verdict/code/profile/action）；审批路径写 `approval.requested` / `approval.decided` 与 `permission.granted`，`/permissions` 切换写 `profile.changed`；`sandbox.denied` 随 S3 落地。审批命令与路径按 [redact.ts](../src/util/redact.ts) 的规则脱敏后落盘，UI 展示给用户的仍是可判断的真实命令。`codingx log --session <id>` 可读回任意历史会话。sessiond 自身日志只记录连接、租约与追加元数据，不记录 prompt 与工具输出。

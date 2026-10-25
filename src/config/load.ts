@@ -17,8 +17,11 @@ import type {
   RouteConfig,
   RouteStrategy,
   SandboxConfig,
+  SandboxMode,
   TargetConfig,
 } from './types.js';
+import type { ApprovalPolicy, ApprovalsReviewer } from '../policy/types.js';
+import { DANGER_PROFILE, parsePermissions, READ_ONLY_PROFILE, WORKSPACE_PROFILE } from '../policy/index.js';
 
 const DEFAULT_ENV_PASSTHROUGH = ['PATH', 'HOME', 'LANG', 'TERM', 'TMPDIR', 'USER', 'SHELL'];
 
@@ -58,7 +61,22 @@ const mcpServerSchema = z.object({
   env: z.record(z.string()).default({}),
 });
 
+const permissionProfileSchema = z.object({
+  extends: z.string().min(1).optional(),
+  filesystem: z.record(z.unknown()).optional(),
+  network: z
+    .object({
+      enabled: z.boolean().optional(),
+      domains: z.record(z.enum(['allow', 'deny'])).optional(),
+    })
+    .optional(),
+});
+
 const rawConfigSchema = z.object({
+  approval_policy: z.enum(['on-request', 'never']).optional(),
+  approvals_reviewer: z.enum(['user', 'auto_review']).optional(),
+  default_permissions: z.string().min(1).optional(),
+  permissions: z.record(permissionProfileSchema).default({}),
   model: z
     .object({
       route: z.string().min(1).default('default'),
@@ -205,6 +223,12 @@ function sanitizeProjectConfig(raw: Record<string, unknown>, warnings: string[])
     delete raw.sandbox;
     warnings.push('Project config cannot override [sandbox]; the section was ignored.');
   }
+  for (const key of ['permissions', 'default_permissions', 'approval_policy', 'approvals_reviewer', 'projects']) {
+    if (raw[key] !== undefined) {
+      delete raw[key];
+      warnings.push('Project config cannot override ' + key + '; the value was ignored.');
+    }
+  }
   const session = asObject(raw.session);
   if (raw.session !== undefined && isPlainObject(raw.session)) {
     for (const key of ['dir', 'retention_days']) {
@@ -222,6 +246,12 @@ function applyEnvOverrides(raw: Record<string, unknown>, env: NodeJS.ProcessEnv)
   }
   if (env.CODINGX_APPROVAL) {
     raw.approval = { ...asObject(raw.approval), mode: env.CODINGX_APPROVAL };
+  }
+  if (env.CODINGX_APPROVAL_POLICY) raw.approval_policy = env.CODINGX_APPROVAL_POLICY;
+  if (env.CODINGX_APPROVALS_REVIEWER) raw.approvals_reviewer = env.CODINGX_APPROVALS_REVIEWER;
+  if (env.CODINGX_PERMISSION_PROFILE) raw.default_permissions = env.CODINGX_PERMISSION_PROFILE;
+  if (env.CODINGX_SANDBOX) {
+    raw.sandbox = { ...asObject(raw.sandbox), mode: env.CODINGX_SANDBOX };
   }
   if (env.CODINGX_SESSIOND !== undefined) {
     if (env.CODINGX_SESSIOND !== '0' && env.CODINGX_SESSIOND !== '1') {
@@ -299,6 +329,153 @@ function normalizeSandbox(raw: RawConfig, cwd: string, env: NodeJS.ProcessEnv): 
   };
 }
 
+const PROFILE_BY_SANDBOX: Record<SandboxMode, string> = {
+  'read-only': READ_ONLY_PROFILE,
+  'workspace-write': WORKSPACE_PROFILE,
+  'danger-full-access': DANGER_PROFILE,
+};
+
+const APPROVAL_BY_MODE: Record<ApprovalMode, ApprovalPolicy> = {
+  'on-request': 'on-request',
+  never: 'never',
+  'always-ask': 'on-request',
+};
+
+function conflict(message: string): ConfigError {
+  return new ConfigError(message, { details: { code: 'PERMISSION_CONFIG_CONFLICT' } });
+}
+
+/** Resolve legacy sections, new top-level policy keys and CLI overrides into one policy. */
+function resolvePolicySettings(
+  raw: RawConfig,
+  merged: Record<string, unknown>,
+  config: Config,
+  overrides: ConfigOverrides,
+  warnings: string[],
+): void {
+  const legacyApprovalExplicit = asObject(merged.approval).mode !== undefined;
+  const legacySandboxExplicit = asObject(merged.sandbox).mode !== undefined;
+  const hasNewPermissionConfig =
+    raw.default_permissions !== undefined || Object.keys(raw.permissions as Record<string, unknown>).length > 0;
+  if (legacySandboxExplicit && !hasNewPermissionConfig) {
+    warnings.push('Legacy [sandbox] config is supported; prefer default_permissions / [permissions.*] in new configs.');
+  }
+  if (legacyApprovalExplicit && raw.approval_policy === undefined) {
+    warnings.push('Legacy [approval].mode is supported; prefer approval_policy in new configs.');
+  }
+  const cli = overrides;
+
+  if (cli.dangerouslyBypass) {
+    if (
+      cli.approvalMode !== undefined ||
+      cli.approvalPolicy !== undefined ||
+      cli.approvalsReviewer !== undefined ||
+      cli.permissionProfile !== undefined ||
+      cli.sandboxMode !== undefined
+    ) {
+      throw conflict('--yolo / --allow-dangerously-skip-permissions cannot be combined with other permission flags.');
+    }
+  }
+  if (cli.permissionProfile !== undefined && cli.sandboxMode !== undefined) {
+    throw conflict('Use either --permission-profile or --sandbox, not both.');
+  }
+  if (
+    raw.default_permissions !== undefined &&
+    legacySandboxExplicit &&
+    cli.permissionProfile === undefined &&
+    cli.sandboxMode === undefined &&
+    cli.dangerouslyBypass !== true
+  ) {
+    throw conflict(
+      'default_permissions and legacy sandbox.mode cannot both be set. Remove one of them or override with --permission-profile.',
+    );
+  }
+  if (
+    raw.approval_policy !== undefined &&
+    legacyApprovalExplicit &&
+    cli.approvalPolicy === undefined &&
+    cli.approvalMode === undefined &&
+    cli.dangerouslyBypass !== true
+  ) {
+    throw conflict(
+      'approval_policy and legacy approval.mode cannot both be set. Remove one of them or override with --ask-for-approval.',
+    );
+  }
+
+  const effectiveLegacyApproval = cli.approvalMode ?? raw.approval.mode;
+  const alwaysAsk =
+    cli.dangerouslyBypass !== true &&
+    cli.approvalPolicy === undefined &&
+    raw.approval_policy === undefined &&
+    effectiveLegacyApproval === 'always-ask';
+
+  let profileName =
+    cli.permissionProfile ??
+    (cli.sandboxMode === undefined ? undefined : PROFILE_BY_SANDBOX[cli.sandboxMode]) ??
+    raw.default_permissions ??
+    PROFILE_BY_SANDBOX[raw.sandbox.mode];
+  if (cli.dangerouslyBypass === true) profileName = DANGER_PROFILE;
+
+  let approvalPolicy =
+    cli.approvalPolicy ??
+    (cli.approvalMode === undefined ? undefined : APPROVAL_BY_MODE[cli.approvalMode]) ??
+    raw.approval_policy ??
+    APPROVAL_BY_MODE[raw.approval.mode];
+  if (cli.dangerouslyBypass === true) approvalPolicy = 'never';
+
+  let reviewer: ApprovalsReviewer = cli.approvalsReviewer ?? raw.approvals_reviewer ?? 'user';
+  if (cli.dangerouslyBypass === true) reviewer = 'user';
+
+  config.permissions = parsePermissions(raw.permissions as Record<string, unknown>, profileName);
+
+  // Legacy [sandbox] writable_roots/network should keep working until the
+  // profile migration is complete. Only apply them when no new permission
+  // profile config is present; conflicts are handled above.
+  const legacySandbox = asObject(merged.sandbox);
+  const hasLegacySandboxRules =
+    legacySandbox.writable_roots !== undefined ||
+    legacySandbox.readable_roots !== undefined ||
+    legacySandbox.network !== undefined;
+  if (hasLegacySandboxRules && !hasNewPermissionConfig) {
+    const profile = config.permissions.profiles[profileName];
+    if (profile) {
+      const extraRules = [
+        ...(config.sandbox.mode === 'workspace-write'
+          ? config.sandbox.writableRoots.map((root) => ({ scope: root, access: 'write' as const }))
+          : []),
+        ...config.sandbox.readableRoots.map((root) => ({ scope: root, access: 'read' as const })),
+      ];
+      const network =
+        config.sandbox.network === 'all'
+          ? { enabled: true, domains: {} }
+          : config.sandbox.network === 'loopback'
+            ? {
+                enabled: true,
+                domains: { localhost: 'allow' as const, '127.0.0.1': 'allow' as const, '::1': 'allow' as const },
+              }
+            : profile.network;
+      config.permissions.profiles[profileName] = {
+        ...profile,
+        filesystem: [...profile.filesystem, ...extraRules],
+        network,
+      };
+    }
+  }
+
+  config.approvalPolicy = approvalPolicy;
+  config.approvalsReviewer = reviewer;
+  config.approval.alwaysAsk = alwaysAsk;
+  config.approval.mode = alwaysAsk ? 'always-ask' : approvalPolicy;
+  config.sandbox.mode =
+    profileName === READ_ONLY_PROFILE
+      ? 'read-only'
+      : profileName === DANGER_PROFILE
+        ? 'danger-full-access'
+        : profileName === WORKSPACE_PROFILE
+          ? 'workspace-write'
+          : raw.sandbox.mode;
+}
+
 function normalizeMcpServers(raw: RawConfig): McpServerConfig[] {
   return raw.mcp.servers.map((server) => ({
     name: server.name,
@@ -331,11 +508,21 @@ function collectOverrides(env: NodeJS.ProcessEnv, cli: ConfigOverrides | undefin
   const model = cli?.model ?? env.CODINGX_MODEL;
   const provider = cli?.provider ?? env.CODINGX_PROVIDER;
   const approvalMode = cli?.approvalMode ?? (env.CODINGX_APPROVAL as ApprovalMode | undefined);
+  const approvalPolicy = cli?.approvalPolicy ?? (env.CODINGX_APPROVAL_POLICY as ApprovalPolicy | undefined);
+  const approvalsReviewer =
+    cli?.approvalsReviewer ?? (env.CODINGX_APPROVALS_REVIEWER as ApprovalsReviewer | undefined);
+  const permissionProfile = cli?.permissionProfile ?? env.CODINGX_PERMISSION_PROFILE;
+  const sandboxMode = cli?.sandboxMode ?? (env.CODINGX_SANDBOX as SandboxMode | undefined);
   const overrides: ConfigOverrides = {};
   if (route) overrides.route = route;
   if (model) overrides.model = model;
   if (provider) overrides.provider = provider;
   if (approvalMode) overrides.approvalMode = approvalMode;
+  if (approvalPolicy) overrides.approvalPolicy = approvalPolicy;
+  if (approvalsReviewer) overrides.approvalsReviewer = approvalsReviewer;
+  if (permissionProfile) overrides.permissionProfile = permissionProfile;
+  if (sandboxMode) overrides.sandboxMode = sandboxMode;
+  if (cli?.dangerouslyBypass === true) overrides.dangerouslyBypass = true;
   return overrides;
 }
 
@@ -371,6 +558,7 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
     approval: {
       mode: raw.approval.mode,
       rememberInSession: raw.approval.remember_in_session,
+      alwaysAsk: false,
       allow: { exec: [...raw.approval.allow.exec], write: [...raw.approval.allow.write] },
       deny: { exec: [...raw.approval.deny.exec], write: [...raw.approval.deny.write] },
     },
@@ -397,11 +585,15 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
       ),
     },
     mcp: { servers: normalizeMcpServers(raw) },
+    approvalPolicy: 'on-request',
+    approvalsReviewer: 'user',
+    permissions: parsePermissions({}, WORKSPACE_PROFILE),
   };
   validateRoutes(config);
 
   const overrides = collectOverrides(env, options.cli);
   if (overrides.approvalMode) config.approval.mode = overrides.approvalMode;
+  resolvePolicySettings(raw, merged, config, overrides, warnings);
 
   return {
     config,
