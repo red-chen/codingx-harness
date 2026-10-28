@@ -113,6 +113,7 @@ interface RolloutEvent {
 | `turn.status` | CLI | `streaming` / `executing` / `awaiting_approval` |
 | `assistant.message` | CLI | 最终助手消息与 tool calls |
 | `tool.call` / `tool.result` | CLI | 工具调用与结果 |
+| `local.command` / `local.result` | CLI | 用户在 TUI/plain 输入的 `!command` 与输出；不进入模型消息历史 |
 | `context.compacted` | CLI | 压缩记录，保留原始消息 |
 | `turn.end` / `turn.aborted` | CLI | turn 收敛或中断 |
 | `session.interrupted` | daemon | 写租约丢失且 turn 未收敛 |

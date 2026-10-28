@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
 import { ConfigError } from '../util/errors.js';
 import { canonicalizePath, expandHome, isPathInside } from '../util/paths.js';
 import type {
@@ -13,6 +14,7 @@ import type {
 export const WORKSPACE_PROFILE = ':workspace';
 export const READ_ONLY_PROFILE = ':read-only';
 export const DANGER_PROFILE = ':danger-full-access';
+export const GIT_HOOKS_PROFILE = ':workspace-git-hooks';
 
 const READ_ONLY_COMMANDS = new Set([
   'cat',
@@ -73,6 +75,19 @@ export const BUILTIN_PROFILES: Record<string, PermissionProfile> = {
     name: WORKSPACE_PROFILE,
     filesystem: [
       { scope: ':workspace_roots', access: 'write' },
+      { scope: ':tmpdir', access: 'write' },
+      { scope: ':slash_tmp', access: 'write' },
+      { scope: ':minimal', access: 'read' },
+    ],
+    network: { enabled: false, domains: {} },
+    source: 'builtin',
+  },
+  [GIT_HOOKS_PROFILE]: {
+    name: GIT_HOOKS_PROFILE,
+    filesystem: [
+      { scope: ':workspace_roots', access: 'write' },
+      { scope: ':git_hooks', access: 'write' },
+      { scope: ':git_config', access: 'write' },
       { scope: ':tmpdir', access: 'write' },
       { scope: ':slash_tmp', access: 'write' },
       { scope: ':minimal', access: 'read' },
@@ -243,6 +258,10 @@ export interface ResolvedProfileRoots {
   denyRoots: string[];
   denyGlobs: Array<{ base: string | null; pattern: string }>;
   allowAll: boolean;
+  /** True when the profile explicitly allows writing .git/hooks. */
+  gitHooksWritable: boolean;
+  /** True when the profile explicitly allows writing .git/config. */
+  gitConfigWritable: boolean;
 }
 
 function hasGlob(value: string): boolean {
@@ -266,9 +285,32 @@ async function addRoot(list: string[], candidate: string): Promise<void> {
   if (!list.includes(canonical)) list.push(canonical);
 }
 
+/** Find the repository metadata directory for a workspace root or its parents. */
+async function findGitDirectory(root: string): Promise<string | undefined> {
+  let current = root;
+  for (;;) {
+    const candidate = path.join(current, '.git');
+    try {
+      const info = await stat(candidate);
+      if (info.isDirectory()) return await canonicalizePath(candidate);
+      if (info.isFile()) {
+        // Worktrees and submodules use a "gitdir: <path>" pointer file.
+        const text = await readFile(candidate, 'utf8');
+        const match = /^gitdir:\s*(.+)$/m.exec(text);
+        if (match?.[1] !== undefined) return await canonicalizePath(path.resolve(current, match[1].trim()));
+      }
+    } catch {
+      // Keep walking up.
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
 /**
- * Resolve a profile's rules into concrete roots for file tools. OS-level
- * sandboxing (Seatbelt/Landlock) will consume the same resolved structure.
+ * Resolve a profile's rules into concrete roots for file tools and the OS
+ * sandbox. Seatbelt consumes the resolved structure; Landlock will reuse it.
  */
 export async function resolveProfileRoots(
   profile: PermissionProfile,
@@ -284,6 +326,12 @@ export async function resolveProfileRoots(
   await addRoot(workspaceRoots, cwd);
   for (const directory of options.additionalDirs) await addRoot(workspaceRoots, directory);
 
+  const gitDirectories: string[] = [];
+  for (const root of workspaceRoots) {
+    const gitDir = await findGitDirectory(root);
+    if (gitDir !== undefined && !gitDirectories.includes(gitDir)) gitDirectories.push(gitDir);
+  }
+
   const home = options.env.HOME !== undefined && options.env.HOME.length > 0 ? options.env.HOME : os.homedir();
   const tmpdir = options.env.TMPDIR !== undefined && options.env.TMPDIR.length > 0 ? options.env.TMPDIR : os.tmpdir();
   const readRoots: string[] = [];
@@ -291,8 +339,56 @@ export async function resolveProfileRoots(
   const denyRoots: string[] = [];
   const denyGlobs: Array<{ base: string | null; pattern: string }> = [];
   let allowAll = false;
+  let gitHooksWritable = false;
+  let gitConfigWritable = false;
+  let gitHooksDenied = false;
+  let gitConfigDenied = false;
+
+  // Git commands must be able to read config/hooks even when the profile
+  // starts from a subdirectory. Writes stay behind the explicit scopes below.
+  for (const gitDir of gitDirectories) {
+    await addRoot(readRoots, gitDir);
+    await addRoot(readRoots, path.join(gitDir, 'config'));
+    await addRoot(readRoots, path.join(gitDir, 'hooks'));
+  }
 
   for (const rule of profile.filesystem) {
+    if (rule.scope === ':git_hooks') {
+      const hookDirs = gitDirectories.map((gitDir) => path.join(gitDir, 'hooks'));
+      if (rule.access === 'deny') {
+        gitHooksDenied = true;
+        gitHooksWritable = false;
+        for (const hookDir of hookDirs) await addRoot(denyRoots, hookDir);
+      } else if (rule.access === 'write') {
+        if (!gitHooksDenied) gitHooksWritable = true;
+        for (const hookDir of hookDirs) {
+          await addRoot(writeRoots, hookDir);
+          await addRoot(readRoots, hookDir);
+        }
+      } else {
+        throw new ConfigError(':git_hooks supports "write" or "deny" (write implies read).');
+      }
+      continue;
+    }
+
+    if (rule.scope === ':git_config') {
+      const configFiles = gitDirectories.map((gitDir) => path.join(gitDir, 'config'));
+      if (rule.access === 'deny') {
+        gitConfigDenied = true;
+        gitConfigWritable = false;
+        for (const configFile of configFiles) await addRoot(denyRoots, configFile);
+      } else if (rule.access === 'write') {
+        if (!gitConfigDenied) gitConfigWritable = true;
+        for (const configFile of configFiles) {
+          await addRoot(writeRoots, configFile);
+          await addRoot(readRoots, configFile);
+        }
+      } else {
+        throw new ConfigError(':git_config supports "write" or "deny" (write implies read).');
+      }
+      continue;
+    }
+
     if (rule.scope === ':workspace_roots') {
       if (rule.subpath !== undefined && hasGlob(rule.subpath)) {
         if (rule.access !== 'deny') {
@@ -396,6 +492,12 @@ export async function resolveProfileRoots(
     await addRoot(denyRoots, path.join(home, '.aws'));
     await addRoot(denyRoots, path.join(home, '.config', 'gh'));
     await addRoot(denyRoots, path.join(home, '.codingx'));
+    await addRoot(denyRoots, path.join(home, '.gnupg'));
+    await addRoot(denyRoots, path.join(home, '.azure'));
+    await addRoot(denyRoots, path.join(home, '.config', 'gcloud'));
+    await addRoot(denyRoots, path.join(home, '.docker'));
+    await addRoot(denyRoots, path.join(home, '.kube'));
+    await addRoot(denyRoots, path.join(home, '.terraform.d'));
     if (options.sessionDir) await addRoot(denyRoots, options.sessionDir);
     for (const pattern of [
       '.env',
@@ -406,6 +508,8 @@ export async function resolveProfileRoots(
       'id_ed25519',
       '.npmrc',
       '.netrc',
+      '.git-credentials',
+      '.pypirc',
       '.ssh',
       '.aws',
       '.gnupg',
@@ -421,12 +525,33 @@ export async function resolveProfileRoots(
       '**/id_ed25519',
       '**/.npmrc',
       '**/.netrc',
+      '**/.git-credentials',
+      '**/.pypirc',
+      '**/.cargo/credentials',
+      '**/.cargo/credentials.toml',
+      '**/.docker/config.json',
+      '**/.kube/config',
     ]) {
+      if (pattern === '**/.git/config' && gitConfigWritable) continue;
+      if (
+        gitHooksWritable &&
+        (pattern === '**/.git/hooks/**' || pattern === '**/.git/modules/**/hooks/**')
+      ) {
+        continue;
+      }
       denyGlobs.push({ base: null, pattern });
     }
   }
 
-  return { readRoots, writeRoots, denyRoots, denyGlobs, allowAll };
+  return {
+    readRoots,
+    writeRoots,
+    denyRoots,
+    denyGlobs,
+    allowAll,
+    gitHooksWritable,
+    gitConfigWritable,
+  };
 }
 
 export function globToRegExp(pattern: string): RegExp {

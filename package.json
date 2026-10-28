@@ -41,6 +41,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "@xterm/headless": "^6.0.0",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"

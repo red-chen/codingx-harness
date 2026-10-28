@@ -100,6 +100,33 @@ describe('permission profiles', () => {
 });
 
 describe('policy evaluation', () => {
+  it('gates git hook and config writes behind explicit scopes', async () => {
+    await mkdir(path.join(cwd, '.git', 'hooks'), { recursive: true });
+    await writeFile(path.join(cwd, '.git', 'config'), '[core]\n');
+    const hookPath = path.join(cwd, '.git', 'hooks', 'pre-commit');
+    const configPath = path.join(cwd, '.git', 'config');
+
+    const defaults = await runtime(':workspace', 'never');
+    expect((await defaults.evaluate('WriteFile', { path: hookPath, content: 'x' })).verdict).toBe('deny');
+    expect((await defaults.evaluate('WriteFile', { path: configPath, content: 'x' })).verdict).toBe('deny');
+
+    const hooks = await runtime(':workspace-git-hooks', 'never');
+    expect((await hooks.evaluate('WriteFile', { path: hookPath, content: 'x' })).verdict).toBe('allow');
+    expect((await hooks.evaluate('WriteFile', { path: configPath, content: 'x' })).verdict).toBe('allow');
+
+    const custom = await runtime('hooks-only', 'never', {
+      'hooks-only': { extends: ':workspace', filesystem: { ':git_hooks': 'write' } },
+    });
+    expect((await custom.evaluate('WriteFile', { path: hookPath, content: 'x' })).verdict).toBe('allow');
+    expect((await custom.evaluate('WriteFile', { path: configPath, content: 'x' })).verdict).toBe('deny');
+
+    await expect(
+      runtime('bad-git-scope', 'never', {
+        'bad-git-scope': { extends: ':workspace', filesystem: { ':git_hooks': 'read' } },
+      }),
+    ).rejects.toThrow(/:git_hooks supports/);
+  });
+
   it('allows workspace reads/writes and asks for outside paths', async () => {
     const policy = await runtime();
     const inside = await policy.evaluate('ReadFile', { path: 'src/a.ts' });

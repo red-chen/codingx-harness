@@ -20,6 +20,8 @@
 
 ## 范围
 
+- **当前 CLI 仅需支持 macOS。** 开发、测试与验收均以 macOS 为目标；Linux / Windows 兼容、沙箱与分发不属于当前范围，也不作为当前里程碑完成的前置条件。除非用户明确要求扩展平台，不要主动实现跨平台支持。
+
 - 当前实现边界见 [docs/implementation-plan.md](docs/implementation-plan.md)。
 - 不要在本仓库提前实现 TUI、sessiond、审批/沙箱、MCP 或多目标路由；这些属于 M2/M3/M4/M5，需要先更新文档与任务拆分。
 - 设计目标态见 `docs/`，实现状态的唯一来源是 README、roadmap 与 implementation-plan。

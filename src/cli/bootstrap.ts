@@ -15,6 +15,9 @@ import { ProviderRouter, selectRouteTarget, type RouterPins } from '../routing/i
 import { EmbeddedSessionStore, SessiondStore, ensureSessiond, type SessionStoreApi } from '../session/index.js';
 import { ToolRegistry, createBuiltinTools } from '../tools/index.js';
 import { createPolicyRuntime, type PolicyRuntime } from '../policy/index.js';
+import { HookRunner } from '../hooks/index.js';
+import { createSandboxBackend, sandboxSummary } from '../sandbox/index.js';
+import type { SandboxBackend } from '../sandbox/types.js';
 import { loadSkills, type SkillRegistry } from '../skills/index.js';
 import { buildChildEnv } from '../exec/index.js';
 import { ConfigError } from '../util/errors.js';
@@ -42,10 +45,16 @@ export interface CliApp {
   yolo: boolean;
   /** Resolved permission profile and approval policy. */
   policy: PolicyRuntime;
+  /** OS sandbox backend selected for this host (probed during bootstrap). */
+  sandbox: SandboxBackend;
   codingxHome: string;
   store: SessionStoreApi;
   router: ProviderRouter;
   tools: ToolRegistry;
+  /** Lifecycle hooks configured in the global config. */
+  hooks: HookRunner;
+  /** Successful session_start hook stdout, kept for prompt rebuilds. */
+  sessionHookContext?: string;
   snapshot: ContextSnapshot;
   skills: SkillRegistry;
   systemPrompt: string;
@@ -116,6 +125,8 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
     sessionDir: loaded.config.session.dir,
   });
   const yolo = policy.yolo;
+  const sandbox = await createSandboxBackend();
+  const sandboxStatus = sandbox.status;
   if (!yolo && additionalDirs.length > 0) {
     const notAllowed = additionalDirs.filter(
       (directory) => !policy.writeRoots.some((root) => isPathInside(root, directory)),
@@ -130,23 +141,61 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
   const explicitYolo = options.yolo === true || loaded.overrides.dangerouslyBypass === true;
 
   if (yolo) {
+    if (sandboxStatus.required && !sandboxStatus.available) {
+      throw new ConfigError(
+        '--yolo / :danger-full-access requires an OS sandbox on this platform, but none is available: ' +
+          (sandboxStatus.reason ?? 'unknown reason'),
+      );
+    }
     warnings.push(
       (explicitYolo
         ? '--yolo: all permission checks are bypassed (except hard-deny rules).'
         : 'Permission profile ":danger-full-access" bypasses the sandbox and approvals.') +
-        ' File and Shell tools can access any path your user can reach. ' +
-        'This build has no OS sandbox or approval prompts; use it only in a disposable, externally sandboxed environment.',
+        ' File and Shell tools can access any path your user can reach; OS sandbox and network isolation are disabled for this run. ' +
+        'Use it only in a disposable, externally sandboxed environment.',
     );
   } else {
-    warnings.push(
-      'M3.1 enforces the permission profile for file tools, but there is no OS-level sandbox; ' +
-        'Shell commands run with your user permissions. Interactive approvals are available in TUI/plain mode; ' +
-        'non-interactive runs fail closed. Use it only in repositories you trust.',
-    );
-    warnings.push(
-      'Permission profile "' + policy.profileName + '" with approval policy "' + policy.approvalPolicy +
-        '" is enforced for file tools. OS-level sandboxing is not implemented yet, so Shell commands can still reach paths outside the profile.',
-    );
+    if (sandboxStatus.available) {
+      warnings.push(
+        'M3.1 enforces the permission profile for file tools and Shell. macOS Seatbelt is active: ' +
+          'file writes are limited to the profile roots and network access is ' +
+          (policy.sandboxPolicy.network.enabled ? 'allowed wholesale' : 'denied') + '.',
+      );
+      warnings.push(
+        'OS sandbox: Seatbelt (sandbox-exec). Interactive approvals are available in TUI/plain mode; ' +
+          'non-interactive runs fail closed when an action needs approval.',
+      );
+      warnings.push(
+        'Permission profile "' + policy.profileName + '" with approval policy "' + policy.approvalPolicy +
+          '" is enforced for file tools and Shell.',
+      );
+      warnings.push(...sandboxStatus.warnings);
+      if (policy.sandboxPolicy.network.enabled && Object.keys(policy.sandboxPolicy.network.domains).length > 0) {
+        warnings.push(
+          'The permission profile configures a network domain allowlist, but Seatbelt cannot enforce per-domain rules; ' +
+            'outbound network is allowed wholesale until the local proxy (S6) lands.',
+        );
+      }
+    } else {
+      warnings.push(
+        'M3.1 enforces the permission profile for file tools, but no OS-level sandbox is available: ' +
+          (sandboxStatus.reason ?? 'unknown reason') +
+          (sandboxStatus.required
+            ? ' Shell commands fail closed on this platform.'
+            : ' Shell commands run with your user permissions.'),
+      );
+      warnings.push(
+        'Permission profile "' + policy.profileName + '" with approval policy "' + policy.approvalPolicy +
+          '" is enforced for file tools. Interactive approvals are available in TUI/plain mode; ' +
+          'non-interactive runs fail closed. Use it only in repositories you trust.',
+      );
+    }
+    if (policy.sandboxPolicy.gitHooksWritable || policy.sandboxPolicy.gitConfigWritable) {
+      warnings.push(
+        'Git hook/config writes are enabled by permission profile "' + policy.profileName +
+          '". Git may execute repository-controlled hooks; use this only in trusted repositories.',
+      );
+    }
     if (policy.reviewer === 'auto_review') {
       warnings.push('approvals_reviewer = "auto_review" is not implemented yet; approvals fall back to fail-closed.');
     }
@@ -199,10 +248,22 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
     ...(additionalDirs.length > 0 ? { additionalDirs } : {}),
     permissionProfile: policy.profileName,
     approvalPolicy: policy.approvalPolicy,
+    sandbox: sandboxSummary(sandboxStatus, policy.sandboxPolicy),
     ...(yolo ? { yolo: true } : {}),
   });
   const tools = new ToolRegistry(createBuiltinTools());
   const shellEnv = buildChildEnv(loaded.config.sandbox.envPassthrough, env);
+  const hooks = new HookRunner(loaded.config.hooks, {
+    cwd,
+    env: shellEnv,
+    maxOutputChars: loaded.config.tools.maxOutputChars,
+  });
+  if (loaded.config.hooks.length > 0) {
+    warnings.push(
+      'Agent Harness hooks are configured (' + loaded.config.hooks.length +
+        '). They run local commands from the global config; only add hooks you trust.',
+    );
+  }
   let store: SessionStoreApi;
   if (loaded.config.sessiond.enabled) {
     const ensured = await ensureSessiond({
@@ -230,10 +291,12 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
     additionalDirs,
     yolo,
     policy,
+    sandbox,
     codingxHome: loaded.codingxHome,
     store,
     router,
     tools,
+    hooks,
     snapshot,
     skills,
     systemPrompt,

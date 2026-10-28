@@ -114,6 +114,14 @@ export class PlainRenderer {
         break;
       case 'llm.finished':
         break;
+      case 'hook.finished':
+        if (event.status !== 'ok') {
+          this.stderr.write(
+            '⚠ hook ' + event.event + ' ' + event.status +
+              (event.message === undefined ? '' : ': ' + truncate(event.message, 200)) + '\n',
+          );
+        }
+        break;
       case 'plan.updated':
         this.stderr.write('• Updated Plan\n');
         for (const step of event.steps) {

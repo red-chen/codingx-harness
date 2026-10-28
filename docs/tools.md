@@ -36,6 +36,8 @@ export interface ToolContext {
   yolo?: boolean;
   /** S1 接入：Permission profile + approval policy */
   policy?: PolicyRuntime;
+  /** M3.3 接入：OS 沙箱 backend（macOS Seatbelt） */
+  sandbox?: SandboxBackend;
   /** TUI/plain 审批回调；无回调时越界 fail closed */
   approve?: ApprovalHandler;
   signal: AbortSignal;
@@ -50,7 +52,7 @@ export interface ToolContext {
 }
 ```
 
-> S1 已给 `ToolContext` 接入 `policy` 与 `approve`；工具用结构化 `Action` 描述副作用，`approval` 字段只作为 M2 兼容保留。S2 已由 TUI/plain 交互提供 `approve`。设计见 [permissions.md](permissions.md)。
+> S1 已给 `ToolContext` 接入 `policy` 与 `approve`；S3 加入 `sandbox`，`Shell` 用它在策略放行后包装 `sandbox-exec`。工具用结构化 `Action` 描述副作用，`approval` 字段只作为 M2 兼容保留。S2 已由 TUI/plain 交互提供 `approve`。设计见 [permissions.md](permissions.md)。
 
 约定：
 
@@ -59,7 +61,7 @@ export interface ToolContext {
 - `approval` 只是 M2 的默认粒度：`none` 无需审批（只读），`on-write` 仅在写时询问，`always` 每次询问。M3 起由 `Action` + Permission profile + Approval policy 统一判定，见 [permissions.md](permissions.md)。
 - `execute` 不抛异常处理「业务失败」（文件不存在、命令非零退出），统一走 `isError: true` 回填；只有真正的程序错误才 throw。
 - 输出默认裁剪到 30k 字符，超出部分保留头尾并标记省略行数。
-- 文件路径由 Permission profile 决定：默认 `:workspace` 覆盖 `cwd`、`--add-dir` 与临时目录；命名 profile 可追加根。相对路径从 `cwd` 解析，符号链接按真实路径校验；敏感路径（`~/.ssh`、`.env*` 等）默认 deny。`--yolo` 跳过这层限制；它不是 OS 级沙箱，也不影响读后写等完整性检查。
+- 文件路径由 Permission profile 决定：默认 `:workspace` 覆盖 `cwd`、`--add-dir` 与临时目录；命名 profile 可追加根。相对路径从 `cwd` 解析，符号链接按真实路径校验；敏感路径（`~/.ssh`、`.env*` 等）默认 deny。`--yolo` 跳过这一层并同时关闭 OS 沙箱，不影响读后写等完整性检查。macOS 上 `Shell` 还会由 Seatbelt 再执行一次内核级边界检查。
 - 工具返回给模型的路径统一相对主 workspace（跨盘时为绝对路径），因此可以原样作为下一次工具调用的 `path` 入参。
 
 ## 内置工具清单
@@ -90,7 +92,11 @@ export interface ToolContext {
 | `Shell` | `command`, `cwd?`, `timeout_ms?`, `description?` | 执行命令，返回 stdout / stderr / 退出码 |
 | `ShellInteractive` | `command` | 长驻进程（dev server 等），返回会话句柄，后续可读取输出（M5） |
 
-`Shell` 的默认超时 120s，超时后向整个进程组发 `SIGTERM`，再等 5s 后 `SIGKILL`。工作目录受 Permission profile 约束；S1 还会解析命令、拦截已知网络命令/重定向/硬拒绝，但**没有 OS 级沙箱**，任意程序仍可绕过策略。
+`Shell` 的默认超时 120s，超时后向整个进程组发 `SIGTERM`，再等 5s 后 `SIGKILL`。工作目录受 Permission profile 约束；策略层会解析命令、拦截已知网络命令/重定向/硬拒绝，macOS 上再交给 Seatbelt（默认 deny、写入限 profile 根、网络默认 deny）。Linux 目前没有 OS 级沙箱，任意程序仍可绕过命令启发式；`--yolo` 在 macOS 上也跳过 Seatbelt。
+
+Git hooks 不受 `Shell` 工具额外拦截：仓库已安装的 hooks 会由 git 自身执行；`.git/hooks` / `.git/config` 写默认拒绝，需要安装 hooks 时使用 `:workspace-git-hooks` 或 `:git_hooks` / `:git_config` 作用域。
+
+交互模式还可以直接输入 `!command`（例如 `!pwd`）。这条路径不经过模型，但复用同一套 Shell 策略、审批与沙箱执行逻辑（`src/tools/shell-exec.ts`），输出只写 `local.command` / `local.result`，不会进入模型消息历史。
 
 S5 起 `Shell` 增加提权字段（仅在沙箱拒绝后由模型重试时使用；S1 尚未实现）：
 

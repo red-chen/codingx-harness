@@ -114,7 +114,7 @@ export function buildApprovalPanel(state: TuiApprovalState, width: number): Appr
     text: truncateToWidth(
       state.editingReason
         ? 'Type a reason · Enter deny · Esc back'
-        : '↑/↓ choose · Enter confirm · Esc deny · Ctrl+C interrupt',
+        : 'v details · ↑/↓ choose · Enter confirm · Esc deny',
       inner,
     ),
     style: HINT_STYLE,
@@ -142,6 +142,22 @@ export function renderApprovalPanel(
   state: TuiApprovalState,
 ): ApprovalPanelRender {
   if (width < 12 || height < 4) return { height: 0, cursor: null };
+  if (state.details) {
+    const request = state.request;
+    const text = [request.tool + ' · ' + riskLabel(request.risk),
+      request.action.command ?? request.action.path ?? '',
+      'cwd: ' + (request.action.cwd ?? ''), request.reason ?? ''].join('\n');
+    const lines = wrapText(text, Math.max(1, width - 4));
+    const rows = Math.max(1, height - 2);
+    const offset = Math.min(state.detailsOffset ?? 0, Math.max(0, lines.length - rows));
+    frame.fill(BG, 0, 0, width, height);
+    frame.setString(1, 0, truncateToWidth('Approval details (read only)', width - 2), TITLE_STYLE);
+    lines.slice(offset, offset + rows).forEach((line, index) => {
+      frame.setString(2, index + 1, line, ACTION_STYLE);
+    });
+    frame.setString(1, height - 1, truncateToWidth('↑/↓ PgUp/PgDn scroll · Home top · Esc back', width - 2), HINT_STYLE);
+    return { height, cursor: null };
+  }
   const model = buildApprovalPanel(state, width);
   const maxHeight = Math.max(3, height - 1);
   const panelHeight = Math.min(model.lines.length + 1, maxHeight);

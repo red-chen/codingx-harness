@@ -60,6 +60,48 @@ describe('config defaults', () => {
   });
 });
 
+describe('hooks config', () => {
+  it('loads hooks from global config only and ignores project hooks', async () => {
+    await writeGlobal(
+      providerToml +
+        `
+[[hooks]]
+event = "pre_tool_use"
+command = "echo check"
+timeout_ms = 5000
+matcher = "Shell|WriteFile"
+`,
+    );
+    await writeProject(`
+[[hooks]]
+event = "stop"
+command = "echo project-hook"
+`);
+    const loaded = await load();
+    expect(loaded.config.hooks).toEqual([
+      {
+        event: 'pre_tool_use',
+        command: 'echo check',
+        timeoutMs: 5000,
+        matcher: 'Shell|WriteFile',
+      },
+    ]);
+    expect(loaded.warnings.join('\n')).toMatch(/Project config cannot override hooks/);
+  });
+
+  it('rejects unknown hook events and bad matchers during load', async () => {
+    await writeGlobal(
+      providerToml +
+        `
+[[hooks]]
+event = "before_everything"
+command = "true"
+`,
+    );
+    await expect(load()).rejects.toThrow(/Invalid codingx config/);
+  });
+});
+
 describe('config layering', () => {
   it('merges global and project config, with project arrays replacing global arrays', async () => {
     await writeGlobal(

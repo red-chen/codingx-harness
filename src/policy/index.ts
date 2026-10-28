@@ -3,6 +3,7 @@ export { SessionGrants, approvalPrefixFor } from './grants.js';
 export {
   BUILTIN_PROFILES,
   DANGER_PROFILE,
+  GIT_HOOKS_PROFILE,
   READ_ONLY_PROFILE,
   WORKSPACE_PROFILE,
   parsePermissions,

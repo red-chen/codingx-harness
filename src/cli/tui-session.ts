@@ -13,6 +13,13 @@ import type { UiCommand } from '../tui/state/commands.js';
 import { copyTextToClipboard } from '../util/clipboard.js';
 import { debugLog } from '../util/debug.js';
 import { describeModelSelection, parseModelCommand, type ModelSelection } from './model-command.js';
+import {
+  localCommandAuditEvents,
+  localCommandResultEvent,
+  localCommandStartEvent,
+  parseLocalCommand,
+  type LocalCommandOutcome,
+} from './local-command.js';
 
 export interface TuiModelController {
   get(): ModelSelection;
@@ -25,11 +32,16 @@ export interface TuiPermissionController {
   set(profile: string): Promise<void>;
 }
 
+/** Executes a user-issued '!command'; supplied by the CLI with policy/sandbox wired in. */
+export type TuiLocalCommandRunner = (command: string, signal: AbortSignal) => Promise<LocalCommandOutcome>;
+
 export interface TuiSessionOptions {
   app: TuiApp;
   io: TerminalIO;
   session: SessionHandle;
   runTurn: (text: string, signal: AbortSignal) => Promise<TurnResult>;
+  /** Run '!command' through policy/approval/sandbox; absent disables the feature. */
+  runLocalCommand?: TuiLocalCommandRunner;
   /** Model/effort control backed by the router and AgentLoop. */
   model?: TuiModelController;
   /** Permission profile listing/switching backed by the CLI bootstrap. */
@@ -48,11 +60,13 @@ export class TuiSession {
   readonly runtime: TuiRuntime;
   private readonly session: SessionHandle;
   private readonly runTurn: (text: string, signal: AbortSignal) => Promise<TurnResult>;
+  private readonly runLocalCommand: TuiLocalCommandRunner | undefined;
   private readonly model: TuiModelController | undefined;
   private readonly permissions: TuiPermissionController | undefined;
   private readonly onClear: (() => void) | undefined;
   private readonly initialPrompt: string | undefined;
   private active: AbortController | undefined;
+  private localActive: AbortController | undefined;
   private clearing = false;
   private changingModel = false;
   private changingPermission = false;
@@ -76,6 +90,7 @@ export class TuiSession {
     this.app = options.app;
     this.session = options.session;
     this.runTurn = options.runTurn;
+    this.runLocalCommand = options.runLocalCommand;
     this.model = options.model;
     this.permissions = options.permissions;
     this.onClear = options.onClear;
@@ -116,8 +131,9 @@ export class TuiSession {
     const pending = this.pendingApproval;
     if (pending !== undefined) pending.reject(abortError('Session exiting.'));
     this.active?.abort();
+    this.localActive?.abort();
     this.runtime.stop();
-    if (this.active === undefined) this.finish();
+    if (this.active === undefined && this.localActive === undefined) this.finish();
   }
 
   /**
@@ -309,7 +325,7 @@ export class TuiSession {
     switch (command.type) {
       case 'submit':
         // TuiApp already appended the user cell before returning this command.
-        if (this.active !== undefined) {
+        if (this.active !== undefined || this.localActive !== undefined) {
           this.app.enqueue(command.text, true);
           this.render();
           return;
@@ -318,6 +334,7 @@ export class TuiSession {
         return;
       case 'interrupt':
         this.active?.abort();
+        this.localActive?.abort();
         return;
       case 'answer':
         this.pendingAsk?.resolve(command.answers);
@@ -339,6 +356,16 @@ export class TuiSession {
   handleLocalCommand(text: string): void {
     if (this.exiting) return;
     const line = text.trim();
+    if (line.startsWith('!')) {
+      void this.runBangCommand(line).catch((error: unknown) => {
+        this.app.addNotice(
+          'Local command failed: ' + (error instanceof Error ? error.message : String(error)),
+          'error',
+        );
+        this.render();
+      });
+      return;
+    }
     if (line === '/quit' || line === '/exit') {
       this.exit(0);
       return;
@@ -402,14 +429,23 @@ export class TuiSession {
     }
     const current = this.permissions.current();
     if (line === '/permissions') {
+      if (this.active !== undefined || this.localActive !== undefined || this.changingPermission) {
+        this.app.addNotice('Cannot change permissions while a command or turn is running.', 'warning');
+        this.render();
+        return;
+      }
       const profiles = this.permissions.list();
-      this.app.addNotice(
-        'Permission profile: ' + current.profile + '\n' +
-          'Approval policy: ' + current.approvalPolicy + '\n' +
-          'Available profiles: ' + profiles.join(', ') + '\n' +
-          'Use /permissions <name> to switch.',
-      );
-      this.render();
+      void this.ask([{
+        id: 'permission-profile', header: 'Permissions',
+        question: 'Current: ' + current.profile + ' · ' + current.approvalPolicy + '. Select a permission profile.',
+        options: profiles.map((name) => ({ label: name })), multiSelect: false,
+      }]).then(async (answers) => {
+        const name = answers?.[0]?.selected[0];
+        if (name !== undefined && profiles.includes(name) && !this.exiting
+          && this.active === undefined && this.localActive === undefined && !this.changingPermission) {
+          await this.applyPermissionProfile(name);
+        }
+      });
       return;
     }
     if (this.active !== undefined) {
@@ -537,6 +573,12 @@ export class TuiSession {
   }
 
   private handleIdleCtrlC(): void {
+    if (this.localActive !== undefined) {
+      this.localActive.abort();
+      this.app.addNotice('Interrupting local command.');
+      this.render();
+      return;
+    }
     const now = Date.now();
     if (now - this.lastCtrlC < 1_500) {
       this.lastCtrlC = 0;
@@ -551,7 +593,7 @@ export class TuiSession {
     if (this.exiting) return;
     const trimmed = text.trim();
     if (trimmed.length === 0) return;
-    if (trimmed.startsWith('/')) {
+    if (trimmed.startsWith('/') || trimmed.startsWith('!')) {
       this.handleLocalCommand(trimmed);
       return;
     }
@@ -581,16 +623,96 @@ export class TuiSession {
       this.render();
     } finally {
       this.active = undefined;
-      if (this.exiting) {
-        this.finish();
-      } else {
-        const queued = this.app.dequeue();
-        if (queued !== undefined) {
-          this.render();
-          if (queued.submitted) void this.runPrompt(queued.text);
-          else void this.submitProgrammatic(queued.text);
-        }
+      if (this.exiting) this.finish();
+      else this.drainQueue();
+    }
+  }
+
+  /** Run the next queued prompt once the turn/local command has settled. */
+  private drainQueue(): void {
+    if (this.exiting || this.active !== undefined || this.localActive !== undefined) return;
+    const queued = this.app.dequeue();
+    if (queued === undefined) return;
+    this.render();
+    if (queued.submitted) void this.runPrompt(queued.text);
+    else void this.submitProgrammatic(queued.text);
+  }
+
+  /**
+   * Execute '!command' without the model. The command still goes through the
+   * Shell policy, approval panel and OS sandbox supplied by the CLI; its
+   * command/output are recorded as local.command / local.result so resume
+   * restores the transcript without polluting model history.
+   */
+  private async runBangCommand(line: string): Promise<void> {
+    if (this.exiting) return;
+    const command = parseLocalCommand(line);
+    if (command === undefined) return;
+    if (command.length === 0) {
+      this.app.addNotice('Usage: !<command> — the command runs locally with the Shell policy.', 'warning');
+      this.render();
+      return;
+    }
+    if (this.runLocalCommand === undefined) {
+      this.app.addNotice('Local shell commands are not available in this build.', 'warning');
+      this.render();
+      return;
+    }
+    if (this.active !== undefined || this.localActive !== undefined) {
+      this.app.addNotice('A turn is already running. Press Esc to interrupt it before running a local command.', 'warning');
+      this.render();
+      return;
+    }
+
+    if (this.app.composer.text.trim().length > 0) this.app.clearComposer(true);
+    const controller = new AbortController();
+    this.localActive = controller;
+    const commandId = generateRequestId();
+    const startedAt = Date.now();
+    let outcome: LocalCommandOutcome | undefined;
+    let durationMs = 0;
+    let cellId: string | undefined;
+    try {
+      await this.session.append(localCommandStartEvent(commandId, command, this.app.state.session.cwd));
+      cellId = this.app.beginLocalCommand(command);
+      this.render();
+
+      try {
+        outcome = await this.runLocalCommand(command, controller.signal);
+      } catch (error) {
+        durationMs = Math.max(0, Date.now() - startedAt);
+        outcome = {
+          content: 'Local command failed: ' + (error instanceof Error ? error.message : String(error)),
+          isError: true,
+          exitCode: null,
+          durationMs,
+          timedOut: false,
+          aborted: controller.signal.aborted,
+          ...(controller.signal.aborted ? { code: 'ABORTED' } : {}),
+        };
       }
+      durationMs = Math.max(0, Number.isFinite(outcome.durationMs) ? outcome.durationMs : Date.now() - startedAt);
+
+      await this.session.append(localCommandResultEvent(commandId, command, outcome));
+      for (const event of localCommandAuditEvents(commandId, outcome, {
+        profile: this.app.state.session.permissionProfile ?? 'none',
+        approvalPolicy: this.app.state.session.approvalPolicy ?? 'none',
+      })) {
+        await this.session.append(event);
+      }
+    } finally {
+      this.localActive = undefined;
+      if (cellId !== undefined) {
+        this.app.finishLocalCommand(cellId, {
+          output: outcome?.content ?? 'Local command failed before producing a result.',
+          isError: outcome?.isError ?? true,
+          durationMs: durationMs > 0 ? durationMs : Math.max(0, Date.now() - startedAt),
+          aborted: outcome?.aborted === true,
+        });
+      }
+      this.render();
+      if (this.exiting) this.finish();
+      else this.drainQueue();
     }
   }
 

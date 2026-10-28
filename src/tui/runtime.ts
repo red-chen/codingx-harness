@@ -1,3 +1,6 @@
+import { computeFrameLayout } from './app.js';
+import { layoutTranscript, transcriptHeight } from './widgets/transcript.js';
+import { drawStyledLine } from './widgets/welcome.js';
 import { CellBuffer } from './terminal/buffer.js';
 import { debugLog } from '../util/debug.js';
 import { InputParser, type InputEvent, type KeyEvent } from './terminal/input.js';
@@ -21,7 +24,7 @@ export interface TuiRuntimeOptions {
 }
 
 /**
- * Owns the real terminal: alt screen/raw mode, incremental input, frame diffing
+ * Owns the real terminal: primary screen/raw mode, incremental input, frame diffing
  * and timers. The app is pure; all side effects are here and injectable.
  */
 export class TuiRuntime {
@@ -37,6 +40,10 @@ export class TuiRuntime {
   private running = false;
   private stopped = false;
   private lastRender = 0;
+  private archivedRows = 0;
+  private archiveWidth = 0;
+  private archiveSession = '';
+  private archiveCells: readonly unknown[] = [];
 
   constructor(options: TuiRuntimeOptions) {
     this.options = options;
@@ -46,10 +53,11 @@ export class TuiRuntime {
     this.renderer = options.renderer ?? new Renderer({
       colorMode: options.colorMode ?? 'truecolor',
     });
-    // Native (terminal-owned) selection is the copy path: leave mouse
-    // reporting off so drags create a real terminal selection for Cmd+C.
+    // Native scrollback and text selection both belong to the terminal.
+    // Keep the primary screen and never capture mouse input.
     this.session = new TerminalSession(options.io, {
       mouse: false,
+      altScreen: false,
       onData: (chunk) => this.feed(chunk),
       onResize: (columns, rows) => this.resize(columns, rows),
       onSignal: (signal) => {
@@ -68,6 +76,8 @@ export class TuiRuntime {
     if (this.stopped) return false;
     if (!this.session.enter()) return false;
     this.running = true;
+    // Allocate a viewport on the primary screen without erasing shell scrollback.
+    this.session.write('\r' + '\n'.repeat(this.io.rows) + '\x1b[H');
     this.app.setSize(this.io.columns, this.io.rows);
     debugLog(
       'clipboard',
@@ -93,6 +103,7 @@ export class TuiRuntime {
       clearTimeout(this.renderTimer);
       this.renderTimer = undefined;
     }
+    this.session.write('\x1b[' + this.io.rows + ';1H\r\n');
     this.session.exit();
     this.stopped = true;
   }
@@ -114,7 +125,18 @@ export class TuiRuntime {
       return;
     }
     if (event.type === 'focus') return;
-    if (event.type === 'mouse' || event.type === 'wheel') return;
+    if (event.type === 'mouse') return;
+    if (event.type === 'wheel') {
+      if (this.app.mode === 'main' || this.app.mode === 'transcript') {
+        if (event.direction === 'up') this.app.scrollUp(3);
+        else this.app.scrollDown(3);
+        this.render();
+      } else if (this.app.mode === 'approval' && this.app.state.approval?.details) {
+        this.handleKey({ type: 'key', code: event.direction,
+          mods: { ctrl: false, alt: false, shift: false, meta: false } });
+      }
+      return;
+    }
     if (event.type === 'paste') {
       this.handleKey({ type: 'key', code: 'paste', text: event.text, mods: { ctrl: false, alt: false, shift: false, meta: false } });
       return;
@@ -138,14 +160,24 @@ export class TuiRuntime {
       key.code === 'enter' &&
       !key.mods.ctrl &&
       !key.mods.alt &&
-      !key.mods.meta &&
-      this.app.composer.text.trimStart().startsWith('/')
+      !key.mods.meta
     ) {
-      const text = this.app.composer.text.trim();
-      this.app.clearComposer(true);
-      this.options.onLocalCommand?.(text);
-      this.render();
-      return;
+      const composerText = this.app.composer.text;
+      if (composerText.trimStart().startsWith('/')) {
+        const text = composerText.trim();
+        this.app.clearComposer(true);
+        this.options.onLocalCommand?.(text);
+        this.render();
+        return;
+      }
+      // '!command' runs locally through the core, never as a model prompt. The
+      // handler clears the composer once it accepts the command; while a turn
+      // is running it keeps the text so the user can retry.
+      if (composerText.trimStart().startsWith('!')) {
+        this.options.onLocalCommand?.(composerText.trim());
+        this.render();
+        return;
+      }
     }
 
     const command = this.app.handleKey(key);
@@ -173,7 +205,7 @@ export class TuiRuntime {
   private resize(columns: number, rows: number): void {
     this.app.setSize(columns, rows);
     // Keep the previous front buffer so render() sees the dimension change and
-    // the renderer clears + repaints the screen. Replacing it with a blank
+    // the renderer repaints every cell. Replacing it with a blank
     // buffer of the new size hides the resize from the diff: blank cells are
     // "unchanged", so stale content from the old layout stays visible.
     this.render(true);
@@ -201,16 +233,67 @@ export class TuiRuntime {
       this.renderTimer = undefined;
     }
     this.lastRender = now;
+    this.archiveHistory();
     const { frame, cursor } = this.app.frameWithCursor();
-    // A size mismatch is intentional state: renderDiff emits a clear and full
-    // repaint for it. Do not replace front with a blank buffer here.
-    if (this.front === undefined) this.front = new CellBuffer(frame.width, frame.height);
+    // A size mismatch forces every cell to repaint, including blanks.
+    // Never emit ED2: iTerm2 may save the entire old screen to scrollback.
+    if (this.front === undefined) this.front = new CellBuffer(0, 0);
     const output = this.renderer.render(this.front, frame, {
       cursor,
       cursorVisible: cursor !== null,
+      clearOnResize: false,
     });
     this.front = frame;
     this.session.write(output);
+  }
+
+
+  /** Move hidden transcript rows into native scrollback; never capture the mouse. */
+  private archiveHistory(): void {
+    const state = this.app.state;
+    if (state.mode !== 'main' || state.scroll.offset !== 0) return;
+    const width = state.width;
+    const height = state.height;
+    if (width < 1 || height < 1) return;
+    const options = {
+      cells: state.transcript,
+      active: state.activeAssistant,
+      welcome: width < 40 ? null : {
+        version: state.version, model: state.session.model, cwd: state.session.cwd,
+        sessionId: state.session.sessionId,
+        ...(state.session.home ? { home: state.session.home } : {}),
+      },
+    };
+    const total = transcriptHeight(options, width);
+    const visible = computeFrameLayout(state, width, height).transcript.height;
+    const hidden = Math.max(0, total - visible);
+    const reset = this.archiveSession !== state.session.sessionId
+      || (this.archiveCells.length > 0 && state.transcript.length === 0);
+    if (reset) this.archivedRows = 0;
+    // Previously archived rows are terminal-owned and reflow there on resize.
+    // Rebase the current viewport rather than writing duplicate old history.
+    if (!reset && this.archiveWidth !== 0 && this.archiveWidth !== width) {
+      this.archivedRows = hidden;
+    }
+    this.archiveSession = state.session.sessionId;
+    this.archiveWidth = width;
+    this.archiveCells = state.transcript;
+    if (hidden <= this.archivedRows) return;
+    const count = hidden - this.archivedRows;
+    const lines = layoutTranscript({ ...options, scrollOffset: visible }, width, count).lines;
+    let archivedOutput = '';
+    for (const line of lines) {
+      const row = new CellBuffer(width, 1);
+      drawStyledLine(row, { x: 0, y: 0, width, height: 1 }, 0, line);
+      // Replace the top row, then scroll the whole primary screen by one line.
+      // Only the transcript enters scrollback, never the composer or overlays.
+      archivedOutput += '\x1b[H\x1b[2K' + this.renderer.render(new CellBuffer(width, 1), row)
+        + '\x1b[' + height + ';1H\r\n';
+    }
+    this.archivedRows = hidden;
+    this.session.write(archivedOutput);
+    // Scrolling invalidates every physical row, including blank cells.
+    this.front = new CellBuffer(0, 0);
   }
 
   private tick(): void {

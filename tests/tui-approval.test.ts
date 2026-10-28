@@ -59,6 +59,20 @@ function shown(request = shellRequest()): TuiApp {
 }
 
 describe('TuiApp approval overlay', () => {
+  it('shows full command details without allowing Enter to approve', () => {
+    const app = shown(shellRequest({ action: { kind: 'exec', tool: 'Shell',
+      command: 'echo ' + 'long-command '.repeat(300) + 'COMMAND_END', cwd: '/tmp/work' } }));
+    app.handleKey(printable('v'));
+    expect(screenText(app.frame())).toContain('Approval details');
+    expect(app.handleKey(key('enter'))).toBeUndefined();
+    expect(app.state.approval).toBeDefined();
+    for (let i = 0; i < 10; i++) app.handleKey(key('pagedown'));
+    expect(screenText(app.frame())).toContain('COMMAND_END');
+    app.handleKey(key('escape'));
+    expect(app.state.approval?.details).toBe(false);
+    expect(app.handleKey(key('enter'))).toEqual({ type: 'approval', decision: { decision: 'allow', scope: 'once' } });
+  });
+
   it('opens an awaiting modal and renders the normalized action and fixed options', () => {
     const app = shown();
     expect(app.mode).toBe('approval');

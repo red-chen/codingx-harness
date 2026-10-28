@@ -1,8 +1,8 @@
 import { stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { abortError, ToolError } from '../util/errors.js';
-import { runShellCommand } from '../exec/index.js';
 import { resolveWorkspacePath } from './paths.js';
+import { runSandboxedShell } from './shell-exec.js';
 import type { ToolDef } from './types.js';
 
 const MAX_TIMEOUT_MS = 10 * 60 * 1000;
@@ -24,7 +24,7 @@ const schema = z.object({
 });
 
 function section(label: string, text: string): string {
-  return label + ':\n' + (text.length > 0 ? text.replace(/\n$/, '') : '(empty)');
+  return label + ':' + '\n' + (text.length > 0 ? text.replace(/\n$/, '') : '(empty)');
 }
 
 export const shellTool: ToolDef<typeof schema> = {
@@ -32,6 +32,8 @@ export const shellTool: ToolDef<typeof schema> = {
   description:
     'Run a shell command inside the workspace (or an --add-dir root) and return stdout, stderr and the exit code. ' +
     'Commands run through bash -lc in their own process group; the working directory must stay inside an allowed root. ' +
+    'On macOS they also run inside the Seatbelt sandbox, so writes outside the permission profile and network access ' +
+    'are rejected by the kernel. ' +
     'Use this to run tests, builds, linters and git commands. Long output is truncated with an explicit marker. ' +
     'A non-zero exit code is reported as an error result; read the output before deciding what to do next. ' +
     'Do not use Shell to read, search or edit files when ReadFile, Grep, Glob or EditFile fits. ' +
@@ -47,16 +49,45 @@ export const shellTool: ToolDef<typeof schema> = {
     if (!info.isDirectory()) throw new ToolError('shell cwd is not a directory: ' + requestedCwd + '.');
 
     const timeoutMs = Math.min(input.timeout_ms ?? ctx.shell.timeoutMs, MAX_TIMEOUT_MS);
-    const result = await runShellCommand({
+    const outcome = await runSandboxedShell({
       command: input.command,
       cwd: resolved.absolute,
       timeoutMs,
       env: ctx.shell.env,
       maxOutputChars: ctx.maxOutputChars,
       signal: ctx.signal,
+      ...(ctx.policy === undefined ? {} : { policy: ctx.policy }),
+      ...(ctx.sandbox === undefined ? {} : { sandbox: ctx.sandbox }),
+      ...(ctx.yolo === true ? { yolo: true } : {}),
     });
+    if (!outcome.ok) {
+      return {
+        content: outcome.message,
+        isError: true,
+        meta: { code: outcome.code, sandbox: outcome.sandbox },
+      };
+    }
 
+    const { result, sandboxKind, sandboxActive, sandboxDenied, networkDenied } = outcome.execution;
     if (result.aborted) throw abortError('Shell command aborted.');
+
+    const failed = result.timedOut || result.exitCode !== 0 || result.signal !== null;
+    const sandboxMeta =
+      sandboxActive
+        ? {
+            kind: sandboxKind ?? 'sandbox',
+            active: true,
+            denied: sandboxDenied,
+            ...(sandboxDenied
+              ? {
+                  reason: networkDenied
+                    ? 'Network access is denied by the permission profile sandbox.'
+                    : 'The operating-system sandbox denied a filesystem operation.',
+                  code: 'SANDBOX_DENIED',
+                }
+              : {}),
+          }
+        : undefined;
 
     const relCwd = resolved.relative;
     const parts: string[] = [];
@@ -66,12 +97,14 @@ export const shellTool: ToolDef<typeof schema> = {
     parts.push('exit_code: ' + (result.exitCode === null ? 'none' : result.exitCode));
     parts.push('duration_ms: ' + result.durationMs);
     if (input.description) parts.push('description: ' + input.description);
+    if (sandboxMeta !== undefined) {
+      parts.push('sandbox: ' + sandboxMeta.kind + (sandboxDenied ? ' (denied)' : ''));
+    }
     parts.push(section('stdout', result.stdout));
     parts.push(section('stderr', result.stderr));
     if (result.stdoutTruncated) parts.push('[stdout truncated; ' + result.stdoutChars + ' characters total]');
     if (result.stderrTruncated) parts.push('[stderr truncated; ' + result.stderrChars + ' characters total]');
 
-    const failed = result.timedOut || result.exitCode !== 0 || result.signal !== null;
     return {
       content: parts.join('\n\n'),
       ...(failed ? { isError: true } : {}),
@@ -87,6 +120,8 @@ export const shellTool: ToolDef<typeof schema> = {
         stderrChars: result.stderrChars,
         stdoutTruncated: result.stdoutTruncated,
         stderrTruncated: result.stderrTruncated,
+        ...(sandboxDenied ? { code: 'SANDBOX_DENIED' } : {}),
+        ...(sandboxMeta === undefined ? {} : { sandbox: sandboxMeta }),
       },
     };
   },

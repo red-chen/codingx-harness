@@ -21,9 +21,18 @@ import { abortError, SessionError } from '../../util/errors.js';
 import { generateRequestId } from '../../util/ids.js';
 import { PlainRenderer, type TextSink } from '../../ui/plain.js';
 import { VERSION } from '../../version.js';
+import { hookWarnings } from '../../hooks/index.js';
 import { bootstrap, type CliApp } from '../bootstrap.js';
+import {
+  localCommandAuditEvents,
+  localCommandResultEvent,
+  localCommandStartEvent,
+  parseLocalCommand,
+  runLocalCommand,
+  type LocalCommandOutcome,
+} from '../local-command.js';
 import { describeModelSelection, parseModelCommand } from '../model-command.js';
-import { createLoop } from '../runtime.js';
+import { createLoop, DEFAULT_SHELL_TIMEOUT_MS } from '../runtime.js';
 import { runTuiInteractive } from './tui.js';
 
 export interface InteractiveCommandOptions {
@@ -259,6 +268,17 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
     }
     if (resumedModel && !options.model) app.router.setModel(resumedModel);
 
+    const startHooks = await app.hooks.run(
+      'session_start',
+      { sessionId: session.id, cwd: app.cwd },
+      { session },
+    );
+    for (const warning of hookWarnings(startHooks)) stderr.write('warning: ' + warning + '\n');
+    if (startHooks.context.trim().length > 0) {
+      app.sessionHookContext = startHooks.context.trim();
+      app.systemPrompt += '\n\n# Hook context (session_start)\n' + startHooks.context.trim();
+    }
+
     const grants = new SessionGrants(currentApp.cwd);
     const readApprovalLine = (signal: AbortSignal | undefined): Promise<string | null> => {
       if (signal?.aborted === true) return Promise.reject(abortError('Approval cancelled.'));
@@ -396,8 +416,63 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
       }
     };
 
+    const runLocal = async (line: string): Promise<void> => {
+      const command = parseLocalCommand(line);
+      if (command === undefined) return;
+      if (command.length === 0) {
+        commandOut.write('Usage: !<command>. The command runs locally with the Shell policy.\n');
+        return;
+      }
+      if (json) {
+        stderr.write('Local shell commands are not available with --json.\n');
+        return;
+      }
+      const controller = new AbortController();
+      activeController = controller;
+      const commandId = generateRequestId();
+      const startedAt = Date.now();
+      await currentSession.append(localCommandStartEvent(commandId, command, currentApp.cwd));
+      commandOut.write('! ' + command + '\n');
+      let outcome: LocalCommandOutcome;
+      try {
+        outcome = await runLocalCommand({
+          command,
+          cwd: currentApp.cwd,
+          env: currentApp.shellEnv,
+          timeoutMs: DEFAULT_SHELL_TIMEOUT_MS,
+          maxOutputChars: currentApp.config.tools.maxOutputChars,
+          policy: currentApp.policy,
+          sandbox: currentApp.sandbox,
+          approve,
+          signal: controller.signal,
+        });
+      } catch (error) {
+        outcome = {
+          content: 'Local command failed: ' + (error instanceof Error ? error.message : String(error)),
+          isError: true,
+          exitCode: null,
+          durationMs: Math.max(0, Date.now() - startedAt),
+          timedOut: false,
+          aborted: controller.signal.aborted,
+          ...(controller.signal.aborted ? { code: 'ABORTED' } : {}),
+        };
+      } finally {
+        activeController = undefined;
+      }
+      commandOut.write(outcome.content + '\n');
+      await currentSession.append(localCommandResultEvent(commandId, command, outcome));
+      for (const event of localCommandAuditEvents(commandId, outcome, {
+        profile: currentApp.policy.profileName,
+        approvalPolicy: currentApp.policy.approvalPolicy,
+      })) {
+        await currentSession.append(event);
+      }
+    };
+
     if (options.initialPrompt && options.initialPrompt.trim().length > 0) {
-      await runLine(options.initialPrompt);
+      const initial = options.initialPrompt.trim();
+      if (initial.startsWith('!')) await runLocal(initial);
+      else await runLine(options.initialPrompt);
     }
 
     for (;;) {
@@ -407,6 +482,10 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
       if (raw === null || exitRequested) break;
       const line = raw.trim();
       if (line.length === 0) continue;
+      if (line.startsWith('!')) {
+        await runLocal(line);
+        continue;
+      }
       if (EXIT_COMMANDS.has(line)) break;
       if (line === '/help') {
         commandOut.write(
@@ -478,6 +557,18 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
   } finally {
     process.removeListener('SIGINT', onSigint);
     rl.close();
+    if (session && app) {
+      try {
+        const endHooks = await app.hooks.run(
+          'session_end',
+          { sessionId: session.id, cwd: app.cwd },
+          { session },
+        );
+        for (const warning of hookWarnings(endHooks)) stderr.write('warning: ' + warning + '\n');
+      } catch {
+        // Session hooks must not prevent close/lease release.
+      }
+    }
     if (session) await session.close();
     if (app) await app.store.close?.();
   }

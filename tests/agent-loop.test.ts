@@ -164,6 +164,20 @@ function createTools(log: string[] = []): ToolRegistry {
       throw abortError();
     },
   };
+  const sandboxDeny: ToolDef<typeof toolSchema> = {
+    name: 'sandbox_deny',
+    description: 'simulate an OS sandbox denial',
+    schema: toolSchema,
+    parallelSafe: false,
+    approval: 'none',
+    async execute() {
+      return {
+        content: 'blocked by the OS sandbox',
+        isError: true,
+        meta: { sandbox: { kind: 'seatbelt', active: true, denied: true, reason: 'Operation not permitted' } },
+      };
+    },
+  };
   const large: ToolDef<typeof toolSchema> = {
     name: 'large',
     description: 'return a large tool result',
@@ -174,7 +188,7 @@ function createTools(log: string[] = []): ToolRegistry {
       return { content: 'x'.repeat(20_000) };
     },
   };
-  return new ToolRegistry([echo, fail, boom, abort, large, updatePlanTool]);
+  return new ToolRegistry([echo, fail, boom, abort, large, sandboxDeny, updatePlanTool]);
 }
 
 function createLoop(
@@ -268,6 +282,21 @@ describe('AgentLoop approvals', () => {
       additionalDirs: [],
       readRoots: [],
       writeRoots: [],
+      sandboxPolicy: {
+        profileName: ':workspace',
+        cwd,
+        home: cwd,
+        tmpdir: cwd,
+        readRoots: [],
+        writeRoots: [],
+        denyRoots: [],
+        denyGlobs: [],
+        additionalDirs: [],
+        network: { enabled: false, domains: {} },
+        yolo: false,
+        gitHooksWritable: false,
+        gitConfigWritable: false,
+      },
       rootsFor: () => [],
       isPathDenied: () => false,
       evaluate: async () => ({
@@ -303,6 +332,25 @@ describe('AgentLoop approvals', () => {
 
     const toolResult = session.events.find((event) => event.type === 'tool.result');
     expect(toolResult?.meta).toMatchObject({ policy: { verdict: 'allow', profile: ':workspace' } });
+  });
+
+  it('records sandbox.denied when a Shell result reports an OS sandbox denial', async () => {
+    const session = new RecordingSession();
+    const client = new ScriptedClient([
+      toolStep([{ id: 'call-sandbox', name: 'sandbox_deny', input: {} }]),
+      textStep('done'),
+    ]);
+    const loop = createLoop(client, session, []);
+    const result = await loop.runTurn('try the sandbox');
+    expect(result.status).toBe('done');
+    const denied = eventsOf(session, 'sandbox.denied');
+    expect(denied).toHaveLength(1);
+    expect(denied[0]).toMatchObject({
+      callId: 'call-sandbox',
+      kind: 'seatbelt',
+      reason: 'Operation not permitted',
+      retryable: true,
+    });
   });
 });
 

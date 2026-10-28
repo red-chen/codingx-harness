@@ -19,6 +19,8 @@ export interface CursorPosition {
 }
 
 export interface RenderOptions {
+  /** Primary-screen redraws must not archive the viewport via ED2 (iTerm2). */
+  clearOnResize?: boolean;
   colorMode?: ColorMode;
   /** Wrap the frame in synchronized-output markers (default true). */
   synchronized?: boolean;
@@ -226,7 +228,7 @@ export function renderDiff(front: CellBuffer, back: CellBuffer, options: RenderO
   if (synchronized) parts.push(SYNC_START);
 
   const sameSize = front.width === back.width && front.height === back.height;
-  if (!sameSize) parts.push('\x1b[2J');
+  if (!sameSize && options.clearOnResize !== false) parts.push('\x1b[2J');
 
   let current: ResolvedStyle = EMPTY_STYLE;
 

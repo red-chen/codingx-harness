@@ -1,7 +1,7 @@
 import type { ReasoningEffort, TokenUsage } from '../../providers/types.js';
 import type { PlanStep } from '../../tools/types.js';
 import type { Color } from '../terminal/buffer.js';
-import { ansiColor, color256 } from '../terminal/buffer.js';
+import { ansiColor, color256, rgbColor } from '../terminal/buffer.js';
 
 /**
  * Pure TUI state model shared by the app reducer and the widgets.
@@ -48,6 +48,8 @@ export interface AssistantCell {
 }
 
 export interface ExecCell {
+  readonly exploration?: string;
+  readonly expanded?: boolean;
   readonly type: 'exec';
   readonly id: string;
   readonly callId: string;
@@ -58,6 +60,21 @@ export interface ExecCell {
   readonly isError: boolean;
   readonly durationMs?: number;
   /** True between tool.started and tool.finished. */
+  readonly running: boolean;
+}
+
+/**
+ * A user-typed '!command'. It is rendered like a user line plus its output,
+ * never as a model tool call, and it keeps the complete bounded output.
+ */
+export interface LocalCommandCell {
+  readonly type: 'local';
+  readonly id: string;
+  readonly command: string;
+  readonly output: string;
+  readonly isError: boolean;
+  readonly durationMs?: number;
+  /** True between local.command and local.result. */
   readonly running: boolean;
 }
 
@@ -87,7 +104,14 @@ export interface NoticeCell {
   readonly text: string;
 }
 
-export type TranscriptCell = UserCell | AssistantCell | TurnSummaryCell | ExecCell | PlanCell | NoticeCell;
+export type TranscriptCell =
+  | UserCell
+  | AssistantCell
+  | TurnSummaryCell
+  | ExecCell
+  | LocalCommandCell
+  | PlanCell
+  | NoticeCell;
 
 /** The mutable tail while a turn streams. Never stored in transcript until done. */
 export interface ActiveAssistantCell {
@@ -191,6 +215,8 @@ export interface TuiApprovalRequest {
 
 /** Modal approval state. Choices are fixed by the app; model output cannot add or reorder them. */
 export interface TuiApprovalState {
+  readonly details?: boolean;
+  readonly detailsOffset?: number;
   readonly request: TuiApprovalRequest;
   readonly choiceIndex: number;
   readonly editingReason: boolean;
@@ -254,16 +280,35 @@ export interface TuiColors {
  * renderer owns capability downgrade and NO_COLOR, so widgets only ever refer
  * to these names.
  */
+/** Reduce HSL saturation by 10%, preserving hue and lightness. */
+function softColor(r: number, g: number, b: number): Color {
+  const lightness = (Math.max(r, g, b) + Math.min(r, g, b)) / 2;
+  return rgbColor(
+    Math.round(lightness + (r - lightness) * 0.9),
+    Math.round(lightness + (g - lightness) * 0.9),
+    Math.round(lightness + (b - lightness) * 0.9),
+  );
+}
+
+/** Shared reference accents, with the same saturation adjustment everywhere. */
+export const TRANSCRIPT_COLORS = Object.freeze({
+  emphasis: softColor(239, 113, 154),
+  code: softColor(139, 217, 137),
+  bullet: softColor(126, 224, 210),
+  command: softColor(97, 175, 239),
+  success: softColor(82, 223, 145),
+});
+
 export const TUI_COLORS: TuiColors = Object.freeze({
-  accent: ansiColor(6),
+  accent: TRANSCRIPT_COLORS.bullet,
   muted: ansiColor(8),
-  success: ansiColor(2),
-  warning: ansiColor(3),
-  error: ansiColor(1),
+  success: TRANSCRIPT_COLORS.success,
+  warning: softColor(229, 192, 123),
+  error: softColor(224, 108, 117),
   userBg: color256(237),
   composerBg: color256(235),
   planBg: color256(234),
-  diffAdd: ansiColor(2),
-  diffDel: ansiColor(1),
+  diffAdd: TRANSCRIPT_COLORS.success,
+  diffDel: softColor(224, 108, 117),
   border: ansiColor(8),
 });

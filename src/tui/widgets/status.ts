@@ -1,3 +1,4 @@
+import { ATTR_DIM } from '../terminal/buffer.js';
 import type { CellBuffer, Style } from '../terminal/buffer.js';
 import type { Rect } from '../layout/index.js';
 import { displayWidth, truncateToWidth } from '../text/index.js';
@@ -23,9 +24,8 @@ export interface StatusRowOptions {
 
 export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const;
 
-const ACCENT_STYLE: Style = { fg: TUI_COLORS.accent };
-const MUTED_STYLE: Style = { fg: TUI_COLORS.muted };
-const SUCCESS_STYLE: Style = { fg: TUI_COLORS.success };
+const ACTIVE_STYLE: Style = {};
+const MUTED_STYLE: Style = { attrs: ATTR_DIM };
 const WARNING_STYLE: Style = { fg: TUI_COLORS.warning };
 const ERROR_STYLE: Style = { fg: TUI_COLORS.error };
 
@@ -135,11 +135,11 @@ export function statusLabel(
 }
 
 export function statusStyle(status: TuiStatus): Style {
-  if (status.state === 'working') return ACCENT_STYLE;
-  if (status.state === 'awaiting') return WARNING_STYLE;
+  if (status.state === 'working') return ACTIVE_STYLE;
+  if (status.state === 'awaiting') return ACTIVE_STYLE;
   if (status.outcome === 'aborted') return WARNING_STYLE;
   if (status.outcome === 'error') return ERROR_STYLE;
-  return status.outcome === 'done' ? SUCCESS_STYLE : MUTED_STYLE;
+  return MUTED_STYLE;
 }
 
 /** Right-hand usage/context label, or undefined when it should be hidden. */

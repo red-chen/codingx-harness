@@ -1,22 +1,26 @@
 # 权限体系（M3 设计）
 
-> 状态：**M3.0 设计完成；M3.1 策略内核 + M3.2 审批交互已落地基础版**。文件工具已接入 Permission profile / approval policy；TUI 与 plain 交互都可审批，支持允许一次 / 本会话 / 命令前缀 / 拒绝并说明原因，会话授权只存在内存并写入审计。仍没有 OS 沙箱、网络代理、自动审查与可配置 exec policy；Shell 的命令级策略是保守启发式，不能当作隔离。当前实现边界见 [README](../README.md)，实施拆分见 [implementation-plan-m3.md](implementation-plan-m3.md)。
+> 状态：**M3.0 设计完成；M3.1 策略内核、M3.2 审批交互与 M3.3 macOS Seatbelt 已落地**。文件工具与 Shell 都已接入 Permission profile / approval policy；TUI 与 plain 交互都可审批，支持允许一次 / 本会话 / 命令前缀 / 拒绝并说明原因，会话授权只存在内存并写入审计。macOS 上 Shell 在 Seatbelt 中运行：文件写入限制在 profile 根、网络默认 deny、凭证路径/文件名由内核拒绝；Linux Landlock、网络代理/域名白名单、自动审查与可配置 exec policy 仍未完成，Linux Shell 仍是显式降级状态。当前实现边界见 [README](../README.md)，实施拆分见 [implementation-plan-m3.md](implementation-plan-m3.md)。
 
 设计对照的是 **Codex CLI 0.153.x** 的权限模型（Permission profiles + Approval policy + Approvals reviewer + sandbox backend）。Codex 已移除旧的 `--full-auto`，批准策略在 CLI 上收敛为 `on-request` / `never`，并新增 `--approve-for-me` 与命名 Permission profiles；codingx 不照抄旧文档，而是采用当前模型，同时保留用户要求的 `--yolo` / `--allow-dangerously-skip-permissions` 别名。
 
-## 0. 当前实现（M3.1）
+## 0. 当前实现（M3.1 / M3.2 / M3.3）
 
 | 能力 | 当前状态 |
 | --- | --- |
-| Permission profiles | 内置 `:read-only` / `:workspace` / `:danger-full-access` + 命名 profile、extends、文件系统/网络解析 |
+| Permission profiles | 内置 `:read-only` / `:workspace` / `:workspace-git-hooks` / `:danger-full-access` + 命名 profile、extends、文件系统/网络解析 |
 | 文件工具策略 | Read/Write/Edit/Patch 经过 profile 路径检查；敏感路径 deny；越界 fail closed |
 | Approval policy | `on-request` / `never`；`always-ask` 旧值兼容为逐工具询问；非交互无 approver 时返回 `APPROVAL_REQUIRED` |
 | 审批交互 | TUI 底部弹层 + plain 交互提示；允许一次 / 本会话 / 命令前缀 / 拒绝并说明原因 / Esc 取消 |
 | 会话授权 | 仅内存的 exact action 与 exec prefix 缓存；`/clear` 清除，resume 不继承；写入 `permission.granted` |
 | CLI | `--sandbox`、`--ask-for-approval`、`--permission-profile`、`/permissions`、`--yolo`；`--approve-for-me` / `--full-auto` 已接受但自动审查未实现 |
-| Shell 策略 | 保守 tokenizer、硬拒绝、网络命令启发式、cd/重定向/绝对路径检查；**没有 OS 沙箱**，任意命令仍可绕过 |
-| 审计 | `approval.requested/decided`、`permission.granted`、`permission.decision`、`profile.changed` |
-| 未实现 | 自动审查、Seatbelt/Landlock、网络代理、exec policy 规则、长命令全屏审批视图 |
+| Shell 策略 | 保守 tokenizer、硬拒绝、网络命令启发式、cd/重定向/绝对路径检查；macOS 上再进入 Seatbelt，Linux 目前无 OS 隔离 |
+| 本地 `!` 命令 | 不经过模型；复用 Shell 的 Action、审批与沙箱，输出写 `local.command` / `local.result` |
+| Git hooks | 仓库已有 hooks 默认可以执行；`.git/hooks` / `.git/config` 写入默认拒绝。`:git_hooks` / `:git_config` 作用域或 `:workspace-git-hooks` profile 可显式放开，并产生启动告警 |
+| OS 沙箱（macOS） | `sandbox-exec` + 生成 profile：默认 deny，写入限定 profile 根，网络默认 deny，凭证目录与 `.env*`/私钥文件名由内核拒绝；Shell 结果带 `sandbox` meta 与 `SANDBOX_DENIED` |
+| 沙箱降级 | macOS 探测失败时 Shell 返回 `SANDBOX_UNAVAILABLE`，`--yolo` 拒绝启动；Linux 在 S4 前显式告警并保持无沙箱 |
+| 审计 | `approval.requested/decided`、`permission.granted`、`permission.decision`、`profile.changed`、`sandbox.denied` |
+| 未实现 | 自动审查、Linux Landlock、Windows 沙箱、网络代理/域名白名单、exec policy 规则、审批全屏视图 |
 
 
 ## 1. 目标与不变量
@@ -28,7 +32,7 @@
 5. **可解释**：审批框展示规范化后的动作、路径/命令、cwd、网络目标、风险与理由；模型给出的是不可信说明，不参与判定。
 6. **可审计**：每次判定、批准、拒绝、沙箱拒绝与授权都写入 rollout，包含决策者与规则来源。
 7. **模型不能自批**：批准只能来自用户（或显式配置的独立 reviewer）；模型输出不能伪造弹层、选项或快捷键。
-8. **不把未实现能力说成已实现**：当前 `--yolo` 关闭文件工具策略并映射到 danger/never，但没有 OS 隔离；文档与告警必须明确这一点。
+8. **不把未实现能力说成已实现**：macOS 已有 Seatbelt；Linux/Windows 尚无 OS 隔离，`--yolo` 会关闭现有策略与沙箱。文档与告警必须按平台说明当前边界。
 
 ## 2. 总体模型
 
@@ -92,12 +96,13 @@ type Action =
 
 ## 3. Permission profiles
 
-Permission profile 是一组命名、可复用的文件系统与网络权限。名字与 Codex 对齐，内置三个：
+Permission profile 是一组命名、可复用的文件系统与网络权限。名字与 Codex 对齐，内置四个：
 
 | 名称 | 语义 | 对应 TUI 预设 |
 | --- | --- | --- |
 | `:read-only` | 只读 workspace 与必要系统路径；命令在只读沙箱内执行，写与联网要审批 | Read Only |
 | `:workspace` | 可读写 workspace 与临时目录、可执行命令；workspace 外写入与联网要审批 | Default / Agent |
+| `:workspace-git-hooks` | 在 `:workspace` 基础上显式允许写 `.git/hooks` 与 `.git/config`，用于安装/管理 Git hooks；启动时告警 | Custom |
 | `:danger-full-access` | 无文件系统沙箱、无网络限制；仍受 exec policy 硬拒绝约束 | Full Access |
 
 自定义 profile：
@@ -120,7 +125,10 @@ extends = ":workspace"
 [permissions.project-edit.filesystem.":workspace_roots"]
 "." = "write"
 "**/*.env" = "deny"          # 敏感文件永远拒绝，除非用户显式覆盖
-".git/hooks/**" = "deny"
+
+# Git hooks 默认只允许执行、禁止写入；需要安装 hooks 时显式 opt in：
+# ":git_hooks" = "write"
+# ":git_config" = "write"      # husky 等需要写 core.hooksPath 时再加
 
 [permissions.project-edit.network]
 enabled = true               # 示例：仅此 profile 需要联网；默认是 false
@@ -133,12 +141,12 @@ enabled = true               # 示例：仅此 profile 需要联网；默认是 
 
 ### 3.1 文件系统规则
 
-- 作用域支持：`:minimal`、`:root`、`:workspace_roots`、`:tmpdir`、`:slash_tmp`、绝对路径、`~/...`、glob（如 `**/*.pem`）。当前实现只接受 **deny** glob；read/write glob 会在启动时报配置错误，避免静默忽略。
+- 作用域支持：`:minimal`、`:root`、`:workspace_roots`、`:tmpdir`、`:slash_tmp`、`:git_hooks`、`:git_config`、绝对路径、`~/...`、glob（如 `**/*.pem`）。当前实现只接受 **deny** glob；read/write glob 会在启动时报配置错误，避免静默忽略。`:git_hooks` / `:git_config` 只接受 `write` / `deny`（`write` 隐含 read）。
 - 访问级别：`read` / `write` / `deny`。`write` 隐含 `read`。
 - 解析顺序：**更具体的路径覆盖更宽的路径；同级冲突时 deny 优先；显式 deny 永远优先于 allow**。
 - 默认拒绝读取：`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.codingx`、session 目录、`.env*`、私钥与常见凭证文件；除非用户在全局配置中显式放开。
 - 默认可写：主 workspace 根、`--add-dir` 显式追加的目录、`$TMPDIR`；`/tmp` 是否可写由 profile 显式决定。
-- `.git/hooks`、`.git/config` 默认 deny-write；普通 `.git` 对象与索引允许写，否则 `git commit` 无法工作。
+- Git hooks 的执行默认可用（`git commit` 会运行仓库已有 hooks）；`.git/hooks` 与 `.git/config` 默认 deny-write，防止模型或仓库内容静默安装持久化 hook。需要写 hooks 时使用 `:git_hooks` / `:git_config` 作用域（仅 `write` / `deny`），或直接选择 `:workspace-git-hooks` profile；普通 `.git` 对象与索引仍允许写，否则 `git commit` 无法工作。
 - `--add-dir` 只追加可写根，不改变网络与审批策略；如果当前 profile 不允许追加根（例如 `:read-only` 或自定义 profile 关闭了 workspace 扩展），`--add-dir` 必须报配置错误，而不是静默忽略。
 
 ### 3.2 网络规则
@@ -280,6 +288,8 @@ interface ShellExtras {
 
 文件工具没有「在沙箱里失败再重试」这一层（它们在 CLI 进程内执行）。路径越界时直接进入审批：批准一次 → 本次调用带临时根执行；批准会话 → 该根在本会话内有效；拒绝 → 回填 `PERMISSION_DENIED`。
 
+当前 S3 尚未接入 Shell 的 `sandbox_permissions` 提权重试：批准一个越界 Shell 命令只会解除策略层，Seatbelt 仍按 profile 拒绝，直到 S5 把批准转换成临时沙箱根/网络授权。模型会看到 `SANDBOX_DENIED`，不要原样重试。
+
 ## 6. 沙箱
 
 接口统一，平台实现可替换：
@@ -287,28 +297,37 @@ interface ShellExtras {
 ```ts
 interface SandboxBackend {
   readonly kind: 'seatbelt' | 'landlock' | 'windows' | 'none';
-  available(): Promise<boolean>;
-  run(spec: SandboxSpec): Promise<ExecResult>;
-  capabilities: {
+  readonly capabilities: {
     fileSystem: 'enforced' | 'none';
-    network: 'proxy' | 'deny' | 'none';
+    network: 'deny' | 'allow' | 'proxy' | 'none';
     unixSockets: boolean;
   };
+  readonly status: SandboxStatus;
+  available(): Promise<boolean>;
+  /** 生成已包装的 shell argv；不可用时抛 SANDBOX_UNAVAILABLE。 */
+  wrapShell(command: string, policy: SandboxPolicy): { file: string; args: string[] };
 }
 
-interface SandboxSpec {
-  argv: string[];
+interface SandboxPolicy {
   cwd: string;
-  env: Record<string, string>;
-  profile: ResolvedPermissionProfile;
-  /** 本次调用的临时放宽（来自已批准的提权） */
-  grants?: PermissionGrant;
+  home: string;
+  tmpdir: string;
+  readRoots: readonly string[];
+  writeRoots: readonly string[];
+  denyRoots: readonly string[];
+  denyGlobs: ReadonlyArray<{ base: string | null; pattern: string }>;
+  additionalDirs: readonly string[];
+  sessionDir?: string;
+  network: NetworkPolicy;
+  yolo: boolean;
+  gitHooksWritable: boolean;
+  gitConfigWritable: boolean;
 }
 ```
 
 | 平台 | 文件系统 | 网络 | 备注 |
 | --- | --- | --- | --- |
-| macOS | `sandbox-exec` + Seatbelt profile，默认 `(deny default)` | 默认 deny；域名白名单由本地代理执行 | `sandbox-exec` 已标记弃用但仍可用；需要长期方案时评估 Seatbelt 替代 |
+| macOS | **已实现**：`sandbox-exec` + Seatbelt profile，默认 `(deny default)`；读取限系统/工具链/profile 根，写入限 profile 写根 | 默认 deny；profile 启用时整网放行（域名白名单待 S6 代理） | `sandbox-exec` 已标记弃用但仍可用；需要长期方案时评估 Seatbelt 替代 |
 | Linux | Landlock（文件系统） + seccomp；内核不支持时降级 | Landlock 网络能力有限，域名过滤走代理/网络命名空间 | 不支持时**强制审批**并拒绝 `--yolo`，不能静默降级成无沙箱 |
 | Windows | 受限令牌 / 提权沙箱（后续） | 代理 | M3 暂不支持，显式提示并强制审批 |
 | 其他 | 无沙箱 | 无 | 只允许 `:read-only` 或强制审批；`--yolo` 拒绝启动 |
@@ -321,7 +340,7 @@ interface SandboxSpec {
 - 网络代理只监听回环；不把 API Key 注入请求；拒绝私网/回环目标，除非 profile 显式允许。
 - 工具子进程不继承 `CODINGX_SESSIOND_SOCKET`、`CODINGX_HOME` 等控制面变量（按现有做法）。
 
-当前构建：文件工具已由 profile 检查，Shell 只做命令启发式，二者都不是 OS 沙箱；`--yolo` 取消文件工具策略。**在 M3 沙箱落地前，Shell 命令仍能以当前用户权限访问整台机器。**
+当前构建：文件工具由 profile 检查；macOS Shell 在命令启发式之后还会进入 Seatbelt，因此即使策略误判，越界写入、凭证读取与默认网络访问仍会被内核拒绝。Linux 尚未接入 Landlock，Shell 仍以当前用户权限运行；`--yolo` 在所有平台都关闭现有策略与沙箱。Seatbelt 无法按域名过滤，启用网络时是整网放行，直到 S6 本地代理落地。
 
 ## 7. 预设、CLI 与配置优先级
 
@@ -331,6 +350,7 @@ TUI / CLI 预设与 Codex 对齐：
 | --- | --- | --- | --- |
 | Read Only | `:read-only` | `on-request` | 读 workspace；写与联网要批准 |
 | Default / Agent | `:workspace` | `on-request` | 读写 workspace；越界与联网要批准 |
+| Git Hooks | `:workspace-git-hooks` | `on-request` | 在 Default 基础上允许写 `.git/hooks` 与 `.git/config`；启动告警 |
 | Full Access | `:danger-full-access` | `never` | 无沙箱、无批准；启动告警 |
 | Approve for me | `:workspace` | `on-request` + `auto_review` | 越界请求交给独立 reviewer（后续） |
 | Custom | `default_permissions` | 配置 | 选择 config.toml 中的命名 profile |
@@ -345,6 +365,7 @@ codingx     --approve-for-me
 codingx     --yolo | --allow-dangerously-skip-permissions
 codingx     --add-dir <DIR>
 codingx     --full-auto        # 兼容别名；见下
+codingx -P :workspace-git-hooks exec "安装仓库 hooks"
 ```
 
 - `-s/--sandbox` 的旧三值映射到内置 profile；新配置首选 `--permission-profile`。
@@ -377,14 +398,15 @@ type PermissionEvent =
 - 只有持有写租约的 CLI 能批准；`sessions show/watch` 只能看到 `awaiting_approval`。
 - CLI 崩溃/断线：释放租约，追加 `session.interrupted`；待决审批按拒绝处理；resume 不自动续跑未完成 turn。
 - 会话级批准只存在于当前会话内存 + rollout 审计事件，不跨 resume 持久化；需要持久规则时显式写项目/全局规则。
-- `--json` / `exec` 无交互：需要审批的动作返回 `APPROVAL_UNAVAILABLE`（或由 auto-review 决定），stdout 保持 JSONL 纯净。
+- `--json` / `exec` 无交互：需要审批的动作返回 `APPROVAL_REQUIRED`（或由 auto-review 决定），stdout 保持 JSONL 纯净。
 - TUI 弹层由应用状态机绘制，展示完整命令与归一化路径；长命令支持全屏查看；模型输出不能改变选项、焦点或快捷键。
 - rollout 中的审批事件与命令需要脱敏后再落盘；UI 展示给用户的是真实命令（否则无法判断），两者是不同视图。
-- 审计包含：工具名、Action、匹配规则、profile、approval policy、reviewer、决策、耗时、沙箱退出码；不记录 prompt 正文与文件内容。
+- 审计包含：工具名、Action、匹配规则、profile、approval policy、reviewer、决策、耗时、沙箱退出码；`sandbox.denied` 已在 macOS Seatbelt 路径写入。不记录 prompt 正文与文件内容。
+- 用户直接输入的 `!command` 不经过模型，但与 `Shell` 共用同一个 Action、审批与沙箱：策略判定写 `permission.decision`（`source: 'local-command'`），沙箱拒绝写 `sandbox.denied`，命令与输出写 `local.command` / `local.result`，均不进入模型消息历史。
 
 ## 9. 错误码
 
-在 `src/util/errors.ts` 的稳定 code 中新增（M3 实现时）：
+以下 code 已加入 `src/util/errors.ts`（`SANDBOX_DENIED` 随 S3 加入）：
 
 | code | 含义 |
 | --- | --- |
@@ -393,6 +415,7 @@ type PermissionEvent =
 | `POLICY_FORBIDDEN` | 命中硬拒绝/forbidden 规则 |
 | `SANDBOX_DENIED` | 沙箱在运行时拒绝；可提示模型带 justification 重试 |
 | `SANDBOX_UNAVAILABLE` | 平台无沙箱能力，按策略拒绝或降级 |
+| `HOOK_BLOCKED` | Agent Harness hook 阻止了 prompt 或工具调用 |
 | `PERMISSION_PROFILE_UNKNOWN` | profile 未定义 |
 | `PERMISSION_CONFIG_CONFLICT` | 新旧权限配置冲突 |
 | `ESCALATION_LIMIT` | 单个 turn 的提权尝试超限 |
@@ -424,7 +447,7 @@ M3.1 策略内核 + 配置/CLI + 非交互 fail-closed
    ↓
 M3.2 TUI 审批弹层 + 会话授权 + /permissions
    ↓
-M3.3 macOS Seatbelt（文件系统 + 网络 deny）
+M3.3 macOS Seatbelt（文件系统 + 网络 deny）— 已完成
    ↓
 M3.4 Linux Landlock/seccomp（含降级策略）
    ↓

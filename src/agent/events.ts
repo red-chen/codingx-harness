@@ -1,4 +1,5 @@
 import type { TokenUsage, ToolCall } from '../providers/types.js';
+import type { HookEvent, HookStatus } from '../hooks/types.js';
 import type { PlanStep, ToolResult } from '../tools/types.js';
 
 export type TurnFinishedStatus = 'done' | 'aborted' | 'error';
@@ -26,6 +27,16 @@ export type UiEvent =
   | { type: 'tool.started'; turnId: string; call: ToolCall }
   | { type: 'tool.finished'; turnId: string; callId: string; name: string; result: ToolResult; durationMs: number }
   | { type: 'llm.finished'; turnId: string; durationMs: number }
+  | {
+      type: 'hook.finished';
+      event: HookEvent;
+      status: HookStatus;
+      command: string;
+      durationMs: number;
+      turnId?: string;
+      callId?: string;
+      message?: string;
+    }
   | { type: 'plan.updated'; turnId: string; steps: PlanStep[] }
   | { type: 'usage.updated'; turnId: string; usage: TokenUsage }
   | { type: 'context.updated'; turnId: string; usedTokens: number; windowTokens: number; steps: number }

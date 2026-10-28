@@ -117,7 +117,7 @@ async function executeTools(calls: ToolCall[], ctx: TurnContext): Promise<ToolRe
 }
 ```
 
-`runOne` 内部顺序：查表 → 参数校验（zod）→ 审批 → 沙箱执行 → 结果裁剪 → 追加事件到 sessiond。任何一步失败都转换成 `is_error: true` 的 `tool_result` 回填，让模型自己看到错误并纠正，而不是让整个 turn 崩掉。
+`runOne` 内部顺序：查表 → 参数校验（zod）→ `pre_tool_use` hook → 审批 → 沙箱执行 → 结果裁剪 → `post_tool_use` hook → 追加事件到 sessiond。任何一步失败都转换成 `is_error: true` 的 `tool_result` 回填，让模型自己看到错误并纠正，而不是让整个 turn 崩掉。macOS 上 Shell 在策略放行后由 Seatbelt 包装执行；内核拒绝会带上 `sandbox` meta 与 `SANDBOX_DENIED`，AgentLoop 同时追加 `sandbox.denied` 审计事件。`user_prompt_submit` 在模型请求前、`stop` 在 turn 结束时执行；详见 [hooks.md](hooks.md)。
 
 ### 用户提问
 

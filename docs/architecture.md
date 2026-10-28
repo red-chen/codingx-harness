@@ -91,7 +91,11 @@ Provider 适配器只负责协议转换（Anthropic Messages / OpenAI Responses�
 1. `policy` 判断「这个操作要不要问人」，输出 `allow | deny | ask`
 2. `sandbox` 在操作系统层面限制「就算放行了，它能碰到什么」
 
-详见 [security.md](security.md)。
+当前 macOS 已接入 Seatbelt：Shell 在策略放行后生成 Seatbelt profile 并执行，写入限制在 profile 根、网络默认 deny、凭证与密钥路径被内核拒绝；Linux 仍只有策略层（S4 待做）。详见 [security.md](security.md)。
+
+### `hooks/`
+
+Agent Harness 生命周期 hooks：读取全局 `[[hooks]]`，按事件顺序执行本地命令，JSON 走 stdin；`AgentLoop` 在 prompt / 工具 / turn 边界调用，`session_start` / `session_end` 由 CLI 调用。每条执行写 `hook.finished`，exit 2 可阻止 prompt 或工具。见 [hooks.md](hooks.md)。
 
 ### `exec/`
 

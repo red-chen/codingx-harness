@@ -1,3 +1,4 @@
+import { explorationLabel } from './exploration.js';
 import type { UiEvent } from '../../agent/events.js';
 import type { ToolCall } from '../../providers/types.js';
 import {
@@ -16,6 +17,7 @@ import type {
   AssistantCell,
   ComposerState,
   ExecCell,
+  LocalCommandCell,
   NoticeCell,
   PlanCell,
   TranscriptCell,
@@ -373,6 +375,7 @@ export class TuiApp {
           callId: event.call.id,
           name: event.call.name,
           command: toolCommandLabel(event.call),
+          exploration: explorationLabel(event.call.name, event.call.input),
           output: '',
           isError: false,
           running: true,
@@ -425,6 +428,17 @@ export class TuiApp {
           transcript,
           turnToolDurationMs: this.current.turnToolDurationMs + Math.max(0, event.durationMs),
         });
+        return;
+      }
+
+      case 'hook.finished': {
+        if (event.status !== 'ok') {
+          this.addNotice(
+            'Hook ' + event.event + ' ' + event.status +
+              (event.message === undefined ? '' : ': ' + event.message),
+            event.status === 'blocked' ? 'warning' : 'error',
+          );
+        }
         return;
       }
 
@@ -644,6 +658,62 @@ export class TuiApp {
   }
 
   /**
+   * Append a running local '!command' cell and mark the UI busy. The cell is
+   * rendered as a user input line plus its complete bounded output; it shares
+   * the status row with model turns but never increments the turn counter.
+   */
+  beginLocalCommand(command: string): string {
+    this.finalizeActiveAssistant();
+    const id = this.nextId('local');
+    const cell: LocalCommandCell = {
+      type: 'local',
+      id,
+      command,
+      output: '',
+      isError: false,
+      running: true,
+    };
+    this.appendCell(cell);
+    this.patch({
+      status: {
+        state: 'working',
+        startedAt: this.now(),
+        elapsedMs: 0,
+      },
+    });
+    return id;
+  }
+
+  /** Finish a local '!command' cell and return the UI to idle. Idempotent. */
+  finishLocalCommand(
+    id: string,
+    result: { output: string; isError: boolean; durationMs: number; aborted?: boolean },
+  ): void {
+    const durationMs = Math.max(0, Number.isFinite(result.durationMs) ? result.durationMs : 0);
+    const transcript = [...this.current.transcript];
+    for (let index = transcript.length - 1; index >= 0; index--) {
+      const cell = transcript[index];
+      if (cell?.type !== 'local' || cell.id !== id) continue;
+      transcript[index] = {
+        ...cell,
+        output: result.output,
+        isError: result.isError,
+        durationMs,
+        running: false,
+      };
+      break;
+    }
+    this.patch({
+      transcript,
+      status: {
+        state: 'idle',
+        elapsedMs: durationMs,
+        outcome: result.aborted === true ? 'aborted' : 'done',
+      },
+    });
+  }
+
+  /**
    * Open the ask modal. The core awaits a matching answer/cancel UiCommand;
    * the TUI itself never resolves the tool call.
    */
@@ -709,6 +779,22 @@ export class TuiApp {
     const approval = this.current.approval;
     if (approval === undefined) return undefined;
     if (isCtrl(key, 'c')) return { type: 'interrupt' };
+    if (approval.details) {
+      if (isEscape(key) || key.code === 'q' || key.code === 'v') {
+        this.patch({ approval: { ...approval, details: false } });
+      } else {
+        const page = Math.max(1, this.current.height - 3);
+        const delta = key.code === 'down' ? 1 : key.code === 'up' ? -1
+          : key.code === 'pagedown' ? page : key.code === 'pageup' ? -page : 0;
+        this.patch({ approval: { ...approval, detailsOffset: key.code === 'home' ? 0
+          : Math.max(0, (approval.detailsOffset ?? 0) + delta) } });
+      }
+      return undefined;
+    }
+    if (!approval.editingReason && key.code === 'v' && isPlainText(key)) {
+      this.patch({ approval: { ...approval, details: true, detailsOffset: 0 } });
+      return undefined;
+    }
     if (isEscape(key)) {
       if (approval.editingReason) {
         this.patch({ approval: cancelApprovalReason(approval) });
@@ -956,9 +1042,16 @@ export class TuiApp {
     if (mode === 'ask') return this.handleAskKey(key);
     if (mode === 'approval') return this.handleApprovalKey(key);
 
+    if ((mode === 'main' || mode === 'transcript') && isCtrl(key, 'o')) {
+      const expanded = !this.current.transcript.some((cell) => cell.type === 'exec' && cell.expanded);
+      this.patch({ mode: 'transcript', scroll: { offset: 0 }, transcript: this.current.transcript.map((cell) =>
+        cell.type === 'exec' ? { ...cell, expanded } : cell) });
+      return undefined;
+    }
     if (mode !== 'main') {
       if (isEscape(key) || isCtrl(key, 'c') || (mode === 'transcript' && isCtrl(key, 't')) || this.closeOverlayText(key)) {
-        this.patch({ mode: 'main' });
+        this.patch({ mode: 'main', transcript: this.current.transcript.map((cell) =>
+          cell.type === 'exec' && cell.expanded ? { ...cell, expanded: false } : cell) });
         return undefined;
       }
       this.applyScrollKey(key);
@@ -1189,6 +1282,8 @@ function copyTextForCell(cell: TranscriptCell): string {
       return cell.text;
     case 'exec':
       return ['$ ' + cell.command, cell.output].filter((line) => line.length > 0).join('\n');
+    case 'local':
+      return ['! ' + cell.command, cell.output].filter((line) => line.length > 0).join('\n');
     case 'plan':
       return 'Plan:\n' + cell.steps.map((step) => '- [' + step.status + '] ' + step.step).join('\n');
     case 'notice':

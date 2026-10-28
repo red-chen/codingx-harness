@@ -191,8 +191,8 @@ describe('transcript cells', () => {
     const lines = styledTexts(buildExecCellLines(exec, 30));
     expect(lines[0]).toBe('• Ran printf x');
     expect(lines[1]).toBe('  │ one');
-    expect(lines[5]).toBe('  │ five');
-    expect(lines[6]).toBe('    … +2 lines');
+    expect(lines[3]).toBe('  │ three');
+    expect(lines[4]).toBe('    … +4 lines (Ctrl+O)');
     expect(lines.join('\n')).not.toContain('six');
 
     const short = styledTexts(buildExecCellLines({ ...exec, output: 'only' }, 30));
@@ -204,8 +204,8 @@ describe('transcript cells', () => {
       type: 'exec',
       id,
       callId,
-      name: 'ReadFile',
-      command: 'ReadFile src/a.ts',
+      name: 'Shell',
+      command: 'Shell src/a.ts',
       output,
       isError: false,
       running: false,
@@ -214,8 +214,8 @@ describe('transcript cells', () => {
     const lines = styledTexts(
       buildExecGroupLines([read('e1', 'c1', 'one\ntwo', 400), read('e2', 'c2', 'three\nfour', 600)], 60),
     );
-    expect(lines[0]).toBe('• Ran ReadFile src/a.ts ×2 · 1s');
-    expect(lines.slice(1)).toEqual(['  │ one', '  │ two', '  │ three', '  └ four']);
+    expect(lines[0]).toBe('• Ran Shell src/a.ts ×2 · 1s');
+    expect(lines.slice(1)).toEqual(['  │ one', '  │ two', '  │ three', '    … +1 lines (Ctrl+O)']);
 
     const repeated = styledTexts(
       buildExecGroupLines([read('e1', 'c1', 'same', 10), read('e2', 'c2', 'same', 10)], 60),
@@ -230,8 +230,8 @@ describe('transcript cells', () => {
         type: 'exec',
         id: 'e1',
         callId: 'c1',
-        name: 'ReadFile',
-        command: 'ReadFile src/a.ts',
+        name: 'Shell',
+        command: 'Shell src/a.ts',
         output: 'one',
         isError: false,
         running: false,
@@ -240,8 +240,8 @@ describe('transcript cells', () => {
         type: 'exec',
         id: 'e2',
         callId: 'c2',
-        name: 'ReadFile',
-        command: 'ReadFile src/a.ts',
+        name: 'Shell',
+        command: 'Shell src/a.ts',
         output: 'two',
         isError: false,
         running: false,
@@ -260,8 +260,8 @@ describe('transcript cells', () => {
     const buffer = new CellBuffer(80, 12);
     renderTranscript(rect(0, 0, 80, 12), buffer, { cells, welcome: null });
     const text = screenText(buffer);
-    expect(text).toContain('• Ran ReadFile src/a.ts ×2');
-    expect(text.match(/• Ran ReadFile src\/a\.ts/gu)).toHaveLength(1);
+    expect(text).toContain('• Ran Shell src/a.ts ×2');
+    expect(text.match(/• Ran Shell src\/a\.ts/gu)).toHaveLength(1);
     expect(text).toContain('│ one');
     expect(text).toContain('└ two');
     expect(text).toContain('• Ran npm test');
@@ -274,8 +274,8 @@ describe('transcript cells', () => {
       type: 'exec',
       id,
       callId: id,
-      name: 'ReadFile',
-      command: 'ReadFile src/a.ts',
+      name: 'Shell',
+      command: 'Shell src/a.ts',
       output,
       isError: false,
       running,
@@ -290,6 +290,53 @@ describe('transcript cells', () => {
       welcome: null,
     });
     expect(screenText(buffer)).toContain('│ late output');
+  });
+
+  it('groups different exploration tools but keeps writes and errors visible', () => {
+    const make = (name: string, id: string, label: string): ExecCell => ({
+      type: 'exec', id, callId: id, name, command: name, exploration: label,
+      output: 'raw-result', isError: false, running: false,
+    });
+    const cells: TranscriptCell[] = [make('Grep', '1', 'Search pattern in src'),
+      make('ReadFile', '2', 'Read src/a.ts'),
+      { ...make('EditFile', '3', ''), command: 'EditFile src/a.ts' },
+      { ...make('ListDir', '4', 'List missing'), isError: true, output: 'not found' }];
+    const buffer = new CellBuffer(80, 20);
+    renderTranscript(rect(0, 0, 80, 20), buffer, { cells });
+    const text = screenText(buffer);
+    expect(text.match(/• Explored/gu)).toHaveLength(2);
+    expect(text).toContain('Search pattern in src');
+    expect(text).toContain('Read src/a.ts');
+    expect(text).toContain('Ran EditFile');
+    expect(text).toContain('(failed)');
+    expect(text).toContain('1 failed');
+  });
+
+  it('caps explored summaries and preserves all calls in details', () => {
+    const cells: ExecCell[] = Array.from({ length: 7 }, (_, i) => ({
+      type: 'exec', id: String(i), callId: String(i), name: 'ReadFile',
+      command: 'ReadFile file' + i, output: 'content' + i, running: false, isError: i === 0,
+    }));
+    const collapsed = styledTexts(buildExecGroupLines(cells, 80));
+    expect(collapsed).toHaveLength(5);
+    expect(collapsed.join('\n')).toContain('4 more');
+    expect(collapsed.join('\n')).toContain('1 failed');
+    expect(collapsed.join('\n')).not.toContain('file0');
+    const expanded = styledTexts(buildExecGroupLines(cells.map((cell) => ({ ...cell, expanded: true })), 80));
+    expect(expanded.join('\n')).toContain('content0');
+    expect(expanded.join('\n')).toContain('content6');
+  });
+
+  it('previews Shell stdout instead of metadata and caps wrapped screen rows', () => {
+    const cell: ExecCell = { type: 'exec', id: 'e', callId: 'c', name: 'Shell', command: 'git log',
+      output: 'exit_code: 0\n\nduration_ms: 51\n\ndescription: commits\n\nsandbox: seatbelt\n\nstdout:\n'
+        + 'x'.repeat(150) + '\nsecond\n\nstderr:\n(empty)', running: false, isError: false };
+    const collapsed = styledTexts(buildExecCellLines(cell, 30));
+    expect(collapsed).toHaveLength(5);
+    expect(collapsed.join('\n')).not.toContain('duration_ms');
+    expect(collapsed[1]).toContain('xxx');
+    expect(collapsed.at(-1)).toContain('Ctrl+O');
+    expect(styledTexts(buildExecCellLines({ ...cell, expanded: true }, 80)).join('\n')).toContain('duration_ms: 51');
   });
 
   it('renders plan markers and notice levels', () => {
@@ -628,7 +675,7 @@ describe('frame composition', () => {
     expect(rowText(frame, 23)).toContain('New session');
   });
 
-  it('merges repeated ReadFile calls from one step into a ×N exec block', () => {
+  it('collapses exploration and opens its original results with Ctrl+O', () => {
     const app = makeApp(100, 30);
     app.handleEvent({ type: 'turn.started', turnId: 't1' });
     for (const [id, offset, output] of [
@@ -650,10 +697,16 @@ describe('frame composition', () => {
       });
     }
     const text = screenText(app.renderFrame());
-    expect(text.match(/• Ran ReadFile src\/a\.ts/gu)).toHaveLength(1);
-    expect(text).toContain('• Ran ReadFile src/a.ts ×2');
-    expect(text).toContain('│ one');
-    expect(text).toContain('└ two');
+    expect(text.match(/• Explored/gu)).toHaveLength(1);
+    expect(text).toContain('Read src/a.ts');
+    expect(text).toContain('+ Show details (Ctrl+O)');
+    expect(text).not.toContain('└ two');
+    app.handleKey(key('o', { ctrl: true }));
+    expect(app.mode).toBe('transcript');
+    expect(screenText(app.renderFrame())).toContain('└ two');
+    app.handleKey(key('escape'));
+    expect(app.mode).toBe('main');
+    expect(screenText(app.renderFrame())).not.toContain('└ two');
   });
 
   it('shows a completed conversation with exec and plan cells', () => {

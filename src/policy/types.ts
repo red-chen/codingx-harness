@@ -60,7 +60,10 @@ export type ApprovalHandler = (
 
 /** A filesystem rule from a profile. Scopes use Codex-style names. */
 export interface FilesystemRule {
-  /** :minimal | :root | :workspace_roots | :tmpdir | :slash_tmp | absolute path | ~/path */
+  /**
+   * :minimal | :root | :workspace_roots | :tmpdir | :slash_tmp |
+   * :git_hooks | :git_config | absolute path | ~/path
+   */
   scope: string;
   /** Optional subpath/glob for nested ":workspace_roots" style tables. */
   subpath?: string;
@@ -87,6 +90,26 @@ export interface PermissionsConfig {
   profiles: Record<string, PermissionProfile>;
 }
 
+/** Snapshot of resolved roots consumed by the OS sandbox backend. */
+export interface SandboxPolicy {
+  profileName: string;
+  cwd: string;
+  home: string;
+  tmpdir: string;
+  readRoots: readonly string[];
+  writeRoots: readonly string[];
+  denyRoots: readonly string[];
+  denyGlobs: ReadonlyArray<{ base: string | null; pattern: string }>;
+  additionalDirs: readonly string[];
+  network: NetworkPolicy;
+  sessionDir?: string;
+  yolo: boolean;
+  /** True when the profile explicitly allows .git/hooks writes. */
+  gitHooksWritable: boolean;
+  /** True when the profile explicitly allows .git/config writes. */
+  gitConfigWritable: boolean;
+}
+
 export interface PolicyRuntimeOptions {
   cwd: string;
   additionalDirs: readonly string[];
@@ -110,6 +133,7 @@ export interface PolicyRuntime {
   readonly additionalDirs: readonly string[];
   readonly readRoots: readonly string[];
   readonly writeRoots: readonly string[];
+  readonly sandboxPolicy: SandboxPolicy;
   evaluate(tool: string, input: unknown): Promise<PolicyDecision>;
   rootsFor(access: 'read' | 'write'): readonly string[];
   /** Sensitive-path guard used by the resolver as a second check. */

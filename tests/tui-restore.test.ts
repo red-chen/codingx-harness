@@ -66,6 +66,29 @@ describe('restoreTranscript', () => {
     expect(cells[2]).toMatchObject({ type: 'turn', outcome: 'error' });
   });
 
+  it('restores local command output as a local cell', () => {
+    const cells = restoreTranscript([
+      event(1, 'local.command', { commandId: 'l1', command: 'pwd' }),
+      event(2, 'local.result', {
+        commandId: 'l1',
+        command: 'pwd',
+        content: '/work',
+        isError: false,
+        exitCode: 0,
+        durationMs: 3,
+      }),
+    ]);
+    expect(cells).toHaveLength(1);
+    expect(cells[0]).toMatchObject({
+      type: 'local',
+      command: 'pwd',
+      output: '/work',
+      isError: false,
+      durationMs: 3,
+      running: false,
+    });
+  });
+
   it('assigns unique ids and tolerates malformed events', () => {
     const cells = restoreTranscript([
       event(1, 'user.message', { text: 'a' }),

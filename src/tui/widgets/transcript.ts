@@ -1,22 +1,24 @@
+import { isExploration } from '../state/exploration.js';
 import type { CellBuffer, Style } from '../terminal/buffer.js';
-import { ATTR_BOLD } from '../terminal/buffer.js';
+import { ATTR_BOLD, ATTR_DIM } from '../terminal/buffer.js';
 import type { Rect } from '../layout/index.js';
 import { displayWidth, truncateToWidth, wrapText } from '../text/index.js';
 import type {
   ActiveAssistantCell,
   AssistantCell,
   ExecCell,
+  LocalCommandCell,
   NoticeCell,
   PlanCell,
   TranscriptCell,
   TurnSummaryCell,
   UserCell,
 } from '../state/types.js';
-import { TUI_COLORS } from '../state/types.js';
+import { TUI_COLORS, TRANSCRIPT_COLORS } from '../state/types.js';
 import type { StyledTextLine, WelcomeCardOptions } from './welcome.js';
 import { drawStyledLine, welcomeCardStyledLines } from './welcome.js';
 import { renderMarkdown } from './markdown.js';
-import { formatElapsed, usageLabel } from './status.js';
+import { formatElapsed, formatTokenCount } from './status.js';
 
 /**
  * Virtualized transcript viewport.
@@ -47,10 +49,10 @@ export interface TranscriptLayout {
   readonly stats: TranscriptRenderStats;
 }
 
-export const EXEC_OUTPUT_LINES = 5;
+export const EXEC_OUTPUT_LINES = 3;
 
 const ACCENT: Style = { fg: TUI_COLORS.accent };
-const MUTED: Style = { fg: TUI_COLORS.muted };
+const MUTED: Style = { attrs: ATTR_DIM };
 const ERROR: Style = { fg: TUI_COLORS.error };
 const WARNING: Style = { fg: TUI_COLORS.warning };
 const SUCCESS: Style = { fg: TUI_COLORS.success };
@@ -86,7 +88,7 @@ function prefixLines(
   const rows = wrapText(text, contentWidth);
   return rows.map((row, index) => ({
     segments: [
-      { text: index === 0 ? firstPrefix : continuationPrefix, style: ACCENT },
+      { text: index === 0 ? firstPrefix : continuationPrefix, style: { attrs: ATTR_BOLD | ATTR_DIM } },
       { text: row, style: textStyle },
     ],
     ...(background === undefined ? {} : { background }),
@@ -101,7 +103,7 @@ export function buildAssistantTextLines(text: string, width: number): StyledText
   const inner = Math.max(1, width - 2);
   return renderMarkdown(text, inner).map((line, index) => ({
     segments: [
-      { text: index === 0 ? '• ' : '  ', style: ACCENT },
+      { text: index === 0 ? '• ' : '  ', style: MUTED },
       ...line.segments,
     ],
     ...(line.background === undefined ? {} : { background: line.background }),
@@ -125,6 +127,7 @@ export function buildAssistantCellLines(cell: AssistantCell, width: number): Sty
 export function buildExecGroupLines(cells: readonly ExecCell[], width: number): StyledTextLine[] {
   const first = cells[0];
   if (first === undefined) return [];
+  if (isExploration(first.name)) return buildExploredLines(cells, width);
   const countLabel = cells.length > 1 ? ' ×' + cells.length : '';
   const totalMs = cells.reduce((sum, cell) => sum + (cell.durationMs ?? 0), 0);
   const hasDuration = cells.some((cell) => cell.durationMs !== undefined);
@@ -133,12 +136,17 @@ export function buildExecGroupLines(cells: readonly ExecCell[], width: number): 
     1,
     width - displayWidth('• Ran ') - displayWidth(countLabel) - displayWidth(duration),
   );
+  const command = truncateToWidth(first.command, commandWidth);
+  const commandHead = /^\S+/u.exec(command)?.[0] ?? '';
+  const marker: Style = cells.some((cell) => cell.running) ? MUTED
+    : cells.some((cell) => cell.isError) ? ERROR : { fg: TRANSCRIPT_COLORS.success };
   const lines: StyledTextLine[] = [
     {
       segments: [
-        { text: '• ', style: ACCENT },
-        { text: 'Ran ', style: MUTED },
-        { text: truncateToWidth(first.command, commandWidth), style: PLAIN },
+        { text: '• ', style: marker },
+        { text: 'Ran ', style: { attrs: ATTR_BOLD } },
+        { text: commandHead, style: { fg: TRANSCRIPT_COLORS.command } },
+        { text: command.slice(commandHead.length), style: PLAIN },
         ...(countLabel.length > 0 ? [{ text: countLabel, style: MUTED }] : []),
         ...(duration.length > 0 ? [{ text: duration, style: MUTED }] : []),
       ],
@@ -151,11 +159,42 @@ export function buildExecGroupLines(cells: readonly ExecCell[], width: number): 
     if (previous !== undefined && previous.output === cell.output && previous.isError === cell.isError) continue;
     previews.push(cell);
   }
+  const outputLines: StyledTextLine[] = [];
   for (let index = 0; index < previews.length; index++) {
     const cell = previews[index];
     if (cell === undefined) continue;
-    lines.push(...execOutputLines(cell, width, index === previews.length - 1));
+    outputLines.push(...execOutputLines(cell, width, index === previews.length - 1));
   }
+  lines.push(...limitOutput(outputLines, cells.some((cell) => cell.expanded) ? undefined : EXEC_OUTPUT_LINES));
+  return lines;
+}
+
+export function buildExploredLines(cells: readonly ExecCell[], width: number): StyledTextLine[] {
+  const expanded = cells.some((cell) => cell.expanded);
+  const lines: StyledTextLine[] = [{ segments: [
+    { text: '• ', style: MUTED },
+    { text: cells.some((cell) => cell.running) ? 'Exploring' : 'Explored', style: { attrs: ATTR_BOLD } },
+  ] }];
+  const shown = expanded ? cells : cells.slice(-3);
+  const hidden = cells.length - shown.length;
+  const failures = cells.filter((cell) => cell.isError).length;
+  shown.forEach((cell, index) => {
+    const label = cell.exploration ?? cell.command.replace(/^(ReadFile|Grep|Glob|ListDir)\b/u,
+      cell.name === 'ReadFile' ? 'Read' : cell.name === 'ListDir' ? 'List' : 'Search');
+    const verb = label.split(' ')[0] ?? '';
+    lines.push({ segments: [
+      { text: index === 0 ? '  └ ' : '    ', style: MUTED },
+      { text: verb, style: { fg: TRANSCRIPT_COLORS.command } },
+      { text: truncateToWidth(label.slice(verb.length), Math.max(1, width - 4 - verb.length)), style: PLAIN },
+      ...(cell.isError ? [{ text: ' (failed)', style: ERROR }] : []),
+    ] });
+    if (expanded) {
+      lines.push(...buildOutputLines(cell.output, width, cell.isError, {
+        ...(expanded ? {} : { maxLines: EXEC_OUTPUT_LINES }), terminal: true,
+      }));
+    }
+  });
+  lines.push({ segments: [{ text: expanded ? '    − Hide details (Ctrl+O)' : '    + Show details (Ctrl+O)' + (hidden ? ' · ' + hidden + ' more' : '') + (failures ? ' · ' + failures + ' failed' : ''), style: MUTED }] });
   return lines;
 }
 
@@ -163,20 +202,25 @@ export function buildExecCellLines(cell: ExecCell, width: number): StyledTextLin
   return buildExecGroupLines([cell], width);
 }
 
-function execOutputLines(cell: ExecCell, width: number, terminal: boolean): StyledTextLine[] {
+function buildOutputLines(
+  output: string,
+  width: number,
+  isError: boolean,
+  options: { maxLines?: number; terminal: boolean },
+): StyledTextLine[] {
   const lines: StyledTextLine[] = [];
-  const output = cell.output.replace(/\r\n?/gu, '\n');
-  const rawLines = output.split('\n');
+  const text = output.replace(/\r\n?/gu, '\n');
+  const rawLines = text.split('\n');
   while (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
-  const shown = rawLines.slice(0, EXEC_OUTPUT_LINES);
-  const omitted = rawLines.length - shown.length;
+  const shown = rawLines;
+  const omitted = 0;
   const gutterWidth = displayWidth('  │ ');
 
   for (let index = 0; index < shown.length; index++) {
-    const isLast = terminal && index === shown.length - 1 && omitted === 0;
+    const isLast = options.terminal && index === shown.length - 1 && omitted === 0;
     const gutter = isLast ? '  └ ' : '  │ ';
     const raw = shown[index] ?? '';
-    const outputStyle = cell.isError
+    const outputStyle = isError
       ? ERROR
       : /^\s*@@/u.test(raw)
         ? ACCENT
@@ -198,10 +242,47 @@ function execOutputLines(cell: ExecCell, width: number, terminal: boolean): Styl
     }
   }
 
-  if (omitted > 0) {
-    lines.push({ segments: [{ text: '    … +' + omitted + ' lines', style: MUTED }] });
-  }
-  return lines;
+  return limitOutput(lines, options.maxLines);
+}
+
+function limitOutput(lines: StyledTextLine[], max?: number): StyledTextLine[] {
+  if (max === undefined || lines.length <= max) return lines;
+  return [...lines.slice(0, max), { segments: [{
+    text: '    … +' + (lines.length - max) + ' lines (Ctrl+O)', style: MUTED,
+  }] }];
+}
+
+/** Strip only the known Shell result envelope in collapsed previews. */
+function shellPreview(output: string, failed: boolean): string {
+  const normalized = output.replace(/\r\n?/gu, '\n');
+  if (!/^(?:Command timed out[^\n]*\n\n)?exit_code: (?:none|-?\d+)\n\nduration_ms: \d+/u.test(normalized)) return output;
+  const start = normalized.indexOf('\n\nstdout:\n');
+  if (start < 0) return output;
+  const body = normalized.slice(start + '\n\nstdout:\n'.length)
+    .replace(/^\(empty\)\n\n/u, '')
+    .replace(/\n\nstderr:\n\(empty\)(?=\n|$)/u, '')
+    .replace(/^stderr:\n\(empty\)$/u, '')
+    .replace(/^(?:stderr:\n)/u, '')
+    .replace(/\n\nstderr:\n/u, '\n');
+  const timeout = normalized.startsWith('Command timed out') ? normalized.split('\n')[0] + '\n' : '';
+  return timeout + (body.trim() || (failed ? normalized.split('\n')[0] : '(no output)'));
+}
+
+function execOutputLines(cell: ExecCell, width: number, terminal: boolean): StyledTextLine[] {
+  const output = cell.name === 'Shell' && !cell.expanded ? shellPreview(cell.output, cell.isError) : cell.output;
+  return buildOutputLines(output, width, cell.isError, { terminal });
+}
+
+/**
+ * Local '!command' cells show the input line and the complete output. The
+ * output is already bounded by the exec layer (max_output_chars); unlike model
+ * tool calls there is no 3-line preview.
+ */
+export function buildLocalCommandLines(cell: LocalCommandCell, width: number): StyledTextLine[] {
+  return [
+    ...prefixLines(cell.command, width, '› ! ', '    ', PLAIN, TUI_COLORS.userBg),
+    ...buildOutputLines(cell.output, width, cell.isError, { terminal: true }),
+  ];
 }
 
 interface ExecGroupCacheEntry {
@@ -238,20 +319,18 @@ function clockTime(timestamp: number): string {
 export function buildTurnSummaryLines(cell: TurnSummaryCell, width: number): StyledTextLine[] {
   const icon = cell.outcome === 'done' ? '✓' : cell.outcome === 'aborted' ? '!' : '✗';
   const style = cell.outcome === 'done' ? SUCCESS : cell.outcome === 'aborted' ? WARNING : ERROR;
-  const usage = usageLabel(cell.usage) || 'in 0 · out 0';
-  const summary =
-    clockTime(cell.completedAt) +
-    ' · total ' + formatElapsed(cell.durationMs) +
-    ' · llm ' + formatElapsed(cell.llmDurationMs) +
-    ' · tools ' + formatElapsed(cell.toolDurationMs) +
-    ' · ' + usage;
-  return [{
+  const summary = clockTime(cell.completedAt) + ' · ' + formatElapsed(cell.durationMs)
+    + ' (L' + formatElapsed(cell.llmDurationMs) + '/T' + formatElapsed(cell.toolDurationMs) + ')'
+    + ' · ↑' + formatTokenCount(cell.usage.inputTokens)
+    + ' ↓' + formatTokenCount(cell.usage.outputTokens)
+    + ' C' + formatTokenCount(cell.usage.cacheReadTokens + cell.usage.cacheCreationTokens);
+  return wrapText(summary, Math.max(1, width - 4)).map((text, index) => ({
     segments: [
       { text: '  ', style: MUTED },
-      { text: icon + ' ', style },
-      { text: truncateToWidth(summary, Math.max(1, width - 4)), style: MUTED },
+      { text: index === 0 ? icon + ' ' : '  ', style },
+      { text, style: MUTED },
     ],
-  }];
+  }));
 }
 
 const PLAN_MARKERS: Record<string, string> = {
@@ -264,7 +343,7 @@ export function buildPlanCellLines(cell: PlanCell, width: number): StyledTextLin
   const lines: StyledTextLine[] = [
     {
       segments: [
-        { text: '• ', style: ACCENT },
+        { text: '• ', style: MUTED },
         { text: 'Updated Plan', style: { ...PLAIN, attrs: ATTR_BOLD } },
       ],
       background: TUI_COLORS.planBg,
@@ -315,6 +394,8 @@ export function buildTranscriptCellLines(cell: TranscriptCell, width: number): r
         return buildTurnSummaryLines(cell, width);
       case 'exec':
         return buildExecCellLines(cell, width);
+      case 'local':
+        return buildLocalCommandLines(cell, width);
       case 'plan':
         return buildPlanCellLines(cell, width);
       case 'notice':
@@ -339,8 +420,8 @@ function sameExecGroup(previous: TranscriptCell | undefined, cell: TranscriptCel
     previous !== undefined &&
     previous.type === 'exec' &&
     cell.type === 'exec' &&
-    previous.name === cell.name &&
-    previous.command === cell.command
+    ((isExploration(previous.name) && isExploration(cell.name)) ||
+      (previous.name === cell.name && previous.command === cell.command))
   );
 }
 

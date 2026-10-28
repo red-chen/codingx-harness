@@ -691,6 +691,50 @@ describe('codingx exec end-to-end', () => {
     expect(toolResult?.content).toContain('cannot show interactive questions');
   });
 
+  it('runs session_start and session_end Agent Harness hooks', async () => {
+    const server = await startServer([textResponse('Hooks done.')]);
+    const { home, workspace } = await setupWorkspace(server.url);
+    await appendFile(
+      path.join(home, 'config.toml'),
+      `
+[[hooks]]
+event = "session_start"
+command = "printf SESSION_CONTEXT; printf started > hook-start.txt"
+
+[[hooks]]
+event = "session_end"
+command = "printf ended > hook-end.txt"
+`,
+      'utf8',
+    );
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+    const code = await runExec({
+      prompt: 'say hi',
+      cwd: workspace,
+      env: envFor(home, workspace),
+      stdout,
+      stderr,
+    });
+    expect(code).toBe(0);
+    expect(await readFile(path.join(workspace, 'hook-start.txt'), 'utf8')).toBe('started');
+    expect(await readFile(path.join(workspace, 'hook-end.txt'), 'utf8')).toBe('ended');
+    const firstBody = server.bodies[0] as { system?: Array<{ text?: string }> } | undefined;
+    const systemText = (firstBody?.system ?? []).map((block) => block.text ?? '').join('');
+    expect(systemText).toContain('Hook context (session_start)');
+    expect(systemText).toContain('SESSION_CONTEXT');
+
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const summaries = await store.listSessions();
+    const sessionId = summaries[0]?.id;
+    if (!sessionId) throw new Error('missing session id');
+    const events = await store.replaySession(sessionId);
+    expect(events.filter((event) => event.type === 'hook.finished').map((event) => event.event)).toEqual([
+      'session_start',
+      'session_end',
+    ]);
+  });
+
   it('runs through the CLI parser with --json and keeps stdout machine-readable', async () => {
     const server = await startServer([textResponse('All good.')]);
     const { home, workspace } = await setupWorkspace(server.url);

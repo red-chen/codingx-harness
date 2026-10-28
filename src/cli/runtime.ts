@@ -44,6 +44,8 @@ export function createLoop(
     ...(app.additionalDirs.length > 0 ? { additionalDirs: app.additionalDirs } : {}),
     ...(app.yolo ? { yolo: true } : {}),
     policy: app.policy,
+    sandbox: app.sandbox,
+    hooks: app.hooks,
     ...(options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }),
     ...(options.ask === undefined ? {} : { ask: options.ask }),
     ...(options.approve === undefined ? {} : { approve: options.approve }),

@@ -20,6 +20,7 @@ import type {
   PolicyRuntime,
   PolicyRuntimeOptions,
   PolicyVerdict,
+  SandboxPolicy,
   ShellSegment,
 } from './types.js';
 
@@ -230,6 +231,7 @@ class Runtime implements PolicyRuntime {
   readonly additionalDirs: readonly string[];
   readonly readRoots: readonly string[];
   readonly writeRoots: readonly string[];
+  readonly sandboxPolicy: SandboxPolicy;
   private readonly env: NodeJS.ProcessEnv;
   private readonly allowAll: boolean;
   private readonly denyRoots: readonly string[];
@@ -247,6 +249,8 @@ class Runtime implements PolicyRuntime {
       denyRoots: string[];
       denyGlobs: Array<{ base: string | null; pattern: string }>;
       allowAll: boolean;
+      gitHooksWritable: boolean;
+      gitConfigWritable: boolean;
     },
     profile: PermissionProfile,
   ) {
@@ -266,6 +270,25 @@ class Runtime implements PolicyRuntime {
     this.readOnly = profile.name === ':read-only' || profile.extends === ':read-only';
     this.network = profile.network;
     this.sessionDir = options.sessionDir;
+    const home = homeOf(this.env);
+    const tmpdir =
+      this.env.TMPDIR !== undefined && this.env.TMPDIR.length > 0 ? this.env.TMPDIR : os.tmpdir();
+    this.sandboxPolicy = {
+      profileName: this.profileName,
+      cwd: this.cwd,
+      home,
+      tmpdir,
+      readRoots: this.readRoots,
+      writeRoots: this.writeRoots,
+      denyRoots: this.denyRoots,
+      denyGlobs: this.denyGlobs,
+      additionalDirs: this.additionalDirs,
+      network: this.network,
+      ...(this.sessionDir === undefined ? {} : { sessionDir: this.sessionDir }),
+      yolo: this.yolo,
+      gitHooksWritable: resolved.gitHooksWritable,
+      gitConfigWritable: resolved.gitConfigWritable,
+    };
   }
 
   rootsFor(access: 'read' | 'write'): readonly string[] {

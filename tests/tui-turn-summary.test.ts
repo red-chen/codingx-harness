@@ -37,13 +37,24 @@ describe('turn summary', () => {
     const lines = buildTurnSummaryLines(cell, 100);
     const text = lines.map((line) => line.segments.map((segment) => segment.text).join('')).join('\n');
     expect(text).toContain('12:34:56');
-    expect(text).toContain('total 12s');
-    expect(text).toContain('llm 10s');
-    expect(text).toContain('tools 1s');
-    expect(text).toContain('in 1.2k');
-    expect(text).toContain('out 345');
-    expect(text).toContain('cache 67');
+    expect(text).toContain('· 12s (L10s/T1s) ·');
+    expect(text).toContain('L10s');
+    expect(text).not.toContain('tools 1s');
+    expect(text).toContain('↑1.2k');
+    expect(text).toContain('↓345');
+    expect(text).toContain('C67');
     expect(text).toContain('✓');
+  });
+
+  it('wraps compact statistics without dropping cache on narrow screens', () => {
+    const cell: TurnSummaryCell = { type: 'turn', id: 'narrow', outcome: 'done',
+      completedAt: new Date(2026, 0, 2, 22, 7, 51).getTime(), durationMs: 15000,
+      llmDurationMs: 14000, toolDurationMs: 1000,
+      usage: { ...USAGE, cacheReadTokens: 10000, cacheCreationTokens: 4100 } };
+    const lines = buildTurnSummaryLines(cell, 30);
+    expect(lines.length).toBeGreaterThan(1);
+    const text = lines.map((line) => line.segments.slice(2).map((segment) => segment.text).join('')).join(' ');
+    expect(text).toBe('22:07:51 · 15s (L14s/T1s) · ↑1.2k ↓345 C14.1k');
   });
 
   it('uses different markers for aborted and failed turns', () => {
@@ -124,8 +135,8 @@ describe('turn summary', () => {
       toolDurationMs: 1_000,
     });
     const text = screenText(app.frame());
-    expect(text).toContain('llm 2s');
-    expect(text).toContain('tools 1s');
+    expect(text).toContain('· 3s (L2s/T1s) ·');
+    expect(text).not.toContain('tools 1s');
     expect(text).toContain('tok 1.6k');
   });
 
@@ -172,8 +183,8 @@ describe('turn summary', () => {
     expect(summary).toMatchObject({ type: 'turn', outcome: 'done', durationMs: 12_345 });
     const text = screenText(app.frame());
     expect(text).toContain('12:34:56');
-    expect(text).toContain('total 12s');
-    expect(text).toContain('in 1.2k');
+    expect(text).toContain('· 12s (L0s/T0s) ·');
+    expect(text).toContain('↑1.2k');
     expect(text).toContain('tok 1.6k');
 
     app.handleEvent({

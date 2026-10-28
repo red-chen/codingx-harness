@@ -21,6 +21,8 @@ import type {
   TargetConfig,
 } from './types.js';
 import type { ApprovalPolicy, ApprovalsReviewer } from '../policy/types.js';
+import type { HookConfig, HookEvent } from '../hooks/types.js';
+import { DEFAULT_HOOK_TIMEOUT_MS, MAX_HOOK_TIMEOUT_MS } from '../hooks/types.js';
 import { DANGER_PROFILE, parsePermissions, READ_ONLY_PROFILE, WORKSPACE_PROFILE } from '../policy/index.js';
 
 const DEFAULT_ENV_PASSTHROUGH = ['PATH', 'HOME', 'LANG', 'TERM', 'TMPDIR', 'USER', 'SHELL'];
@@ -52,6 +54,20 @@ const routeSchema = z.object({
   failure_threshold: z.number().int().positive().default(3),
   cooldown_seconds: z.number().int().nonnegative().default(30),
   targets: z.array(targetSchema).default([]),
+});
+
+const hookSchema = z.object({
+  event: z.enum([
+    'session_start',
+    'session_end',
+    'user_prompt_submit',
+    'pre_tool_use',
+    'post_tool_use',
+    'stop',
+  ]),
+  command: z.string().min(1),
+  timeout_ms: z.number().int().min(100).max(MAX_HOOK_TIMEOUT_MS).default(DEFAULT_HOOK_TIMEOUT_MS),
+  matcher: z.string().min(1).optional(),
 });
 
 const mcpServerSchema = z.object({
@@ -151,6 +167,7 @@ const rawConfigSchema = z.object({
       servers: z.array(mcpServerSchema).default([]),
     })
     .default({}),
+  hooks: z.array(hookSchema).default([]),
 });
 
 type RawConfig = z.infer<typeof rawConfigSchema>;
@@ -223,7 +240,7 @@ function sanitizeProjectConfig(raw: Record<string, unknown>, warnings: string[])
     delete raw.sandbox;
     warnings.push('Project config cannot override [sandbox]; the section was ignored.');
   }
-  for (const key of ['permissions', 'default_permissions', 'approval_policy', 'approvals_reviewer', 'projects']) {
+  for (const key of ['permissions', 'default_permissions', 'approval_policy', 'approvals_reviewer', 'projects', 'hooks']) {
     if (raw[key] !== undefined) {
       delete raw[key];
       warnings.push('Project config cannot override ' + key + '; the value was ignored.');
@@ -476,6 +493,15 @@ function resolvePolicySettings(
           : raw.sandbox.mode;
 }
 
+function normalizeHooks(raw: RawConfig): HookConfig[] {
+  return raw.hooks.map((hook) => ({
+    event: hook.event as HookEvent,
+    command: hook.command,
+    timeoutMs: hook.timeout_ms,
+    ...(hook.matcher === undefined ? {} : { matcher: hook.matcher }),
+  }));
+}
+
 function normalizeMcpServers(raw: RawConfig): McpServerConfig[] {
   return raw.mcp.servers.map((server) => ({
     name: server.name,
@@ -585,6 +611,7 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
       ),
     },
     mcp: { servers: normalizeMcpServers(raw) },
+    hooks: normalizeHooks(raw),
     approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
     permissions: parsePermissions({}, WORKSPACE_PROFILE),

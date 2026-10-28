@@ -1,8 +1,8 @@
-import { ATTR_BOLD } from '../terminal/buffer.js';
+import { TUI_COLORS, TRANSCRIPT_COLORS } from '../state/types.js';
+import { ATTR_BOLD, ATTR_DIM } from '../terminal/buffer.js';
 import type { CellBuffer, Style } from '../terminal/buffer.js';
 import type { Rect } from '../layout/index.js';
 import { displayWidth, tildifyPath, truncateToWidth } from '../text/index.js';
-import { TUI_COLORS } from '../state/types.js';
 
 /** Bottom metadata row: model · cwd · current session title. */
 export interface MetaBarOptions {
@@ -13,7 +13,8 @@ export interface MetaBarOptions {
 }
 
 const MODEL: Style = { fg: TUI_COLORS.accent, attrs: ATTR_BOLD };
-const MUTED: Style = { fg: TUI_COLORS.muted };
+const MUTED: Style = { attrs: ATTR_DIM };
+const CWD: Style = { fg: TRANSCRIPT_COLORS.command };
 const TITLE: Style = { fg: TUI_COLORS.success };
 
 export const META_SEPARATOR = ' · ';
@@ -72,7 +73,7 @@ export function renderMetaBar(area: Rect, frame: CellBuffer, options: MetaBarOpt
   const title = truncateToWidth(oneLine(options.title ?? '') || NEW_SESSION_TITLE, titleBudget);
   const pieces = [
     { text: model, style: MODEL },
-    ...(cwd ? [{ text: META_SEPARATOR + cwd, style: MUTED }] : []),
+    ...(cwd ? [{ text: META_SEPARATOR, style: MUTED }, { text: cwd, style: CWD }] : []),
     { text: META_SEPARATOR + title, style: TITLE },
   ];
   let x = area.x;

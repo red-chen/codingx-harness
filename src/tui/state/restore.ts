@@ -1,8 +1,10 @@
+import { explorationLabel } from './exploration.js';
 import type { TokenUsage } from '../../providers/types.js';
 import type { RolloutEvent } from '../../session/types.js';
 import type { PlanStep } from '../../tools/types.js';
 import type {
   ExecCell,
+  LocalCommandCell,
   NoticeCell,
   PlanCell,
   TranscriptCell,
@@ -57,6 +59,7 @@ function planSteps(value: unknown): PlanStep[] | undefined {
 export function restoreTranscript(events: readonly RolloutEvent[]): TranscriptCell[] {
   const cells: TranscriptCell[] = [];
   const execs = new Map<string, number>();
+  const localCommands = new Map<string, number>();
   let nextId = 0;
   const id = (prefix: string): string => 'restored-' + prefix + '-' + ++nextId;
 
@@ -82,6 +85,7 @@ export function restoreTranscript(events: readonly RolloutEvent[]): TranscriptCe
           callId,
           name,
           command: toolLabel(name, event.input),
+          exploration: explorationLabel(name, event.input),
           output: '',
           isError: false,
           running: true,
@@ -106,6 +110,46 @@ export function restoreTranscript(events: readonly RolloutEvent[]): TranscriptCe
             }
           : (cells[index] as ExecCell);
         const updated: ExecCell = {
+          ...base,
+          output: text(event.content),
+          isError: event.isError === true,
+          durationMs: numberValue(event.durationMs),
+          running: false,
+        };
+        if (index === undefined) cells.push(updated);
+        else cells[index] = updated;
+        break;
+      }
+      case 'local.command': {
+        const commandId = text(event.commandId) || text(event.id);
+        const command = text(event.command);
+        if (commandId.length === 0) break;
+        const cell: LocalCommandCell = {
+          type: 'local',
+          id: id('local'),
+          command,
+          output: '',
+          isError: false,
+          running: true,
+        };
+        localCommands.set(commandId, cells.length);
+        cells.push(cell);
+        break;
+      }
+      case 'local.result': {
+        const commandId = text(event.commandId);
+        const index = localCommands.get(commandId);
+        const base: LocalCommandCell = index === undefined
+          ? {
+              type: 'local',
+              id: id('local'),
+              command: text(event.command),
+              output: '',
+              isError: false,
+              running: false,
+            }
+          : (cells[index] as LocalCommandCell);
+        const updated: LocalCommandCell = {
           ...base,
           output: text(event.content),
           isError: event.isError === true,

@@ -1,5 +1,14 @@
+export interface ExecInvocation {
+  file: string;
+  args: string[];
+}
+
 export interface ExecRequest {
   command: string;
+  /** Optional fully resolved argv (for example a sandbox wrapper). */
+  invocation?: ExecInvocation;
+  /** Optional stdin payload, written before the child is awaited. */
+  stdin?: string;
   cwd: string;
   /** Wall-clock limit in milliseconds. */
   timeoutMs: number;

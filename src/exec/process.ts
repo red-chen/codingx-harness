@@ -101,7 +101,7 @@ export async function runShellCommand(request: ExecRequest): Promise<ExecResult>
     });
   }
 
-  const { file, args } = shellInvocation(request.command);
+  const { file, args } = request.invocation ?? shellInvocation(request.command);
   const stdout = new BoundedCapture(request.maxOutputChars);
   const stderr = new BoundedCapture(request.maxOutputChars);
   const stdoutDecoder = new StringDecoder('utf8');
@@ -114,7 +114,7 @@ export async function runShellCommand(request: ExecRequest): Promise<ExecResult>
         cwd: request.cwd,
         env: request.env,
         detached: process.platform !== 'win32',
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [request.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       });
     } catch (error) {
       reject(new ExecError('Failed to spawn shell: ' + (error instanceof Error ? error.message : String(error)), { cause: error }));
@@ -173,6 +173,13 @@ export async function runShellCommand(request: ExecRequest): Promise<ExecResult>
     }, request.timeoutMs);
 
     request.signal?.addEventListener('abort', onAbort, { once: true });
+
+    if (request.stdin !== undefined) {
+      child.stdin?.on('error', () => {
+        // The hook/tool may exit before consuming stdin; that is not a spawn failure.
+      });
+      child.stdin?.end(request.stdin);
+    }
 
     child.stdout?.on('data', (chunk: Buffer) => {
       stdout.push(stdoutDecoder.write(chunk));

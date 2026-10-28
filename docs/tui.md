@@ -6,7 +6,7 @@
 
 ## 结论：Node + 自研 Terminal
 
-TUI 继续用 Node/TypeScript，但**不用 Ink**，自己实现 Terminal 层：cell buffer、ANSI 差分渲染、alt screen、raw mode、输入解析、resize 与恢复。
+TUI 继续用 Node/TypeScript，但**不用 Ink**，自己实现 Terminal 层：cell buffer、ANSI 差分渲染、主屏幕原生滚动缓冲区、raw mode、输入解析、resize 与恢复。
 
 为什么不是 Rust：
 
@@ -101,6 +101,7 @@ type UiEvent =
   | { type: 'tool.finished'; result: ToolResult }
   | { type: 'diff.updated'; files: FileChange[] }
   | { type: 'plan.updated'; steps: PlanStep[] }
+  | { type: 'hook.finished'; event: string; status: string; command: string; durationMs: number; message?: string }
   | { type: 'approval.requested'; request: ApprovalRequest }
   | { type: 'usage.updated'; usage: TokenUsage }
   | { type: 'turn.finished'; status: 'done' | 'aborted' | 'error' }
@@ -127,6 +128,8 @@ type UiCommand =
 `ask` 模式由 `AskUserQuestion` 工具触发：core 通过 `AskHandler` 调用 `TuiSession.ask()`，TUI 打开提问面板并等待 `answer` / `cancel-ask`；`Esc` 取消，`Ctrl+C` 仍然中断整个 turn。
 
 `approval` 模式由权限策略触发：底部弹层展示工具、归一化命令/路径、cwd、网络目标、理由与风险，支持允许一次 / 本会话 / 命令前缀 / 拒绝 / 拒绝并说明原因 / Esc 取消；长命令在面板内换行展示。审批通过会写入 rollout，并在内存中建立会话/前缀授权。`/permissions` 是本地命令：不带参数列出当前 profile 与可选 profile，带参数切换；切换结果以 notice 显示，Full Access 在启动时给出 warning notice。选择器 overlay 与长命令全屏视图仍待补。审批弹层由应用状态机绘制，模型输出不能伪造。完整语义见 [permissions.md](permissions.md)。
+
+`!` 是本地 Shell 命令：composer 行首输入 `!pwd` 后 Enter，不会产生模型消息；TUI 清空 composer，把它显示为 `› ! pwd` 输入行 + 完整输出（不做 Exec 的 5 行预览；模型发起的 Shell 调用仍显示 `• Ran …`），并把命令与结果写入 `local.command` / `local.result`（resume 时恢复为本地命令块，不进入模型历史）。命令只在 idle 时执行，turn 运行中只给出提示；执行期间状态行显示 Working，`Esc` / `Ctrl+C` 中断整个进程组。命令仍经过与 Shell 工具相同的 permission profile、审批弹层与 OS 沙箱，审批与沙箱拒绝照常写 `approval.*`、`permission.decision`、`sandbox.denied`。plain 交互模式对行首 `!` 做同样处理，`--json` 下不执行。slash 与 `!` 都由 runtime 直接交给 TuiSession，不经过 `UiCommand`。
 
 TUI 不持久化任何配置；所有颜色、键位、布局都是固定行为。模型与 cwd 只作为事件字段显示。终端渲染前对不可信文本做控制序列剥离，见 [security.md](security.md)。
 
@@ -163,14 +166,14 @@ model · cwd · session title
 - 最底部固定 1 行 meta，不再显示快捷键行；cwd 在 home 目录下显示为 `~/...`，用户消息使用独立的 `userBg` 整块背景。
 - 每个 turn 完成后追加一行 TurnSummary：完成时间、耗时、in/out/cache tokens。
 - 状态行显示 `turn N · step M`，右侧显示 `ctx used/window · tok total`，默认窗口 1M tokens。
-- exec 命令显示工具耗时；turn 摘要显示 `total/llm/tools` 耗时与 Token，LLM 耗时不再重复挂在 assistant 内容末尾。
+- exec 命令显示工具耗时；turn 摘要使用紧凑格式 `HH:mm:ss · 15s (L15s/T0s) · ↑8.5k ↓606 C14.1k`（时间、总耗时、LLM/工具耗时、输入/输出 Token、缓存读取与创建 Token 之和），窄窗口自动换行，完整统计仍保存在会话数据中，LLM 耗时不再重复挂在 assistant 内容末尾。
 - 相邻且工具/目标相同的调用（例如同一批次里多次 `ReadFile` 同一文件）合并为一个 Exec 块：标题只出现一次并带 `×N`，各次输出按顺序预览，组内不再额外空行；完全相同的输出只渲染一次。
 - 向上滚动按历史内容 clamp；内容不足一屏时保持停在底部，不会出现空白。
 - welcome 卡作为 transcript 的第一个历史块保留，不会在首条消息后消失；滚动上限包含它。
 - resume 时从 rollout 重建 user/assistant/tool/plan/turn 摘要，历史 transcript 直接可见。
-- 不开启鼠标上报：拖选交给终端原生处理，PgUp/PgDn、Shift+Up/Down 滚动 transcript。
+- 关闭鼠标上报，保留终端原生拖选。应用内历史通过 PgUp/PgDn、Shift+Up/Down 或 Ctrl+T 查看；运行时使用主屏幕，移出视口的 transcript 行写入终端原生 scrollback，因此滚轮/触控板与直接拖选可同时使用。
 - `/copy` 默认复制完整 transcript；`/copy status|input|meta|screen` 分别复制 StatusRow/Composer/MetaBar/整屏；`/copy all` 复制全部区域（带分区标题），`/copy last` 复制最后一条 assistant 输出。Ctrl+Y 等同 `/copy all`。
-- 选中文本后用终端自己的复制键：macOS 为 `⌘C`，其它平台为 `Ctrl+Shift+C`；TUI 不拦截拖选、不做应用内选区，因此复制的是终端里真实可见的文本。`Ctrl+Y` 与 `/copy` 仍可复制应用内的 transcript/区域文本（OSC52 + pbcopy/clip/wl-copy/xclip）。
+- 选中文本后用终端自己的复制键：macOS 为 `⌘C`，其它平台为 `Ctrl+Shift+C`；直接拖选由终端处理，TUI 不捕获鼠标、不做应用内选区。`Ctrl+Y` 与 `/copy` 仍可复制应用内的 transcript/区域文本（OSC52 + pbcopy/clip/wl-copy/xclip）。
 - 窄于 60 列收窄卡片；窄于 40 列隐藏 meta，只保留输入与最简状态。
 
 ## Widgets
@@ -180,7 +183,7 @@ TuiApp
 ├── TranscriptViewport        // 虚拟化，只渲染可见 cell
 │   ├── WelcomeCard
 │   ├── UserCell / AssistantCell / TurnSummary
-│   ├── ExecCell / DiffCell / PlanCell / NoticeCell
+│   ├── ExecCell / LocalCommandCell / DiffCell / PlanCell / NoticeCell
 │   └── ActiveCell            // 流式尾部
 ├── BottomPane
 │   ├── StatusRow             // spinner / elapsed / interrupt
@@ -205,6 +208,7 @@ TuiApp
 | User | `› ` + 低对比背景；保留换行，超宽 URL 强制拆分 |
 | Assistant | `• ` + markdown；标题、列表、引用、代码块、表格、链接 |
 | Exec | `• Ran <command>`；相邻且工具/目标相同的调用合并为 `• Ran <command> ×N`，各次输出依次预览（每次前 5 行，超出 `… +N lines`；相同输出只显示一次）；stderr 用 error tone |
+| Local | `› ! <command>` + 完整输出；不做 5 行预览，但输出仍受 `max_output_chars` 限制；与模型的 Shell 调用分组区分 |
 | Diff | `• Edited N files (+a -b)`；文件分组、行号、gutter、add/del 颜色 |
 | Plan | `• Updated Plan`；说明 + `✔`/`□` 步骤 |
 | Notice | 单行/多行提示，不抢 composer |
@@ -224,6 +228,7 @@ Markdown 用 `marked` 或 `micromark` 解析成 AST，再转 styled spans；代�
 | 场景 | 键 |
 | --- | --- |
 | 提交 | `Enter` |
+| 本地 Shell | 行首 `!<command>` 后 `Enter`（如 `!pwd`） |
 | 换行 | `Shift+Enter` / `Ctrl+J` / `Alt+Enter` |
 | 任务中排队 | `Tab` |
 | 中断 / 关闭弹层 | `Esc` / `Ctrl+C`（首次） |
@@ -322,5 +327,11 @@ Slash 补全浮在 composer 上方，最多 8 行；命令 + 一句描述，支�
 
 - 不做登录、认证、配置、设置页、主题/模型选择器、可配置键位。
 - 不做 pets、plugins、voice、图片、side conversation、多 Agent 面板。
-- 不做原生 scrollback / resize reflow；transcript 由 TUI 自己管理，`Ctrl+T` 查看历史。
+- 主屏幕重绘不发送 ED2（整屏清除），避免 iTerm2 将清屏前的旧视口混入历史。
+- 原生 scrollback 已接入主屏幕；历史行的重排由终端处理，当前视口由 TUI 重绘。`Ctrl+T` 仍可查看应用内完整历史。
+- `/clear` 清除应用会话与视口，不擦除终端已保存的原生 scrollback。
 - 不逐像素复制 Codex；只对齐信息架构、状态与键盘手感。
+
+### 探索工具聚合
+
+连续的 `ReadFile`、`Grep`、`Glob`、`ListDir` 聚合为一个 `Explored` 块；运行中显示 `Exploring`。每次调用展示 Read/Search/List 摘要，搜索含 pattern 与 path。写操作、Shell 与其他消息会分隔探索块。折叠时最多显示最近 3 条探索摘要，并标明隐藏数量与失败数量；展开后显示全部调用及原始结果。Shell 折叠预览移除结果信封元数据，最多显示 3 个屏幕行（包括换行），完整结果可用 Ctrl+O 查看。`Ctrl+O` 打开历史视图并展开探索结果，再按切换收起，Esc 返回主界面；详情仅影响显示，不改写 rollout。

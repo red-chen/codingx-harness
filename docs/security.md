@@ -40,11 +40,11 @@
 
 `--yolo` 仅建议在一次性、外部已隔离的容器中使用。
 
-### 当前构建（M3.1 / M3.2）
+### 当前构建（M3.1 / M3.2 / M3.3）
 
-文件工具已接入 Permission profile / approval policy：默认 `:workspace` + `on-request`，workspace 外读写、敏感路径与 `:read-only` 写入会被拒绝或要求审批；非交互没有 approver 时返回 `APPROVAL_REQUIRED`。TUI 底部弹层与 plain 交互提示都支持允许一次 / 本会话 / 命令前缀 / 拒绝并说明原因，授权只存在当前进程内存。`--yolo` 映射到 `:danger-full-access` + `never`（文件工具无限制）并告警。
+文件工具与 Shell 已接入 Permission profile / approval policy：默认 `:workspace` + `on-request`，workspace 外读写、敏感路径与 `:read-only` 写入会被拒绝或要求审批；非交互没有 approver 时返回 `APPROVAL_REQUIRED`。TUI 底部弹层与 plain 交互提示都支持允许一次 / 本会话 / 命令前缀 / 拒绝并说明原因，授权只存在当前进程内存。`--yolo` 映射到 `:danger-full-access` + `never`（文件工具、审批与沙箱均关闭）并告警。
 
-仍未实现：Seatbelt/Landlock、网络代理、exec policy 规则与自动审查。Shell 只做保守命令解析与硬拒绝；**任意程序仍可绕过**，不能把它当成 OS 隔离。实现状态见 [implementation-plan-m3.md](implementation-plan-m3.md)。
+macOS 上 Shell 还会进入 Seatbelt：默认 deny、写入限定 profile 根、网络默认 deny、凭证路径与 `.env*`/私钥文件名由内核拒绝。Linux 尚无 Landlock，Shell 只做保守命令解析与硬拒绝；**任意程序仍可绕过**，不能把 Linux 当前构建当成 OS 隔离。网络代理、exec policy 规则与自动审查仍未实现。实现状态见 [implementation-plan-m3.md](implementation-plan-m3.md)。
 
 ## 沙箱
 
@@ -56,16 +56,29 @@
 
 默认边界：
 
-- 可写：workspace 根、`--add-dir`、`$TMPDIR`（`/tmp` 由 profile 决定）
-- 可读：workspace 根 + `:minimal` 系统/运行时路径
-- 默认 deny：`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.codingx`、session 目录、`.env*`、私钥
-- 网络：默认 `none`；需要时由 profile 按域名 allow/deny，deny 优先
+- 可写：workspace 根、`--add-dir`、`$TMPDIR`、`/tmp`（由 profile 决定）
+- 可读：系统/运行时路径、workspace 根、工具链目录与 profile 额外授予的读根
+- 默认 deny：`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.gnupg`、`~/.azure`、`~/.config/gcloud`、`~/.docker`、`~/.kube`、`~/.terraform.d`、`~/.codingx`、session 目录、`.env*`、私钥、`.npmrc`/`.netrc`/`.git-credentials` 等
+- Git hooks：执行默认可用；`.git/hooks` / `.git/config` 写入默认 deny。`:workspace-git-hooks`（或 `:git_hooks` / `:git_config` 作用域）显式放开，启动告警，建议只在受信任仓库使用
+- 网络：默认 `none`；profile 显式启用时 Seatbelt 整网放行，域名 allow/deny 仍需 S6 本地代理执行
 
-当前构建尚未接入上述 OS 沙箱；`--add-dir` 只在 profile 的 `:workspace_roots` 允许时扩展（`:read-only` 会直接报错）。文件工具已受 profile 约束，但 `--yolo` 会取消这层约束；Shell 始终以当前用户权限运行。
+当前构建已在 macOS 接入 Seatbelt；Git hooks 的执行走 git 本身，默认允许，写入 hooks/config 需要显式 profile。`--add-dir` 只在 profile 的 `:workspace_roots` 允许时扩展（`:read-only` 会直接报错）。文件工具受 profile 约束，但 `--yolo` 会同时取消文件工具策略与 OS 沙箱。Linux 尚未接入 OS 沙箱，Shell 以当前用户权限运行；不要在没有外部隔离的 Linux 环境里处理不可信仓库。
 
 ### 环境变量
 
 子进程默认只继承白名单内的变量（`PATH`、`HOME`、`LANG`、`TERM` 等）。`API_KEY` 之类的凭证**不传给子进程**——否则一条 `env` 命令就能把密钥写进 rollout 和模型上下文。
+
+## Agent Harness hooks
+
+Hooks 是用户全局配置中的本地命令，在 `session_start` / `user_prompt_submit` / `pre_tool_use` / `post_tool_use` / `stop` / `session_end` 时执行。
+
+- **只信任全局配置**：项目配置中的 `[[hooks]]` 会被剥离并告警，避免克隆仓库直接执行命令。
+- **不绕过防线**：`pre_tool_use` 只能额外阻止，不能放行 policy / Seatbelt 会拒绝的动作；hooks 失败或超时不会授权任何操作。
+- **凭据隔离**：hook 使用 `[sandbox].env_passthrough` 过滤后的环境，不继承 API Key 与控制面变量；stdout/stderr 有长度上限并按通用规则脱敏后写入 rollout。
+- **审计**：每条 hook 写 `hook.finished`（event/status/exitCode/duration/blocked/turnId/callId），被阻止的 prompt/工具以 `HOOK_BLOCKED` 回填。
+- **执行权限**：hook 本身使用当前用户权限，不自动进入 Seatbelt；需要隔离时应在 hook 内部调用沙箱。
+
+完整配置与事件语义见 [hooks.md](hooks.md)。
 
 ## Session Manager
 
@@ -124,4 +137,4 @@ TUI 会把模型输出、工具输出、用户输入与粘贴内容直接画到�
 
 ## 审计
 
-rollout 是完整的审计日志，包含：每次模型请求的 token 用量、每次工具调用的结构化 Action、命中的规则、profile 与 approval policy、审批请求与决策（决策者：策略 / 用户 / reviewer）、临时授权、沙箱拒绝原因、执行耗时与退出码。受策略约束的工具调用会写 `permission.decision`（verdict/code/profile/action）；审批路径写 `approval.requested` / `approval.decided` 与 `permission.granted`，`/permissions` 切换写 `profile.changed`；`sandbox.denied` 随 S3 落地。审批命令与路径按 [redact.ts](../src/util/redact.ts) 的规则脱敏后落盘，UI 展示给用户的仍是可判断的真实命令。`codingx log --session <id>` 可读回任意历史会话。sessiond 自身日志只记录连接、租约与追加元数据，不记录 prompt 与工具输出。
+rollout 是完整的审计日志，包含：每次模型请求的 token 用量、每次工具调用的结构化 Action、命中的规则、profile 与 approval policy、审批请求与决策（决策者：策略 / 用户 / reviewer）、临时授权、沙箱拒绝原因、执行耗时与退出码。受策略约束的工具调用会写 `permission.decision`（verdict/code/profile/action）；审批路径写 `approval.requested` / `approval.decided` 与 `permission.granted`，`/permissions` 切换写 `profile.changed`；Seatbelt 拒绝写 `sandbox.denied`，Shell 结果同时带 `SANDBOX_DENIED` 与沙箱信息；Agent Harness hooks 每条执行写 `hook.finished`。TUI/plain 的 `!` 命令不经过模型，但同样写 `permission.decision`（`source: 'local-command'`）与 `sandbox.denied`，命令输出写 `local.command` / `local.result`。审批命令与路径按 [redact.ts](../src/util/redact.ts) 的规则脱敏后落盘，UI 展示给用户的仍是可判断的真实命令。`codingx log --session <id>` 可读回任意历史会话。sessiond 自身日志只记录连接、租约与追加元数据，不记录 prompt 与工具输出。

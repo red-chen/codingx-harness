@@ -112,13 +112,13 @@ servers = []
 
 ## Permission profiles（S1 已解析）
 
-> 设计见 [permissions.md](permissions.md)。新模型用 Permission profile（边界）× Approval policy（何时问）× Approvals reviewer（谁答）；S1 已解析并接入文件工具，旧/新配置冲突会报错。OS 沙箱、网络代理、审批 UI 与自动审查尚未实现；项目配置不能覆盖这些权限键。
+> 设计见 [permissions.md](permissions.md)。新模型用 Permission profile（边界）× Approval policy（何时问）× Approvals reviewer（谁答）；S1/S3 已接入文件工具与 Shell，macOS Seatbelt 已落地，旧/新配置冲突会报错。网络代理与自动审查尚未实现；项目配置不能覆盖这些权限键。
 
 ```toml
 # 顶层：批准策略与默认 profile
 approval_policy = "on-request"       # on-request | never
 approvals_reviewer = "user"          # user | auto_review（后续）
-default_permissions = "project-edit" # 或 :read-only / :workspace / :danger-full-access
+default_permissions = "project-edit" # 或 :read-only / :workspace / :workspace-git-hooks / :danger-full-access
 
 [permissions.project-edit]
 extends = ":workspace"
@@ -130,6 +130,10 @@ extends = ":workspace"
 [permissions.project-edit.filesystem.":workspace_roots"]
 "." = "write"
 "**/*.env" = "deny"
+
+# 可选：允许安装 Git hooks（默认只执行、禁止写）
+# ":git_hooks" = "write"
+# ":git_config" = "write"
 
 [permissions.project-edit.network]
 enabled = true               # 示例：默认 false，仅按需为单个 profile 开启
@@ -151,7 +155,7 @@ enabled = true               # 示例：默认 false，仅按需为单个 profil
 | `[approval].allow` / `deny` | S5 的 `[approval.rules]`；之后再兼容 Codex `.rules` |
 | `[sandbox].writable_roots` / `network` | 并入命名 profile；与 `default_permissions` 冲突时报错 |
 
-`--add-dir` 只追加可写根；profile 不允许扩展时启动报错，不静默忽略。S1 已解析 `network.enabled` / `domains` 并对已知网络命令做启发式检查；没有代理或 OS 网络隔离，任意程序仍可绕过。
+`--add-dir` 只追加可写根；profile 不允许扩展时启动报错，不静默忽略。`network.enabled` / `domains` 已解析：macOS Seatbelt 在 `enabled = false` 时由内核拒绝网络，`enabled = true` 时整网放行；`domains` 仍只参与策略层启发式，域名白名单代理属于 S6。
 
 受信任项目记录在全局配置中（路径必须是绝对路径；项目配置不能自证可信）：
 
@@ -160,7 +164,7 @@ enabled = true               # 示例：默认 false，仅按需为单个 profil
 trust_level = "trusted"
 ```
 
-S1 同时解析旧配置与新键：`[approval]` / `[sandbox]` 仍兼容，新键优先；`sandbox.writable_roots` / `readable_roots` 等 OS 沙箱字段仍预留给 S3/S4，不参与当前路径策略。
+S1 同时解析旧配置与新键：`[approval]` / `[sandbox]` 仍兼容，新键优先；`sandbox.writable_roots` / `readable_roots` 等旧字段仍会映射到权限 profile，不直接控制 Seatbelt；macOS Seatbelt 使用解析后的 profile 根，Linux 的 Landlock 字段留给 S4。
 
 `approval.mode` 是兼容旧键（S1 仍支持，推荐迁移到 `approval_policy`）；它只控制「何时询问」，不能突破硬拒绝列表与沙箱。工具自身的 `approval` 声明（`none` / `on-write` / `always`）是 M2 的默认粒度，M3 起由结构化 `Action` + profile 判定取代：
 
@@ -168,11 +172,40 @@ S1 同时解析旧配置与新键：`[approval]` / `[sandbox]` 仍兼容，新�
 - `never`：从不询问；未显式允许的非只读操作一律拒绝，适合 CI 与 `exec`
 - `always-ask`：任何工具调用都询问，包括只读工具（M3 弃用，迁移为 `on-request` + 写/执行 prompt 规则）
 
-当前构建只有应用层路径检查：`--yolo` / `--allow-dangerously-skip-permissions` 关闭文件工具与 Shell `cwd` 的 workspace / `--add-dir` 限制并输出告警；审批引擎与 OS 沙箱尚未接入，因此该选项也不会关闭它们。M3 目标语义、预设与提权流程见 [permissions.md](permissions.md)，任务拆分见 [implementation-plan-m3.md](implementation-plan-m3.md)。
+当前构建已接入应用层策略与 macOS Seatbelt：`--yolo` / `--allow-dangerously-skip-permissions` 映射到 `:danger-full-access` + `never`，同时关闭文件工具策略、审批与 OS 沙箱并输出告警；在必须有沙箱的平台（macOS 探测失败、Windows）会拒绝启动。Linux 的 Landlock 尚未接入，Shell 仍以当前用户权限运行。M3 目标语义、预设与提权流程见 [permissions.md](permissions.md)，任务拆分见 [implementation-plan-m3.md](implementation-plan-m3.md)。
 
 `WebFetch` 仅在 `web.enabled = true` 时注册；请求只允许 https，域名必须命中 `allowed_domains`，重定向目标同样校验，解析到私网 / 回环地址的域名一律拒绝。
 
 `provider.<id>.protocol` 默认 `anthropic-messages`，后续支持 `openai-responses`；协议只决定 wire 格式，`endpoint` 与 `api_key_env` 保持通用配置。
+
+## Agent Harness hooks
+
+Hooks 是用户配置的生命周期命令，与 Git hooks 无关，只能写在全局 `~/.codingx/config.toml`；项目配置中的 `[[hooks]]` 会被忽略并告警。
+
+```toml
+[[hooks]]
+event = "session_start"          # session_start | user_prompt_submit | pre_tool_use | post_tool_use | stop | session_end
+command = "git status --short"
+timeout_ms = 5000
+
+[[hooks]]
+event = "pre_tool_use"
+matcher = "Shell|WriteFile"      # 仅工具事件；工具名正则
+command = "python3 ~/.codingx/hooks/guard.py"
+timeout_ms = 10000
+
+[[hooks]]
+event = "post_tool_use"
+matcher = "EditFile|WriteFile|ApplyPatch"
+command = "npm run lint --silent"
+```
+
+- 多行按配置顺序串行执行；每行默认 10s 超时，范围 100ms–120s。
+- Hook 从 stdin 读取 JSON（`hook_event_name`、`session_id`、`cwd`、`turn_id`、`tool_name`、`tool_input`、`tool_result` 等），并收到 `CODINGX_HOOK_EVENT` 等环境变量。
+- exit 0：成功；stdout 作为可选 context（`session_start` 注入系统提示、`user_prompt_submit` 注入用户消息、`post_tool_use` 追加到工具结果）。
+- exit 2：阻止 `user_prompt_submit` / `pre_tool_use`；其他事件只记录。
+- 其他非零或超时：记录 `hook.finished` 失败告警，不阻止 turn。
+- Hooks 使用当前用户权限执行，继承白名单环境变量；不要从不可信来源复制 hook。完整语义见 [hooks.md](hooks.md)。
 
 ## Provider 路由
 
@@ -287,7 +320,7 @@ codingx [options] [prompt]
       --approve-for-me      越界请求交给自动 reviewer（接口已接受；自动审查未实现）
       --full-auto           :workspace + auto_review 的兼容别名（自动审查未实现）
       --yolo, --allow-dangerously-skip-permissions
-                            关闭审批与沙箱（危险；当前无 OS 沙箱，文件工具不受限）
+                            关闭审批、文件策略与 OS 沙箱（危险；仅用于一次性容器）
       --plain               纯文本输出，不启用 TUI
       --json                事件流以 JSON Lines 输出到 stdout
   -c, --continue            继续最近的会话

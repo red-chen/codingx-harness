@@ -1,3 +1,4 @@
+import xterm from '@xterm/headless';
 import { describe, expect, it, vi } from 'vitest';
 import { EMPTY_USAGE, type ReasoningEffort } from '../src/providers/types.js';
 import type { TurnResult } from '../src/agent/index.js';
@@ -112,7 +113,8 @@ describe('TuiRuntime', () => {
     runtime.stop();
     runtime.stop();
     expect(io.rawModes).toEqual([true, false]);
-    expect(io.writes.join('')).toContain('\x1b[?1049l');
+    expect(io.writes.join('')).not.toContain('\x1b[?1049h');
+    expect(io.writes.join('')).not.toContain('\x1b[?1049l');
   });
 
   it('coalesces rapid render requests into one trailing frame', () => {
@@ -150,7 +152,7 @@ describe('TuiRuntime', () => {
     runtime.stop();
   });
 
-  it('leaves mouse reporting off so the terminal owns selection', () => {
+  it('handles reported wheel events without capturing native terminal selection', () => {
     const io = new FakeIO();
     const app = makeApp();
     for (let index = 0; index < 40; index++) app.addNotice('history ' + index);
@@ -159,11 +161,69 @@ describe('TuiRuntime', () => {
     runtime.feed('\x1b[<64;10;5M');
     runtime.feed('\x1b[<0;5;8M');
     runtime.feed('\x1b[<0;5;8m');
+    expect(app.scrollOffset).toBe(3);
+    const history = app.frame();
+    runtime.feed('\x1b[<65;10;5M');
+    expect(app.scrollOffset).toBe(0);
+    expect(app.frame()).not.toEqual(history);
+    app.openHelp();
+    runtime.feed('\x1b[<64;10;5M');
     expect(app.scrollOffset).toBe(0);
     runtime.stop();
     const output = io.writes.join('');
     expect(output).not.toContain('\x1b[?1002h');
     expect(output).not.toContain('\x1b[?1006h');
+    expect(output).not.toContain('\x1b[?1006l');
+    expect(output).not.toContain('\x1b[?1002l');
+  });
+
+  it('archives hidden history once on the primary screen without capturing selection', () => {
+    const io = new FakeIO();
+    const app = makeApp();
+    for (let index = 0; index < 80; index++) app.addNotice('history-' + index);
+    const runtime = makeRuntime(app, io, [], []);
+    runtime.start();
+    const output = io.writes.join('');
+    expect(output).toContain('history-0');
+    expect(output).toContain('history-79');
+    expect(output).not.toContain('\x1b[?1049h');
+    expect(output).not.toContain('\x1b[?1002h');
+    io.writes.length = 0;
+    runtime.render(true);
+    expect(io.writes.join('')).not.toContain('history-0');
+    app.addNotice('history-80');
+    runtime.render(true);
+    expect(io.writes.join('')).toContain('history-80');
+    expect(io.writes.join('')).not.toContain('history-0');
+    runtime.stop();
+  });
+
+  it('preserves exact history order in a terminal emulator across incremental output', async () => {
+    const terminal = new xterm.Terminal({ cols: 80, rows: 24, scrollback: 10000, allowProposedApi: true });
+    const io = new FakeIO();
+    const app = makeApp();
+    const runtime = makeRuntime(app, io, [], []);
+    runtime.start();
+    const drain = async (): Promise<void> => {
+      const output = io.writes.splice(0).join('');
+      // iTerm2 may archive an entire viewport on ED2. Never emit it here.
+      expect(output).not.toContain('\x1b[2J');
+      await new Promise<void>((resolve) => terminal.write(output, resolve));
+    };
+    await drain();
+    for (let index = 0; index < 60; index++) {
+      if (index === 30) runtime.feed('\x1b[200~line1\nline2\nline3\nline4\x1b[201~');
+      if (index === 35) app.clearComposer();
+      app.addNotice('HISTORY_' + String(index).padStart(3, '0'));
+      runtime.render(true);
+      await drain();
+    }
+    const lines = Array.from({ length: terminal.buffer.active.length }, (_, i) =>
+      terminal.buffer.active.getLine(i)?.translateToString(true) ?? '');
+    const ids = lines.flatMap((line) => line.match(/HISTORY_\d+/gu) ?? []);
+    expect(ids).toEqual(Array.from({ length: 60 }, (_, i) => 'HISTORY_' + String(i).padStart(3, '0')));
+    runtime.stop();
+    terminal.dispose();
   });
 
   it('invokes the copy hook for Ctrl+Y', () => {
@@ -220,7 +280,7 @@ describe('TuiRuntime', () => {
     runtime.stop();
   });
 
-  it('clears and fully repaints when the terminal is resized', () => {
+  it('fully repaints without ED2 when the terminal is resized', () => {
     const io = new FakeIO();
     const app = makeApp();
     const runtime = makeRuntime(app, io, [], []);
@@ -234,9 +294,9 @@ describe('TuiRuntime', () => {
 
     expect(app.state).toMatchObject({ width: 120, height: 40 });
     // A blank new front buffer would make the renderer skip blank cells and
-    // leave content from the old layout on screen; resize must force a clear
-    // and repaint the whole new grid instead.
-    expect(output).toContain('\x1b[2J');
+    // leave content from the old layout on screen; repaint every cell without
+    // ED2, which iTerm2 can copy into scrollback.
+    expect(output).not.toContain('\x1b[2J');
     expect(output).toContain('\x1b[40;1H');
     runtime.stop();
   });

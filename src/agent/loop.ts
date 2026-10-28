@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { generateTurnId } from '../util/ids.js';
 import {
   abortError,
+  CodingxError,
   ConfigError,
   describeError,
   isAbortError,
@@ -14,6 +15,9 @@ import { estimateMessagesTokens, estimateToolsTokens } from '../providers/tokens
 import { estimateTokens, truncateMiddle } from '../util/tokens.js';
 import type { ApprovalHandler, PolicyRuntime } from '../policy/types.js';
 import type { RouterSelection } from '../routing/router.js';
+import type { SandboxBackend } from '../sandbox/types.js';
+import type { HookRunner } from '../hooks/index.js';
+import type { HookEvent, HookPayloadContext, HookRunOptions, HookRunResult } from '../hooks/types.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { ReadFileTracker } from '../tools/read-tracker.js';
 import type {
@@ -23,6 +27,7 @@ import type {
   ShellToolContext,
   SkillToolContext,
   ToolContext,
+  ToolResult,
 } from '../tools/types.js';
 import type { SessionHandle } from '../session/types.js';
 import { buildModelRequest, mergeConsecutiveUserMessages } from './context.js';
@@ -66,6 +71,10 @@ export interface AgentLoopOptions {
   yolo?: boolean;
   /** Permission policy for this invocation. */
   policy?: PolicyRuntime;
+  /** OS sandbox backend for Shell commands; absent in unit tests and full access. */
+  sandbox?: SandboxBackend;
+  /** User-configured Agent Harness lifecycle hooks. */
+  hooks?: HookRunner;
   /** Approval callback; absent when the UI cannot ask (exec/CI). */
   approve?: ApprovalHandler;
   /** UI callback for AskUserQuestion; absent in non-interactive runs. */
@@ -106,8 +115,8 @@ export interface TurnResult {
 
 /**
  * Runs turns against a provider, executing tools serially and writing the
- * rollout through the session handle. Current build has no approval/sandbox;
- * context compaction supports levels 1-2 (truncate/drop).
+ * rollout through the session handle. Tool calls pass through the permission
+ * policy (and, for Shell, the OS sandbox) before execution.
  */
 export class AgentLoop {
   private readonly options: AgentLoopOptions;
@@ -149,6 +158,7 @@ export class AgentLoop {
         : { additionalDirs: options.additionalDirs }),
       ...(options.yolo === true ? { yolo: true } : {}),
       ...(options.policy === undefined ? {} : { policy: options.policy }),
+      ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
       ...(options.approve === undefined ? {} : { approve: options.approve }),
       ...(options.ask === undefined ? {} : { ask: options.ask }),
       ...(options.skills === undefined ? {} : { skills: options.skills }),
@@ -227,8 +237,24 @@ export class AgentLoop {
 
     try {
       await this.options.session.append({ type: 'turn.start', turnId });
+      const promptHooks = await this.runHooks(
+        'user_prompt_submit',
+        { sessionId: this.options.sessionId, cwd: this.options.cwd, prompt: input },
+        { turnId, ...(signal === undefined ? {} : { signal }) },
+      );
       await this.options.session.append({ type: 'user.message', text: input });
-      this.messages.push({ role: 'user', content: [{ type: 'text', text: input }] });
+      if (promptHooks?.blocked === true) {
+        throw new CodingxError(
+          'HOOK_BLOCKED',
+          promptHooks.reason ?? 'The user_prompt_submit hook blocked this prompt.',
+        );
+      }
+      const promptContext = promptHooks?.context.trim() ?? '';
+      const modelInput =
+        promptContext.length === 0
+          ? input
+          : input + '\n\n[Hook context: user_prompt_submit]\n' + promptContext;
+      this.messages.push({ role: 'user', content: [{ type: 'text', text: modelInput }] });
 
       const selection = this.options.router.selection;
       if (selection) {
@@ -477,7 +503,54 @@ export class AgentLoop {
                     }
                   },
                 };
-          const result = await this.options.tools.execute(call.name, call.input, callContext);
+          const preHooks = await this.runHooks(
+            'pre_tool_use',
+            {
+              sessionId: this.options.sessionId,
+              cwd: this.options.cwd,
+              toolName: call.name,
+              toolInput: call.input,
+            },
+            { turnId, callId: call.id, ...(signal === undefined ? {} : { signal }) },
+          );
+          let result: ToolResult;
+          if (preHooks?.blocked === true) {
+            result = {
+              content:
+                'Blocked by pre_tool_use hook: ' +
+                (preHooks.reason ?? 'the hook rejected this tool call.'),
+              isError: true,
+              meta: {
+                code: 'HOOK_BLOCKED',
+                hook: { event: 'pre_tool_use', command: preHooks.outcomes.at(-1)?.command },
+              },
+            };
+          } else {
+            result = await this.options.tools.execute(call.name, call.input, callContext);
+            const postHooks = await this.runHooks(
+              'post_tool_use',
+              {
+                sessionId: this.options.sessionId,
+                cwd: this.options.cwd,
+                toolName: call.name,
+                toolInput: call.input,
+                toolResult: { content: result.content, isError: result.isError === true },
+              },
+              { turnId, callId: call.id, ...(signal === undefined ? {} : { signal }) },
+            );
+            if (postHooks?.context.trim()) {
+              result = {
+                ...result,
+                content: truncateMiddle(
+                  result.content +
+                    '\n\n[Hook context: post_tool_use]\n' +
+                    postHooks.context.trim(),
+                  this.options.maxOutputChars,
+                  '\n[... hook context truncated ...]\n',
+                ),
+              };
+            }
+          }
           const durationMs = Date.now() - startedAt;
 
           await this.options.session.append({
@@ -490,6 +563,23 @@ export class AgentLoop {
             ...(result.meta ? { meta: result.meta } : {}),
             durationMs,
           });
+          const sandbox = result.meta?.sandbox;
+          if (typeof sandbox === 'object' && sandbox !== null && !Array.isArray(sandbox)) {
+            const sandboxRecord = sandbox as Record<string, unknown>;
+            if (sandboxRecord.denied === true) {
+              await this.options.session.append({
+                type: 'sandbox.denied',
+                turnId,
+                callId: call.id,
+                kind: typeof sandboxRecord.kind === 'string' ? sandboxRecord.kind : 'sandbox',
+                reason:
+                  typeof sandboxRecord.reason === 'string'
+                    ? sandboxRecord.reason
+                    : 'The OS sandbox denied the operation.',
+                retryable: true,
+              });
+            }
+          }
           const policy = result.meta?.policy;
           if (typeof policy === 'object' && policy !== null && !Array.isArray(policy)) {
             await this.options.session.append({
@@ -532,6 +622,7 @@ export class AgentLoop {
 
       if (aborted) {
         if (!state.isTerminal) state.transition('aborted');
+        await this.runStopHooks('aborted', turnId);
         const message = error instanceof Error ? error.message : 'Turn aborted';
         await this.options.session.append({
           type: 'turn.aborted',
@@ -553,6 +644,7 @@ export class AgentLoop {
         ...(summary.category ? { category: summary.category } : {}),
       };
       if (!state.isTerminal) state.transition('error');
+      await this.runStopHooks('error', turnId);
       await this.options.session.append({
         type: 'turn.end',
         turnId,
@@ -591,6 +683,7 @@ export class AgentLoop {
 
   private async finishDone(state: TurnState, turnId: string): Promise<TurnResult> {
     const durationMs = state.durationMs;
+    await this.runStopHooks('done', turnId);
     await this.options.session.append({
       type: 'turn.end',
       turnId,
@@ -603,6 +696,51 @@ export class AgentLoop {
     this.emit({ type: 'usage.updated', turnId, usage: state.usage });
     this.emit({ type: 'turn.finished', turnId, status: 'done', usage: state.usage, durationMs });
     return { turnId, status: 'done', usage: state.usage, steps: state.steps, durationMs };
+  }
+
+  private async runHooks(
+    event: HookEvent,
+    context: HookPayloadContext,
+    options: Pick<HookRunOptions, 'turnId' | 'callId' | 'signal'>,
+  ): Promise<HookRunResult | undefined> {
+    const hooks = this.options.hooks;
+    if (hooks === undefined || !hooks.has(event)) return undefined;
+    try {
+      const result = await hooks.run(event, context, {
+        session: this.options.session,
+        ...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+        ...(options.callId === undefined ? {} : { callId: options.callId }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      });
+      for (const outcome of result.outcomes) {
+        if (outcome.status === 'ok') continue;
+        this.emit({
+          type: 'hook.finished',
+          event: result.event,
+          status: outcome.status,
+          command: outcome.command,
+          durationMs: outcome.durationMs,
+          ...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+          ...(options.callId === undefined ? {} : { callId: options.callId }),
+          ...(outcome.reason === undefined ? {} : { message: outcome.reason }),
+        });
+      }
+      return result;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async runStopHooks(status: 'done' | 'error' | 'aborted', turnId: string): Promise<void> {
+    await this.runHooks(
+      'stop',
+      {
+        sessionId: this.options.sessionId,
+        cwd: this.options.cwd,
+        stopStatus: status,
+      },
+      { turnId },
+    );
   }
 
   private emit(event: UiEvent): void {

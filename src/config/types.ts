@@ -1,5 +1,6 @@
 import type { Protocol } from '../providers/types.js';
 import type { ApprovalPolicy, ApprovalsReviewer, PermissionsConfig } from '../policy/types.js';
+import type { HookConfig } from '../hooks/types.js';
 
 export type ApprovalMode = 'on-request' | 'never' | 'always-ask';
 export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
@@ -106,6 +107,8 @@ export interface Config {
   session: SessionConfig;
   sessiond: SessiondConfig;
   mcp: { servers: McpServerConfig[] };
+  /** User-configured Agent Harness lifecycle hooks (global config only). */
+  hooks: HookConfig[];
 }
 
 export interface ConfigOverrides {

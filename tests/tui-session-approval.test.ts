@@ -174,9 +174,12 @@ describe('TuiSession approval and grants', () => {
     };
     const { app, controller } = makeController(permissions);
     controller.handleLocalCommand('/permissions');
-    expect(notices(app).at(-1)).toContain('Available profiles: :read-only, :workspace');
-
-    controller.handleLocalCommand('/permissions :read-only');
+    expect(app.mode).toBe('ask');
+    controller.handleCommand({ type: 'cancel-ask' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual([]);
+    controller.handleLocalCommand('/permissions');
+    controller.handleCommand({ type: 'answer', answers: [{ id: 'permission-profile', selected: [':read-only'] }] });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(calls).toEqual([':read-only']);
     expect(app.state.session.permissionProfile).toBe(':read-only');

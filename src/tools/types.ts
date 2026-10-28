@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import type { ApprovalHandler, PolicyRuntime } from '../policy/types.js';
+import type { SandboxBackend } from '../sandbox/types.js';
 import type { ReadFileTracker } from './read-tracker.js';
 
 export interface ShellToolContext {
@@ -74,6 +75,8 @@ export interface ToolContext {
   yolo?: boolean;
   /** Permission policy for this invocation; absent in direct tool unit tests. */
   policy?: PolicyRuntime;
+  /** OS sandbox backend; absent in direct tool unit tests and full-access runs. */
+  sandbox?: SandboxBackend;
   /** Present only when the caller can collect approval decisions (S2 TUI). */
   approve?: ApprovalHandler;
   signal: AbortSignal;

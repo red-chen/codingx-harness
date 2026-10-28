@@ -7,6 +7,8 @@ import {
   type SessionSummary,
 } from '../../session/index.js';
 import { createPolicyRuntime } from '../../policy/index.js';
+import { sandboxSummary } from '../../sandbox/index.js';
+import { hookWarnings } from '../../hooks/index.js';
 import { ReadFileTracker, type PlanStep } from '../../tools/index.js';
 import { SessionError } from '../../util/errors.js';
 import { isPathInside } from '../../util/paths.js';
@@ -15,7 +17,8 @@ import type { TextSink } from '../../ui/plain.js';
 import { VERSION } from '../../version.js';
 import type { InteractiveCommandOptions } from './interactive.js';
 import { bootstrap } from '../bootstrap.js';
-import { createLoop } from '../runtime.js';
+import { runLocalCommand } from '../local-command.js';
+import { createLoop, DEFAULT_SHELL_TIMEOUT_MS } from '../runtime.js';
 import { TuiSession, type TuiPermissionController } from '../tui-session.js';
 
 async function findLatestResumable(
@@ -227,6 +230,16 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
       : {};
     if (resumed.model && !options.model) app.router.setModel(resumed.model);
 
+    const startHooks = await app.hooks.run(
+      'session_start',
+      { sessionId: session.id, cwd: app.cwd },
+      { session },
+    );
+    if (startHooks.context.trim().length > 0) {
+      app.sessionHookContext = startHooks.context.trim();
+      app.systemPrompt += '\n\n# Hook context (session_start)\n' + startHooks.context.trim();
+    }
+
     const tuiApp = createTuiAppForSession({
       sessionId: session.id,
       cwd: app.cwd,
@@ -240,6 +253,7 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
       height: process.stdout.rows ?? 24,
       resumed,
     });
+    for (const warning of hookWarnings(startHooks)) tuiApp.addNotice(warning, 'warning');
 
     let controller: TuiSession | undefined;
     const loop = createLoop(
@@ -268,7 +282,7 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
     });
     if (app.yolo) {
       tuiApp.addNotice(
-        'Full access is active (:danger-full-access + never). File tools are unrestricted; Shell has no OS sandbox.',
+        'Full access is active (:danger-full-access + never). File tools are unrestricted and the OS sandbox is disabled.',
         'warning',
       );
     }
@@ -315,10 +329,14 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
           ...(app.additionalDirs.length > 0 ? { additionalDirs: app.additionalDirs } : {}),
           permissionProfile: policy.profileName,
           approvalPolicy: policy.approvalPolicy,
+          sandbox: sandboxSummary(app.sandbox.status, policy.sandboxPolicy),
           ...(policy.yolo ? { yolo: true } : {}),
         });
-        app.systemPrompt = prompt;
-        loop.setSystemPrompt(prompt);
+        const withHookContext = app.sessionHookContext
+          ? prompt + '\n\n# Hook context (session_start)\n' + app.sessionHookContext
+          : prompt;
+        app.systemPrompt = withHookContext;
+        loop.setSystemPrompt(withHookContext);
       },
     };
 
@@ -327,6 +345,21 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
       io: createProcessTerminalIO(),
       session,
       runTurn: (text, signal) => loop.runTurn(text, { signal }),
+      runLocalCommand: (command, signal) =>
+        runLocalCommand({
+          command,
+          cwd: app.cwd,
+          env: app.shellEnv,
+          timeoutMs: DEFAULT_SHELL_TIMEOUT_MS,
+          maxOutputChars: app.config.tools.maxOutputChars,
+          policy: app.policy,
+          sandbox: app.sandbox,
+          signal,
+          approve: (request, approvalSignal) =>
+            controller === undefined
+              ? Promise.resolve({ decision: 'deny', reason: 'The approval UI is not ready.' })
+              : controller.approve(request, approvalSignal),
+        }),
       permissions,
       model: {
         get: () => ({
@@ -349,7 +382,19 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
     });
     return await controller.run();
   } finally {
-    if (session) await session.close();
+    if (session) {
+      try {
+        const endHooks = await app.hooks.run(
+          'session_end',
+          { sessionId: session.id, cwd: app.cwd },
+          { session },
+        );
+        for (const warning of hookWarnings(endHooks)) stderr.write('warning: ' + warning + '\n');
+      } catch {
+        // Session hooks must not prevent close/lease release.
+      }
+      await session.close();
+    }
     await app.store.close?.();
   }
 }

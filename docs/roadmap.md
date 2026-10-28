@@ -1,5 +1,7 @@
 # 路线图
 
+**当前平台范围：CLI 仅支持 macOS。所有当前里程碑的开发、测试、验收与分发均以 macOS 为目标。Linux / Windows 支持暂缓，只有明确扩展平台范围后才启动，不作为 M3 或其他当前里程碑的验收条件。**
+
 原则：每个里程碑结束时都应是**可运行、可验证**的，不做「只有骨架」的交付。
 
 ## M0 · 设计对齐（已完成）
@@ -45,7 +47,7 @@
 - [x] 自研 Terminal：alt screen / raw mode、cell buffer、ANSI 差分、输入解析、resize、异常恢复
 - [x] 布局与 widgets：welcome、transcript viewport、composer、status/footer、固定键位（CLI 接入在 E6）
 - [ ] 消息单元：user/assistant、exec、diff、plan、notice；流式 markdown/diff 已完成，表格 holdback 与 30fps 节流待补
-- [ ] 交互：排队/transcript overlay/slash 补全/`/clear`/`/model`/AskUserQuestion 提问面板已完成；mention、审批、session picker 待补
+- [ ] 交互：排队/transcript overlay/slash 补全/`/clear`/`/model`/AskUserQuestion 提问面板/`!` 本地命令已完成；mention、审批、session picker 待补
 - [x] CJK/emoji、宽字符与 80x24 / 120x40 布局（PTY 冒烟通过）
 - [x] 上下文压缩：截断 → 丢弃 → 模型摘要（三级已完成）
 - [x] 会话 resume / fork（sessiond 启用时通过 IPC/租约）
@@ -57,25 +59,29 @@
 
 **验收**：连续进行 30 轮以上对话不因上下文超限中断；中途 `Ctrl+C` 后 `--continue` 能接上；两个终端能看到同一会话状态且写租约互斥；80x24 / 120x40 核心流程可用，流式不闪烁，resize 后锚点稳定。当前 30 轮压缩、Ctrl+C 续接、双 CLI 租约、TUI 帧/按键预算均有自动测试；80x24/120x40 + CJK/emoji + resize 有 PTY 冒烟。
 
-## M3 · 安全（M3.0 设计完成，M3.1 策略内核与 M3.2 审批交互基础版已落地）
+## M3 · 安全（M3.0 设计完成，M3.1 策略内核、M3.2 审批交互与 M3.3 macOS Seatbelt 已落地）
 
 目标：可以放心在真实项目上跑。
 
 - [x] 权限模型设计：Permission profile × Approval policy × Approvals reviewer × sandbox backend，已对照 Codex 0.153.x 校准；见 [permissions.md](permissions.md)
-- [x] Permission profiles：`:read-only` / `:workspace` / `:danger-full-access` + 命名 profile、文件系统规则（S1 已接入文件工具；网络规则待 S6）
+- [x] Permission profiles：`:read-only` / `:workspace` / `:workspace-git-hooks` / `:danger-full-access` + 命名 profile、文件系统规则（S1 文件工具 + S3 macOS Seatbelt；域名级网络规则待 S6）
 - [x] Approval policy：`on-request` / `never` + 非交互 fail closed（S1）；`approvals_reviewer` 接口保留，自动审查待 S7
 - [x] Action 规范化 + 基础硬拒绝/Shell tokenizer（S1）
-- [ ] exec policy 规则、提权重试、前缀/会话授权（S5）
-- [x] TUI/plain 审批弹层、会话/前缀授权、`/permissions` 列表/切换、profile 状态行与断线/写租约语义（选择器 overlay 与长命令全屏视图待补）
-- [ ] macOS Seatbelt；Linux Landlock + seccomp；网络代理与域名白名单
-- [x] `--yolo` / `--allow-dangerously-skip-permissions` 映射到 `:danger-full-access` + `never` 并告警（S1；OS 降级保护待 S3/S4）
+- [ ] exec policy 规则、提权重试（S5）；会话/前缀授权已由 S2 完成
+- [x] TUI/plain 审批弹层、会话/前缀授权、`/permissions` 列表/切换、profile 状态行与断线/写租约语义（选择器 overlay 与长命令支持 v 全屏查看）
+- [x] macOS Seatbelt：默认 deny、profile 写根、凭证/密钥路径拒绝、网络默认 deny、`sandbox.denied` 审计与降级保护（S3）
+- [x] Agent Harness hooks MVP：全局 `[[hooks]]` 六个生命周期事件、JSON stdin、matcher、exit 2 阻止、`hook.finished` 审计；项目配置不能定义 hooks
+- [x] Git hooks：仓库 hooks 默认执行；`.git/hooks` / `.git/config` 写入默认 deny，`:workspace-git-hooks` 或 `:git_hooks` / `:git_config` 显式 opt in 并告警
+- [ ] 网络代理与域名白名单（S6）
+- 暂缓：Linux Landlock + seccomp（S4）与 Windows 沙箱；不属于当前 macOS 交付范围
+- [x] `--yolo` / `--allow-dangerously-skip-permissions` 映射到 `:danger-full-access` + `never` 并告警；macOS 无 `sandbox-exec` 时拒绝启动（S1/S3；Linux S4 待做）
 - [ ] sessiond 本地 IPC 加固（0700 / 0600、peer UID、项目配置禁改 socket、事件二次脱敏）
 - [ ] TUI 不可信输出脱敏（ANSI / OSC / 控制字符）与审批弹层防伪造
 - [x] 环境变量白名单、凭证脱敏（M1 已提前实现）
 - [x] 审计视图：`codingx log --session <id>`（M1 已提前实现）
-- [x] `permission.decision` / `approval.requested` / `approval.decided` / `permission.granted` / `profile.changed` 审计；`sandbox.denied` 待 S3
+- [x] `permission.decision` / `approval.requested` / `approval.decided` / `permission.granted` / `profile.changed` / `sandbox.denied` 审计
 
-**验收**：默认配置下，文件工具越界已被拦截且原因对模型可见；交互审批、会话/前缀授权与非交互 fail closed 已有测试；**网络隔离与 OS 沙箱仍未完成**，因此 M3 验收尚未达成，剩余工作见 [implementation-plan-m3.md](implementation-plan-m3.md)。
+**验收**：macOS 默认配置下，文件工具与 Shell 的越界写入、凭证读取和默认联网都已被拦截且原因对模型可见；交互审批、会话/前缀授权、非交互 fail closed 与 `sandbox.denied` 已有测试。**网络代理/域名白名单、exec policy 与自动审查仍未完成**，因此 M3 整体验收尚未达成，剩余工作见 [implementation-plan-m3.md](implementation-plan-m3.md)。
 
 **设计**：[permissions.md](permissions.md)。**任务拆分**：[implementation-plan-m3.md](implementation-plan-m3.md)。
 
@@ -118,6 +124,6 @@
 | 插件市场 | 先有 MCP 与本地工具 |
 | 跨会话长期记忆 | 先把单会话上下文做扎实 |
 | 远程会话同步 / 多机共享 | sessiond 只服务本机单用户 |
-| 原生 scrollback / resize reflow | 自研 Terminal 的 alt screen 已覆盖核心；需要时按 [tui.md](tui.md) 切 Rust |
+| 应用层 resize reflow | 已接入主屏幕原生 scrollback；已归档历史的重排由终端处理，当前视口由 TUI 重绘 |
 | Codex 逐像素复刻（pets / plugins / voice） | 先对齐信息架构与核心交互 |
 | TUI 认证 / 配置 / 主题选择器 | TUI 只做终端与交互，这些不属于核心 |

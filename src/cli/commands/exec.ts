@@ -3,6 +3,7 @@ import type { ConfigOverrides } from '../../config/index.js';
 import { ConfigError } from '../../util/errors.js';
 import { PlainRenderer, type TextSink } from '../../ui/plain.js';
 import { VERSION } from '../../version.js';
+import { hookWarnings } from '../../hooks/index.js';
 import { bootstrap } from '../bootstrap.js';
 import { createLoop } from '../runtime.js';
 
@@ -67,6 +68,17 @@ export async function runExec(options: ExecCommandOptions): Promise<number> {
   const onSigint = (): void => controller.abort();
   process.once('SIGINT', onSigint);
 
+  const startHooks = await app.hooks.run(
+    'session_start',
+    { sessionId: session.id, cwd: app.cwd },
+    { session },
+  );
+  for (const warning of hookWarnings(startHooks)) stderr.write('warning: ' + warning + '\n');
+  if (startHooks.context.trim().length > 0) {
+    app.sessionHookContext = startHooks.context.trim();
+    app.systemPrompt += '\n\n# Hook context (session_start)\n' + startHooks.context.trim();
+  }
+
   let result: TurnResult | undefined;
   try {
     renderer.render({
@@ -78,6 +90,16 @@ export async function runExec(options: ExecCommandOptions): Promise<number> {
     result = await loop.runTurn(options.prompt, { signal: controller.signal });
   } finally {
     process.removeListener('SIGINT', onSigint);
+    try {
+      const endHooks = await app.hooks.run(
+        'session_end',
+        { sessionId: session.id, cwd: app.cwd, ...(result === undefined ? {} : { stopStatus: result.status }) },
+        { session },
+      );
+      for (const warning of hookWarnings(endHooks)) stderr.write('warning: ' + warning + '\n');
+    } catch {
+      // Hook failures must not prevent the session from closing.
+    }
     try {
       await session.end(result?.status ?? 'error');
     } catch {

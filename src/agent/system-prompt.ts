@@ -174,6 +174,14 @@ export interface BuildSystemPromptOptions {
   permissionProfile?: string;
   /** Resolved approval policy, for example "on-request". */
   approvalPolicy?: string;
+  /** OS sandbox projection for this invocation. */
+  sandbox?: {
+    kind: string;
+    active: boolean;
+    network: 'deny' | 'allow' | 'none';
+    required: boolean;
+    reason?: string;
+  };
 }
 
 function skillCatalogLines(skills: readonly SkillSummary[]): string[] {
@@ -275,6 +283,21 @@ function dynamicLines(snapshot: ContextSnapshot, options: BuildSystemPromptOptio
       '- Permission profile: ' + options.permissionProfile + '; approval policy: ' +
         (options.approvalPolicy ?? 'on-request') + '.',
     );
+  }
+  if (options.sandbox !== undefined && options.yolo !== true) {
+    if (options.sandbox.active) {
+      lines.push(
+        '- Shell sandbox: ' + options.sandbox.kind + ' (filesystem writes limited to the profile roots; network ' +
+          options.sandbox.network + ').',
+      );
+    } else {
+      lines.push(
+        '- Shell sandbox: unavailable (' + (options.sandbox.reason ?? 'no backend') + '). ' +
+          (options.sandbox.required
+            ? 'Commands that require isolation fail closed; do not retry them unchanged.'
+            : 'Shell commands run with the user permissions; use approvals and external isolation.'),
+      );
+    }
   }
   lines.push(
     '',

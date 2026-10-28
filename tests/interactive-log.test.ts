@@ -314,6 +314,47 @@ describe('interactive mode', () => {
     expect(sessions[0]?.status).toBe('idle');
   });
 
+  it('runs !commands locally without calling the provider and records them', async () => {
+    const server = await startServer([]);
+    const { home, workspace } = await setup(server.url);
+    const input = new PassThrough();
+    input.end('!pwd\n/quit\n');
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+
+    const code = await runInteractive({
+      cwd: workspace,
+      env: envFor(home, workspace),
+      stdin: input,
+      stdout,
+      stderr,
+    });
+
+    expect(code).toBe(0);
+    expect(server.requests).toBe(0);
+    expect(stdout.value).toContain('! pwd');
+    expect(stdout.value).toContain('workspace');
+    expect(stderr.value).not.toContain('[approval]');
+
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const sessions = await store.listSessions();
+    const id = sessions[0]?.id;
+    if (!id) throw new Error('missing session');
+    const events = await store.replaySession(id);
+    expect(events.filter((event) => event.type === 'turn.start')).toHaveLength(0);
+    expect(events.find((event) => event.type === 'local.command')).toMatchObject({ command: 'pwd' });
+    expect(events.find((event) => event.type === 'local.result')).toMatchObject({
+      command: 'pwd',
+      isError: false,
+      exitCode: 0,
+    });
+    expect(events.find((event) => event.type === 'permission.decision')).toMatchObject({
+      name: 'Shell',
+      source: 'local-command',
+      verdict: 'allow',
+    });
+  });
+
   it('clears the conversation and rewrites the JSONL rollout on /clear', async () => {
     const server = await startServer([textResponse('First answer.')]);
     const { home, workspace } = await setup(server.url);

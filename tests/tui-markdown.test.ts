@@ -1,7 +1,9 @@
+import { displayWidth } from '../src/tui/text/index.js';
+import { ATTR_DIM } from '../src/tui/terminal/buffer.js';
 import { describe, expect, it } from 'vitest';
 import { renderMarkdown, parseInlineMarkdown, wrapStyledSegments } from '../src/tui/widgets/markdown.js';
 import { buildAssistantTextLines, buildExecCellLines } from '../src/tui/widgets/transcript.js';
-import { TUI_COLORS } from '../src/tui/state/types.js';
+import { TUI_COLORS, TRANSCRIPT_COLORS } from '../src/tui/state/types.js';
 import type { ExecCell } from '../src/tui/state/types.js';
 
 function plain(lines: ReturnType<typeof renderMarkdown>): string[] {
@@ -21,7 +23,7 @@ describe('markdown renderer', () => {
     const heading = lines[0]?.segments[0];
     expect(heading?.style.attrs).toBe(1);
     const allSegments = lines.flatMap((line) => line.segments);
-    expect(allSegments.some((segment) => segment.text === 'code' && segment.style.fg === TUI_COLORS.accent)).toBe(true);
+    expect(allSegments.some((segment) => segment.text === 'code' && segment.style.fg === TRANSCRIPT_COLORS.code)).toBe(true);
     expect(allSegments.some((segment) => segment.text === 'link' && segment.style.attrs === 8)).toBe(true);
   });
 
@@ -41,6 +43,49 @@ describe('markdown renderer', () => {
     expect(add?.segments[0]?.style.fg).toBe(TUI_COLORS.success);
     expect(remove?.segments[0]?.style.fg).toBe(TUI_COLORS.error);
     expect(meta?.segments[0]?.style.fg).toBe(TUI_COLORS.accent);
+  });
+
+  it('renders tables as aligned grids with readable styled content', () => {
+    const lines = renderMarkdown('| 层 | 内容 |\n| --- | --- |\n| **Agent** | `src/agent/` 循环 |\n| 工具 | 读取、修改、测试 |', 30);
+    const text = plain(lines);
+    expect(text[0]).toMatch(/^┌─+┬─+┐$/u);
+    expect(text.at(-1)).toMatch(/^└─+┴─+┘$/u);
+    expect(new Set(text.map(displayWidth)).size).toBe(1);
+    expect(text.every((line) => displayWidth(line) <= 30)).toBe(true);
+    expect(text.join('\n')).not.toContain('**');
+    expect(text.join('\n')).not.toContain('`');
+    const content = lines.flatMap((line) => line.segments);
+    const strong = content.find((segment) => segment.text === 'Agent');
+    expect(strong?.style.fg).toBeUndefined();
+    expect(strong?.style.attrs).toBe(1);
+    expect(content.find((segment) => segment.text === 'src/agent/')?.style.fg).toBe(TRANSCRIPT_COLORS.code);
+    expect(content.filter((segment) => segment.text.includes('循环')).every((segment) => ((segment.style.attrs ?? 0) & ATTR_DIM) === 0)).toBe(true);
+  });
+
+  it('handles table alignment, escaped pipes, code pipes and narrow widths', () => {
+    const source = 'Name | Value\n:--- | ---:\nleft | 7\na\\|b | `x|y`';
+    const text = plain(renderMarkdown(source, 40)).join('\n');
+    expect(text).toContain('a|b');
+    expect(text).toContain('x|y');
+    expect(text).toContain('   7 │');
+    const narrow = plain(renderMarkdown(source, 8));
+    expect(narrow.every((line) => displayWidth(line) <= 8)).toBe(true);
+    expect(narrow.join('')).toContain('left');
+    expect(plain(renderMarkdown('a | b\nnot a separator', 40))).toEqual(['a | b', 'not a separator']);
+    expect(plain(renderMarkdown('```\n| a | b |\n| --- | --- |\n```', 40)).join('\n')).toContain('| --- | --- |');
+  });
+
+  it('keeps table words whole and separates wrapped records', () => {
+    const source = '| 能力 | 说明 |\n| --- | --- |\n| Agent | 会话连接/fork |\n| 工具 | Shell AskUserQuestion |';
+    const lines = plain(renderMarkdown(source, 32));
+    expect(lines.some((line) => line.includes('fork'))).toBe(true);
+    expect(lines.some((line) => line.includes('AskUserQuestion'))).toBe(true);
+    expect(lines.filter((line) => line.startsWith('├'))).toHaveLength(2);
+    expect(new Set(lines.map(displayWidth)).size).toBe(1);
+    expect(lines.every((line) => displayWidth(line) <= 32)).toBe(true);
+    const long = plain(renderMarkdown('| Key | Value |\n| --- | --- |\n| X | `abcdefghijklmnopqrstuvwxyz` |', 24));
+    expect(long.every((line) => displayWidth(line) <= 24)).toBe(true);
+    expect(long.join('').replace(/[│┌┐└┘├┤┬┴┼─ ]/gu, '')).toContain('abcdefghijklmnopqrstuvwxyz');
   });
 
   it('wraps wide CJK text without splitting graphemes', () => {
