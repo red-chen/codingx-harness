@@ -230,7 +230,7 @@ Markdown 用 `marked` 或 `micromark` 解析成 AST，再转 styled spans；代�
 | 提交 | `Enter` |
 | 本地 Shell | 行首 `!<command>` 后 `Enter`（如 `!pwd`） |
 | 换行 | `Shift+Enter` / `Ctrl+J` / `Alt+Enter` |
-| 任务中排队 | `Tab` |
+| 任务中排队 | `Enter` / `Tab`；下一 step 前整批按顺序进入当前对话 |
 | 中断 / 关闭弹层 | `Esc` / `Ctrl+C`（首次） |
 | 退出 | `Ctrl+C` 双击 / `Ctrl+D`（空 composer） |
 | 历史搜索 | `Ctrl+R` |
@@ -263,7 +263,7 @@ Composer 空输入时 `↑/↓` 走历史；有内容时走光标；保留 `Ctrl
    ↑/↓ choose · Space select · Enter confirm · Esc cancel
 ```
 
-提问面板固定在底部（替代 composer/meta），问题逐条展示；选项、描述与选中状态全部来自 `AskUserQuestion` 的结构化入参。`multi_select` 用 `[x]/[ ]`，单选在确认后进入下一题；`Other` 行提供自由文本。提问期间状态行显示 `Awaiting answer`。面板内容只由工具入参生成，transcript 文本不能伪造或重排选项。
+提问面板固定在底部（替代 composer/meta），问题逐条展示；选项、描述与选中状态全部来自 `AskUserQuestion` 的结构化入参。`multi_select` 用 `☑/☐` 并显示已选数量，单选用 `●/○`；焦点行整行高亮，描述单独显示。单选 Enter 确认当前项，多选 Space 或数字键切换勾选，Enter 提交已勾选项（至少一项）；确认后进入下一题；`Other` 行提供自由文本。提问期间状态行显示 `Awaiting answer`。面板内容只由工具入参生成，transcript 文本不能伪造或重排选项。
 
 ### 审批
 
@@ -335,3 +335,5 @@ Slash 补全浮在 composer 上方，最多 8 行；命令 + 一句描述，支�
 ### 探索工具聚合
 
 连续的 `ReadFile`、`Grep`、`Glob`、`ListDir` 聚合为一个 `Explored` 块；运行中显示 `Exploring`。每次调用展示 Read/Search/List 摘要，搜索含 pattern 与 path。写操作、Shell 与其他消息会分隔探索块。折叠时最多显示最近 3 条探索摘要，并标明隐藏数量与失败数量；展开后显示全部调用及原始结果。Shell 折叠预览移除结果信封元数据，最多显示 3 个屏幕行（包括换行），完整结果可用 Ctrl+O 查看。`Ctrl+O` 打开历史视图并展开探索结果，再按切换收起，Esc 返回主界面；详情仅影响显示，不改写 rollout。
+
+运行中提交的消息先显示在队列预览，紧接状态行，无空白行；当前 step 的模型输出和工具调用结束后，在下一次模型请求前整批移入 Transcript 与模型上下文，并逐条通过 SessionStore 记录。消费队列不会清空正在编辑的草稿。

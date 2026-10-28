@@ -4,6 +4,7 @@ import { TuiApp } from '../src/tui/state/app.js';
 import type { KeyEvent, KeyMods } from '../src/tui/terminal/input.js';
 import type { CellBuffer } from '../src/tui/terminal/buffer.js';
 import { statusLabel } from '../src/tui/widgets/status.js';
+import { TUI_COLORS } from '../src/tui/state/types.js';
 import { askPanelHeight } from '../src/tui/widgets/ask.js';
 
 const SESSION = { sessionId: 'abcdefghijkl', cwd: '/tmp/work', model: 'test-model' };
@@ -105,6 +106,61 @@ describe('TuiApp ask overlay', () => {
       type: 'answer',
       answers: [{ id: 'approach', selected: ['Safe'] }],
     });
+  });
+
+  it('shows single choice markers and a full-width focus background', () => {
+    const app = shown();
+    const frame = app.frame();
+    expect(screenText(frame)).toContain('Single select');
+    const row = Array.from({ length: frame.height }, (_, y) => y)
+      .find((y) => rowText(frame, y).includes('○ 1. Fast'))!;
+    expect(frame.get(1, row)?.bg).toEqual(TUI_COLORS.userBg);
+    expect(frame.get(frame.width - 2, row)?.bg).toEqual(TUI_COLORS.userBg);
+  });
+
+  it('keeps single choice exclusive and confirms the focused option', () => {
+    const app = shown();
+    app.handleKey(key('space'));
+    app.handleKey(key('space'));
+    expect(app.state.ask?.selections).toEqual([['Fast']]);
+    app.handleKey(key('down'));
+    expect(app.handleKey(key('enter'))).toEqual({
+      type: 'answer', answers: [{ id: 'approach', selected: ['Safe'] }],
+    });
+  });
+
+  it('toggles multiple choices without implicitly selecting on Enter', () => {
+    const app = shown([{ ...QUESTIONS[0]!, multiSelect: true }]);
+    expect(app.handleKey(key('enter'))).toBeUndefined();
+    expect(app.mode).toBe('ask');
+    app.handleKey(printable('1'));
+    app.handleKey(printable('2'));
+    expect(screenText(app.frame())).toContain('Multi select · 2 selected');
+    expect(screenText(app.frame())).toContain('☑ 1. Fast');
+    app.handleKey(printable('1'));
+    expect(app.handleKey(key('enter'))).toEqual({
+      type: 'answer', answers: [{ id: 'approach', selected: ['Safe'] }],
+    });
+  });
+
+  it('replaces a single choice with a custom answer', () => {
+    const app = shown();
+    app.handleKey(key('space'));
+    app.handleKey(key('up'));
+    app.handleKey(key('enter'));
+    typeText(app, 'Another approach');
+    expect(app.handleKey(key('enter'))).toEqual({
+      type: 'answer', answers: [{ id: 'approach', selected: [], custom: 'Another approach' }],
+    });
+  });
+
+  it('keeps the focused Other input visible on a short terminal', () => {
+    const app = makeApp(40, 10);
+    app.showQuestion(QUESTIONS);
+    app.handleKey(key('up'));
+    app.handleKey(key('enter'));
+    typeText(app, 'Custom');
+    expect(screenText(app.frame())).toContain('Other: Custom');
   });
 
   it('collects a custom answer through the Other row', () => {

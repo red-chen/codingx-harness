@@ -69,7 +69,7 @@ export function computeFrameLayout(state: TuiAppState, width: number, height: nu
   available -= metaApplied;
   const gapTopApplied = Math.min(desiredStatusGap, available);
   available -= gapTopApplied;
-  const gapBottomApplied = Math.min(desiredStatusGap, available);
+  const gapBottomApplied = Math.min(desiredQueue > 0 ? 0 : desiredStatusGap, available);
   available -= gapBottomApplied;
   const queueApplied = Math.min(desiredQueue, available);
   available -= queueApplied;

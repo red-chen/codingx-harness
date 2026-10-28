@@ -1,0 +1,59 @@
+[
+  {
+    "id": "o_90001",
+    "userId": "u_1001",
+    "items": [
+      { "productId": "p_2001", "quantity": 1, "unitPrice": 399.0 },
+      { "productId": "p_2002", "quantity": 2, "unitPrice": 129.0 }
+    ],
+    "totalAmount": 657.0,
+    "currency": "CNY",
+    "status": "paid",
+    "createdAt": "2025-03-05T10:18:00+08:00"
+  },
+  {
+    "id": "o_90002",
+    "userId": "u_1002",
+    "items": [
+      { "productId": "p_2004", "quantity": 1, "unitPrice": 899.0 }
+    ],
+    "totalAmount": 899.0,
+    "currency": "CNY",
+    "status": "shipped",
+    "createdAt": "2025-03-07T09:42:00+08:00"
+  },
+  {
+    "id": "o_90003",
+    "userId": "u_1003",
+    "items": [
+      { "productId": "p_2003", "quantity": 1, "unitPrice": 259.0 },
+      { "productId": "p_2002", "quantity": 1, "unitPrice": 129.0 }
+    ],
+    "totalAmount": 388.0,
+    "currency": "CNY",
+    "status": "pending",
+    "createdAt": "2025-03-10T20:05:00+08:00"
+  },
+  {
+    "id": "o_90004",
+    "userId": "u_1004",
+    "items": [
+      { "productId": "p_2001", "quantity": 2, "unitPrice": 399.0 }
+    ],
+    "totalAmount": 798.0,
+    "currency": "CNY",
+    "status": "completed",
+    "createdAt": "2025-03-12T16:30:00+08:00"
+  },
+  {
+    "id": "o_90005",
+    "userId": "u_1005",
+    "items": [
+      { "productId": "p_2005", "quantity": 1, "unitPrice": 1299.0 }
+    ],
+    "totalAmount": 1299.0,
+    "currency": "CNY",
+    "status": "cancelled",
+    "createdAt": "2025-03-15T11:55:00+08:00"
+  }
+]

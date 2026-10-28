@@ -268,6 +268,37 @@ describe('TurnState', () => {
   });
 });
 
+describe('AgentLoop queued input', () => {
+  it.each(['tools', 'text'])('consumes the whole batch before step 2 after %s', async (kind) => {
+    const session = new RecordingSession();
+    const ui: UiEvent[] = [];
+    const client = new ScriptedClient([
+      kind === 'tools' ? toolStep([{ id: 'c1', name: 'echo', input: { text: 'work' } }]) : textStep('first response'),
+      textStep('updated response'),
+    ]);
+    let consumed = false;
+    const result = await createLoop(client, session, ui).runTurn('start', {
+      takeQueuedPrompts: () => {
+        if (client.attempts !== 1 || consumed) return [];
+        consumed = true;
+        return ['follow-up one', 'follow-up two', 'follow-up three'];
+      },
+    });
+    expect(result.status).toBe('done');
+    expect(result.steps).toBe(2);
+    const last = client.requests[1]?.messages.at(-1);
+    expect(last?.role).toBe('user');
+    expect(last?.content.filter((block) => block.type === 'text').map((block) => block.text)).toEqual([
+      'follow-up one', 'follow-up two', 'follow-up three',
+    ]);
+    if (kind === 'tools') expect(last?.content[0]?.type).toBe('tool_result');
+    expect(eventsOf(session, 'turn.start')).toHaveLength(1);
+    expect(eventsOf(session, 'user.message').map((event) => event.text)).toEqual([
+      'start', 'follow-up one', 'follow-up two', 'follow-up three',
+    ]);
+  });
+});
+
 describe('AgentLoop approvals', () => {
   it('marks awaiting_approval, correlates the request, and records the decision', async () => {
     const session = new RecordingSession();

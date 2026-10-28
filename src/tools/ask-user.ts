@@ -52,7 +52,7 @@ const questionSchema = z.object({
     .max(6)
     .optional()
     .describe('2-6 fixed choices. Omit for a free-text answer.'),
-  multi_select: z.boolean().optional().describe('Allow selecting more than one option.'),
+  multi_select: z.boolean().optional().describe('false or omitted: single choice. true: select multiple choices with checkboxes.'),
 });
 
 const schema = z

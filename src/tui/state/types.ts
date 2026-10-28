@@ -139,6 +139,7 @@ export interface ComposerState {
   /** -1 means "editing the draft", otherwise an index into history. */
   readonly historyIndex: number;
   readonly draft: string;
+  readonly search?: { readonly query: string; readonly index: number; readonly original: ComposerState };
 }
 
 /** Rows scrolled up from the live bottom. 0 keeps the viewport anchored. */

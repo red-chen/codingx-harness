@@ -146,7 +146,7 @@ interface ShellExtras {
 }
 ```
 
-- `options` 可选（2–6 个）；省略时返回自由文本。`multi_select` 允许多选。
+- `options` 可选（2–6 个）；省略时返回自由文本。`multi_select` 省略或为 `false` 时为单选，设为 `true` 时为多选。单选 Enter 确认当前项；多选 Space / 数字键切换勾选，Enter 提交。
 - 工具把答案格式化为 `selected: ...` / `custom: ...` 回填，并把结构化答案放进 `meta.answers`。
 - 用户按 `Esc` 取消时返回 `is_error: true`（`meta.dismissed`），提示模型改用普通文本继续，不要重复提问；正在输入自由文本时，第一次 `Esc` 只退出输入，再按一次才取消整组问题。
 - 非交互运行（`exec`、纯文本 `--plain`）没有 `ctx.ask`，工具返回 `is_error`，避免阻塞 stdin。

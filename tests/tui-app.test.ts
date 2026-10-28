@@ -580,7 +580,7 @@ describe('TuiApp modes, scrolling and frames', () => {
     expect(wide.height).toBe(40);
   });
 
-  it('renders streamed text, user input and elapsed working time', () => {
+  it('renders streamed text, queued input and elapsed working time', () => {
     let clock = 1000;
     const app = makeApp(() => clock);
     app.handleEvent({ type: 'turn.started', turnId: 't1' });
@@ -589,7 +589,8 @@ describe('TuiApp modes, scrolling and frames', () => {
     typeText(app, 'question');
     enter(app);
     const text = screenText(app.renderFrame());
-    expect(text).toContain('› question');
+    expect(text).toContain('↳ question');
+    expect(text).not.toContain('› question');
     expect(text).toContain('• answering now');
     expect(text).toContain('Working (12s');
     expect(text).toContain('esc to interrupt');
@@ -628,3 +629,50 @@ describe('TuiApp modes, scrolling and frames', () => {
 function appMoveRight(app: TuiApp, count: number): void {
   for (let index = 0; index < count; index++) app.handleKey(key('right'));
 }
+
+describe('global input recall and search', () => {
+  it('limits history to 200 and restores a draft after browsing', () => {
+    const saved: string[] = [];
+    const app = new TuiApp({ session: SESSION, version: 'test',
+      inputHistory: Array.from({ length: 205 }, (_, i) => 'entry ' + i),
+      onInputHistory: (text) => saved.push(text),
+    });
+    expect(app.composer.history).toHaveLength(200);
+    typeText(app, 'draft');
+    app.handleKey(key('up'));
+    expect(app.composer.text).toBe('entry 204');
+    app.handleKey(key('down'));
+    expect(app.composer.text).toBe('draft');
+    enter(app);
+    expect(saved).toEqual(['draft']);
+    expect(app.composer.history).toHaveLength(200);
+    expect(app.composer.history[0]).toBe('entry 6');
+  });
+
+  it('searches newest first, accepts without submitting and cancels to the original cursor', () => {
+    const app = new TuiApp({ session: SESSION, version: 'test', inputHistory: ['old APPLE', '/apple', 'other'] });
+    typeText(app, 'draft');
+    app.handleKey(key('left'));
+    ctrl(app, 'r');
+    typeText(app, 'apple');
+    expect(app.composer.text).toBe('/apple');
+    expect(app.slashMenu).toEqual([]);
+    expect(screenText(app.frame())).toContain('Ctrl+R search: apple');
+    ctrl(app, 'r');
+    expect(app.composer.text).toBe('old APPLE');
+    ctrl(app, 'r');
+    expect(screenText(app.frame())).toContain('No match: apple');
+    app.handleKey(key('escape'));
+    expect(app.composer.text).toBe('draft');
+    expect(app.composer.cursor).toBe(4);
+    ctrl(app, 'r');
+    typeText(app, 'applex');
+    expect(app.composer.search?.index).toBe(-1);
+    app.handleKey(key('backspace'));
+    expect(app.composer.text).toBe('/apple');
+    expect(enter(app)).toBeUndefined();
+    expect(app.composer.search).toBeUndefined();
+    expect(app.composer.text).toBe('/apple');
+    expect(app.transcript).toEqual([]);
+  });
+});

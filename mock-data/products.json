@@ -1,0 +1,52 @@
+[
+  {
+    "id": "p_2001",
+    "name": "机械键盘 87 键 红轴",
+    "category": "数码配件",
+    "price": 399.0,
+    "currency": "CNY",
+    "stock": 120,
+    "status": "on_sale",
+    "createdAt": "2025-01-08T11:00:00+08:00"
+  },
+  {
+    "id": "p_2002",
+    "name": "无线静音鼠标",
+    "category": "数码配件",
+    "price": 129.0,
+    "currency": "CNY",
+    "stock": 340,
+    "status": "on_sale",
+    "createdAt": "2025-01-08T11:05:00+08:00"
+  },
+  {
+    "id": "p_2003",
+    "name": "单臂显示器支架",
+    "category": "桌面办公",
+    "price": 259.0,
+    "currency": "CNY",
+    "stock": 75,
+    "status": "on_sale",
+    "createdAt": "2025-01-15T09:30:00+08:00"
+  },
+  {
+    "id": "p_2004",
+    "name": "主动降噪头戴耳机",
+    "category": "音频设备",
+    "price": 899.0,
+    "currency": "CNY",
+    "stock": 42,
+    "status": "on_sale",
+    "createdAt": "2025-02-06T15:10:00+08:00"
+  },
+  {
+    "id": "p_2005",
+    "name": "电动桌面升降台",
+    "category": "桌面办公",
+    "price": 1299.0,
+    "currency": "CNY",
+    "stock": 0,
+    "status": "out_of_stock",
+    "createdAt": "2025-02-21T13:45:00+08:00"
+  }
+]

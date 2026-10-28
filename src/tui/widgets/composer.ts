@@ -1,3 +1,4 @@
+import { INPUT_HISTORY_LIMIT } from '../../ui/input-history.js';
 import type { CellBuffer } from '../terminal/buffer.js';
 import { ATTR_REVERSE } from '../terminal/buffer.js';
 import type { Rect } from '../layout/index.js';
@@ -36,7 +37,7 @@ export function createComposerState(text = '', history: readonly string[] = []):
   return {
     text: clean,
     cursor: clean.length,
-    history: [...history],
+    history: [...history].slice(-INPUT_HISTORY_LIMIT),
     historyIndex: -1,
     draft: '',
   };
@@ -223,6 +224,27 @@ export function historyNext(state: ComposerState): ComposerState {
     return { ...state, historyIndex: index, text, cursor: text.length };
   }
   return { ...state, historyIndex: -1, text: state.draft, cursor: state.draft.length, draft: '' };
+}
+
+/** Search newest first; repeating Ctrl+R advances to an older match. */
+export function searchComposerHistory(state: ComposerState, query?: string): ComposerState {
+  const original = state.search?.original ?? state;
+  const needle = query ?? state.search?.query ?? '';
+  const start = query !== undefined || state.search === undefined
+    ? state.history.length - 1 : state.search.index - 1;
+  let index = start;
+  for (; index >= 0; index--) {
+    if (state.history[index]?.toLocaleLowerCase().includes(needle.toLocaleLowerCase())) break;
+  }
+  const text = index >= 0 ? state.history[index] ?? '' : '';
+  return { ...state, text, cursor: text.length, search: { query: needle, index, original } };
+}
+
+export function finishHistorySearch(state: ComposerState, cancel = false): ComposerState {
+  if (!state.search) return state;
+  if (cancel || state.search.index < 0) return state.search.original;
+  const { search, ...rest } = state;
+  return { ...rest, historyIndex: -1, draft: '' };
 }
 
 export function clearComposer(state: ComposerState): ComposerState {
@@ -414,6 +436,11 @@ export function renderComposer(area: Rect, frame: CellBuffer, state: ComposerSta
     );
   }
 
+  if (state.search) {
+    const label = (state.search.index < 0 ? 'No match' : 'Ctrl+R search') + ': ' + state.search.query;
+    frame.setString(area.x, area.y, truncateToWidth(label, area.width), MUTED_STYLE);
+  }
+
   const visibleCursorRow = layout.cursorRow - layout.startRow;
   if (visibleCursorRow >= 0 && visibleCursorRow < layout.visibleRows.length) {
     const y = area.y + topPadding + visibleCursorRow;
@@ -428,25 +455,28 @@ export function renderComposer(area: Rect, frame: CellBuffer, state: ComposerSta
 }
 
 export function queuePreviewHeight(queue: readonly QueueItem[]): number {
-  if (queue.length === 0) return 0;
-  return Math.min(queue.length, QUEUE_PREVIEW_MAX) + (queue.length > QUEUE_PREVIEW_MAX ? 1 : 0);
+  const count = queue.filter((item) => !item.submitted).length;
+  return Math.min(count, QUEUE_PREVIEW_MAX) + (count > QUEUE_PREVIEW_MAX ? 1 : 0);
 }
 
 /** Queue preview lines shown directly above the composer. */
 export function renderQueuePreview(area: Rect, frame: CellBuffer, queue: readonly QueueItem[]): number {
+  // Enter submissions already have a transcript cell; only preview queued drafts.
+  queue = queue.filter((item) => !item.submitted);
   if (area.width <= 0 || area.height <= 0 || queue.length === 0) return 0;
+  const style = { fg: TUI_COLORS.muted };
   const prefix = '  ↳ ';
   const prefixWidth = displayWidth(prefix);
   let row = 0;
   for (const item of queue.slice(0, QUEUE_PREVIEW_MAX)) {
     if (row >= area.height) break;
     const y = area.y + row;
-    frame.setString(area.x, y, prefix, MUTED_STYLE);
-    frame.setString(area.x + prefixWidth, y, truncateToWidth(item.text.replace(/\s+/gu, ' '), Math.max(0, area.width - prefixWidth)), MUTED_STYLE);
+    frame.setString(area.x, y, prefix, style);
+    frame.setString(area.x + prefixWidth, y, truncateToWidth(item.text.replace(/\s+/gu, ' '), Math.max(0, area.width - prefixWidth)), style);
     row++;
   }
   if (queue.length > QUEUE_PREVIEW_MAX && row < area.height) {
-    frame.setString(area.x, area.y + row, '  … +' + (queue.length - QUEUE_PREVIEW_MAX) + ' queued', MUTED_STYLE);
+    frame.setString(area.x, area.y + row, '  … +' + (queue.length - QUEUE_PREVIEW_MAX) + ' queued', style);
     row++;
   }
   return row;

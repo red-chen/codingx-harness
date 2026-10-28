@@ -102,6 +102,8 @@ function messageFingerprint(message: Message): string {
 
 export interface RunTurnOptions {
   signal?: AbortSignal;
+  /** Atomically take all queued user messages at a model-step boundary. */
+  takeQueuedPrompts?: () => readonly string[];
 }
 
 export interface TurnResult {
@@ -235,8 +237,7 @@ export class AgentLoop {
       plan: planController,
     };
 
-    try {
-      await this.options.session.append({ type: 'turn.start', turnId });
+    const appendPrompt = async (input: string, merge = false): Promise<void> => {
       const promptHooks = await this.runHooks(
         'user_prompt_submit',
         { sessionId: this.options.sessionId, cwd: this.options.cwd, prompt: input },
@@ -254,7 +255,19 @@ export class AgentLoop {
         promptContext.length === 0
           ? input
           : input + '\n\n[Hook context: user_prompt_submit]\n' + promptContext;
-      this.messages.push({ role: 'user', content: [{ type: 'text', text: modelInput }] });
+      const last = this.messages.at(-1);
+      if (merge && last?.role === 'user') last.content.push({ type: 'text', text: modelInput });
+      else this.messages.push({ role: 'user', content: [{ type: 'text', text: modelInput }] });
+    };
+    const consumeQueuedPrompts = async (): Promise<boolean> => {
+      const prompts = runOptions.takeQueuedPrompts?.() ?? [];
+      for (const prompt of prompts) await appendPrompt(prompt, true);
+      return prompts.length > 0;
+    };
+
+    try {
+      await this.options.session.append({ type: 'turn.start', turnId });
+      await appendPrompt(input);
 
       const selection = this.options.router.selection;
       if (selection) {
@@ -276,6 +289,7 @@ export class AgentLoop {
 
       for (let step = 1; step <= this.options.maxSteps; step += 1) {
         if (signal?.aborted) throw abortError();
+        await consumeQueuedPrompts();
         state.incrementStep();
         state.transition('streaming');
         await this.options.session.append({ type: 'turn.status', turnId, status: 'streaming' });
@@ -457,6 +471,10 @@ export class AgentLoop {
 
         if (calls.length === 0) {
           this.messages.push({ role: 'assistant', content: [{ type: 'text', text }] });
+          if (step < this.options.maxSteps && await consumeQueuedPrompts()) {
+            state.transition('assembling');
+            continue;
+          }
           return await this.finishDone(state, turnId);
         }
 

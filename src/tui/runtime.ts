@@ -145,6 +145,11 @@ export class TuiRuntime {
   }
 
   private handleKey(key: KeyEvent): void {
+    if (this.app.mode === 'main' && this.app.composer.search) {
+      this.app.handleKey(key);
+      this.render();
+      return;
+    }
     if (this.app.mode === 'main' && key.mods.ctrl && key.code === 'y') {
       this.options.onCopy?.();
       return;

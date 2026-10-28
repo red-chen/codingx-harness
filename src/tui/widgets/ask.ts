@@ -3,7 +3,6 @@ import { ATTR_BOLD } from '../terminal/buffer.js';
 import { TUI_COLORS } from '../state/types.js';
 import type { TuiAskState } from '../state/types.js';
 import {
-  askIsOtherRow,
   currentAskCustom,
   currentAskQuestion,
   currentAskSelection,
@@ -20,9 +19,10 @@ const PANEL_BG = TUI_COLORS.planBg;
 const BG: Style = { bg: PANEL_BG };
 const BORDER_STYLE: Style = { fg: TUI_COLORS.border, bg: PANEL_BG };
 const TITLE_STYLE: Style = { fg: TUI_COLORS.accent, attrs: ATTR_BOLD, bg: PANEL_BG };
-const QUESTION_STYLE: Style = { fg: TUI_COLORS.accent, attrs: ATTR_BOLD, bg: PANEL_BG };
+const QUESTION_STYLE: Style = { attrs: ATTR_BOLD, bg: PANEL_BG };
 const OPTION_STYLE: Style = { bg: PANEL_BG };
-const ACTIVE_STYLE: Style = { fg: TUI_COLORS.accent, attrs: ATTR_BOLD, bg: PANEL_BG };
+const ACTIVE_STYLE: Style = { attrs: ATTR_BOLD, bg: TUI_COLORS.userBg };
+const SELECTED_STYLE: Style = { fg: TUI_COLORS.accent, attrs: ATTR_BOLD, bg: PANEL_BG };
 const MUTED_STYLE: Style = { fg: TUI_COLORS.muted, bg: PANEL_BG };
 const HINT_STYLE: Style = { fg: TUI_COLORS.muted, bg: PANEL_BG };
 
@@ -34,6 +34,7 @@ export interface AskPanelLine {
 export interface AskPanelModel {
   readonly lines: readonly AskPanelLine[];
   /** Cursor row index into lines / column within the content area. */
+  readonly focusRow?: number;
   readonly cursorRow?: number;
   readonly cursorColumn?: number;
 }
@@ -57,6 +58,7 @@ export function buildAskPanel(ask: TuiAskState, width: number): AskPanelModel {
 
   const inner = contentWidth(width);
   const lines: AskPanelLine[] = [];
+  let focusRow: number | undefined;
   let cursorRow: number | undefined;
   let cursorColumn: number | undefined;
 
@@ -66,27 +68,37 @@ export function buildAskPanel(ask: TuiAskState, width: number): AskPanelModel {
   for (const line of limitedWrap(question.question, inner, 3)) {
     lines.push({ text: line, style: QUESTION_STYLE });
   }
-  lines.push({ text: '', style: OPTION_STYLE });
-
   const selected = currentAskSelection(ask);
+  const mode = question.options.length === 0
+    ? 'Free text'
+    : question.multiSelect ? 'Multi select · ' + selected.length + ' selected' : 'Single select · Choose one';
+  lines.push({ text: truncateToWidth(mode, inner), style: MUTED_STYLE });
+  lines.push({ text: '', style: OPTION_STYLE });
   question.options.forEach((option, index) => {
     const marker = question.multiSelect
-      ? selected.includes(option.label) ? '[x]' : '[ ]'
-      : selected.includes(option.label) ? '(•)' : '( )';
+      ? selected.includes(option.label) ? '☑' : '☐'
+      : selected.includes(option.label) ? '●' : '○';
     const active = !ask.editing && ask.optionIndex === index;
     const prefix = active ? '› ' : '  ';
     const label = index + 1 + '. ' + option.label;
-    const text = option.description === undefined ? label : label + ' — ' + option.description;
+    if (active) focusRow = lines.length;
     lines.push({
-      text: truncateToWidth(prefix + marker + ' ' + text, inner),
-      style: active ? ACTIVE_STYLE : OPTION_STYLE,
+      text: truncateToWidth(prefix + marker + ' ' + label, inner),
+      style: active ? ACTIVE_STYLE : selected.includes(option.label) ? SELECTED_STYLE : OPTION_STYLE,
     });
+    if (option.description) {
+      lines.push({
+        text: truncateToWidth('      ' + option.description, inner),
+        style: { fg: TUI_COLORS.muted, bg: active ? TUI_COLORS.userBg : PANEL_BG },
+      });
+    }
   });
 
   const custom = currentAskCustom(ask);
   if (question.options.length > 0) {
     const otherActive = ask.optionIndex >= question.options.length;
-    const head = (otherActive ? '› ' : '  ') + '○ Other: ';
+    if (otherActive) focusRow = lines.length;
+    const head = (otherActive ? '› ' : '  ') + '✎ Other: ';
     const body = custom.length > 0 ? custom : 'type your own answer';
     lines.push({
       text: truncateToWidth(head + body, inner),
@@ -94,7 +106,7 @@ export function buildAskPanel(ask: TuiAskState, width: number): AskPanelModel {
     });
     if (ask.editing) {
       cursorRow = lines.length - 1;
-      cursorColumn = Math.min(inner - 1, displayWidth(head) + displayWidth(custom));
+      cursorColumn = Math.min(inner - 1, displayWidth(head) + displayWidth(custom.slice(0, ask.cursor)));
     }
   } else {
     lines.push({ text: 'Your answer:', style: MUTED_STYLE });
@@ -106,18 +118,21 @@ export function buildAskPanel(ask: TuiAskState, width: number): AskPanelModel {
     });
     if (ask.editing) {
       cursorRow = lines.length - 1;
-      cursorColumn = Math.min(inner - 1, displayWidth(head) + displayWidth(custom));
+      cursorColumn = Math.min(inner - 1, displayWidth(head) + displayWidth(custom.slice(0, ask.cursor)));
     }
   }
 
   lines.push({ text: '', style: OPTION_STYLE });
-  const hint = askIsOtherRow(ask)
+  const hint = ask.editing
     ? 'Type an answer · Enter confirm · Esc back'
-    : '↑/↓ choose · Space select · Enter confirm · Esc cancel';
+    : question.multiSelect
+      ? '↑/↓ move · Space/1–6 toggle · Enter submit · Esc cancel'
+      : '↑/↓ move · 1–6 select · Enter confirm · Esc cancel';
   lines.push({ text: truncateToWidth(hint, inner), style: HINT_STYLE });
 
   return {
     lines,
+    ...((cursorRow ?? focusRow) === undefined ? {} : { focusRow: cursorRow ?? focusRow }),
     ...(cursorRow === undefined || cursorColumn === undefined ? {} : { cursorRow, cursorColumn }),
   };
 }
@@ -153,9 +168,15 @@ export function renderAskPanel(
   const title = ' Ask user' + counter + ' ';
   frame.setString(1, top, truncateToWidth(title, Math.max(0, width - 2)), TITLE_STYLE);
 
-  for (let index = 0; index < Math.min(contentRows, model.lines.length); index += 1) {
-    const line = model.lines[index];
+  // Keep the focused choice visible when the terminal cannot fit the whole panel.
+  const offset = Math.max(0, Math.min(
+    (model.focusRow ?? 0) - contentRows + 2,
+    model.lines.length - contentRows,
+  ));
+  for (let index = 0; index < Math.min(contentRows, model.lines.length - offset); index += 1) {
+    const line = model.lines[index + offset];
     if (line === undefined) continue;
+    frame.fill(line.style, 1, top + 1 + index, width - 2, 1);
     frame.setString(2, top + 1 + index, truncateToWidth(line.text, inner), line.style);
   }
 
@@ -164,12 +185,13 @@ export function renderAskPanel(
     ask.editing &&
     model.cursorRow !== undefined &&
     model.cursorColumn !== undefined &&
-    model.cursorRow < contentRows &&
+    model.cursorRow >= offset &&
+    model.cursorRow - offset < contentRows &&
     model.cursorRow < model.lines.length
   ) {
     cursor = {
       x: Math.min(width - 3, 2 + Math.max(0, model.cursorColumn)),
-      y: top + 1 + model.cursorRow,
+      y: top + 1 + model.cursorRow - offset,
     };
   }
 

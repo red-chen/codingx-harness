@@ -1,3 +1,4 @@
+import { InputHistory } from '../../ui/input-history.js';
 import path from 'node:path';
 import { buildSystemPrompt, latestModelSelection, rebuildHistory, restoreReadTracker } from '../../agent/index.js';
 import { DEFAULT_CONTEXT_WINDOW, type Message, type ReasoningEffort, type TokenUsage } from '../../providers/types.js';
@@ -176,6 +177,8 @@ export interface CreateTuiAppOptions {
   readonly width: number;
   readonly height: number;
   readonly resumed: TuiResumeView;
+  readonly inputHistory?: readonly string[];
+  readonly onInputHistory?: (text: string) => void;
 }
 
 /** Build the TUI state with resumed transcript/counters in their correct slots. */
@@ -192,6 +195,8 @@ export function createTuiAppForSession(options: CreateTuiAppOptions): TuiApp {
       permissionProfile: options.permissionProfile,
       approvalPolicy: options.approvalPolicy,
     },
+    ...(options.inputHistory ? { inputHistory: options.inputHistory } : {}),
+    ...(options.onInputHistory ? { onInputHistory: options.onInputHistory } : {}),
     version: options.version,
     width: options.width,
     height: options.height,
@@ -219,6 +224,9 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
   });
   for (const warning of app.warnings) stderr.write('warning: ' + warning + '\n');
 
+  let historyWarning = false;
+  const inputHistory = new InputHistory(app.codingxHome, () => { historyWarning = true; });
+  const savedInputHistory = await inputHistory.load();
   let session: SessionHandle | undefined;
   try {
     const opened = await openSession(app, options);
@@ -252,6 +260,8 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
       width: process.stdout.columns ?? 80,
       height: process.stdout.rows ?? 24,
       resumed,
+      inputHistory: savedInputHistory,
+      onInputHistory: (text) => inputHistory.append(text),
     });
     for (const warning of hookWarnings(startHooks)) tuiApp.addNotice(warning, 'warning');
 
@@ -344,7 +354,7 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
       app: tuiApp,
       io: createProcessTerminalIO(),
       session,
-      runTurn: (text, signal) => loop.runTurn(text, { signal }),
+      runTurn: (text, signal) => loop.runTurn(text, { signal, takeQueuedPrompts: () => controller?.takeQueuedPrompts() ?? [] }),
       runLocalCommand: (command, signal) =>
         runLocalCommand({
           command,
@@ -382,6 +392,8 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
     });
     return await controller.run();
   } finally {
+    await inputHistory.flush();
+    if (historyWarning) stderr.write('warning: could not read or save some input history.\n');
     if (session) {
       try {
         const endHooks = await app.hooks.run(

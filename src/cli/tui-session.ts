@@ -628,6 +628,19 @@ export class TuiSession {
     }
   }
 
+  /** Take a FIFO snapshot for the next model step, preserving the current draft. */
+  takeQueuedPrompts(): readonly string[] {
+    const prompts: string[] = [];
+    while (this.app.queue.length > 0) {
+      const item = this.app.dequeue();
+      if (item === undefined) break;
+      if (!item.submitted) this.app.submitText(item.text, true);
+      prompts.push(item.text);
+    }
+    if (prompts.length > 0) this.render();
+    return prompts;
+  }
+
   /** Run the next queued prompt once the turn/local command has settled. */
   private drainQueue(): void {
     if (this.exiting || this.active !== undefined || this.localActive !== undefined) return;

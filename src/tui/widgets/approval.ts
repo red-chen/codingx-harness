@@ -2,18 +2,18 @@ import type { CellBuffer, Style } from '../terminal/buffer.js';
 import { ATTR_BOLD } from '../terminal/buffer.js';
 import { TUI_COLORS } from '../state/types.js';
 import type { TuiApprovalChoice, TuiApprovalState } from '../state/types.js';
-import { approvalChoices, currentApprovalChoice } from '../state/approval.js';
+import { approvalChoices } from '../state/approval.js';
 import { displayWidth, truncateToWidth, wrapText } from '../text/index.js';
 
 const PANEL_BG = TUI_COLORS.planBg;
 const BG: Style = { bg: PANEL_BG };
 const BORDER_STYLE: Style = { fg: TUI_COLORS.border, bg: PANEL_BG };
 const TITLE_STYLE: Style = { fg: TUI_COLORS.accent, attrs: ATTR_BOLD, bg: PANEL_BG };
-const TOOL_STYLE: Style = { fg: TUI_COLORS.accent, attrs: ATTR_BOLD, bg: PANEL_BG };
+const TOOL_STYLE: Style = { attrs: ATTR_BOLD, bg: PANEL_BG };
 const ACTION_STYLE: Style = { bg: PANEL_BG };
 const MUTED_STYLE: Style = { fg: TUI_COLORS.muted, bg: PANEL_BG };
 const WARNING_STYLE: Style = { fg: TUI_COLORS.warning, bg: PANEL_BG };
-const ACTIVE_STYLE: Style = { fg: TUI_COLORS.accent, attrs: ATTR_BOLD, bg: PANEL_BG };
+const ACTIVE_STYLE: Style = { attrs: ATTR_BOLD, bg: TUI_COLORS.userBg };
 const HINT_STYLE: Style = { fg: TUI_COLORS.muted, bg: PANEL_BG };
 
 export interface ApprovalPanelLine {
@@ -91,12 +91,10 @@ export function buildApprovalPanel(state: TuiApprovalState, width: number): Appr
   lines.push({ text: '', style: ACTION_STYLE });
 
   const choices = approvalChoices(request.allowPrefix);
-  const active = currentApprovalChoice(state);
   choices.forEach((choice, index) => {
-    const marker = active === choice ? '(•)' : '( )';
     const prefix = state.choiceIndex === index && !state.editingReason ? '› ' : '  ';
     lines.push({
-      text: truncateToWidth(prefix + marker + ' ' + approvalChoiceLabel(choice), inner),
+      text: truncateToWidth(prefix + (index + 1) + '. ' + approvalChoiceLabel(choice), inner),
       style: state.choiceIndex === index && !state.editingReason ? ACTIVE_STYLE : ACTION_STYLE,
     });
   });
@@ -114,7 +112,7 @@ export function buildApprovalPanel(state: TuiApprovalState, width: number): Appr
     text: truncateToWidth(
       state.editingReason
         ? 'Type a reason · Enter deny · Esc back'
-        : 'v details · ↑/↓ choose · Enter confirm · Esc deny',
+        : '↑/↓ select · Enter confirm · Esc deny · v details',
       inner,
     ),
     style: HINT_STYLE,
@@ -172,6 +170,9 @@ export function renderApprovalPanel(
   for (let index = 0; index < Math.min(contentRows, model.lines.length); index += 1) {
     const line = model.lines[index];
     if (line === undefined) continue;
+    if (line.style === ACTIVE_STYLE) {
+      frame.fill(ACTIVE_STYLE, 1, top + 1 + index, Math.max(0, width - 2), 1);
+    }
     frame.setString(2, top + 1 + index, truncateToWidth(line.text, inner), line.style);
   }
 

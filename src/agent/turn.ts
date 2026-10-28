@@ -4,7 +4,7 @@ export type TurnPhase = 'assembling' | 'streaming' | 'executing' | 'done' | 'abo
 
 const ALLOWED_TRANSITIONS: Record<TurnPhase, readonly TurnPhase[]> = {
   assembling: ['streaming', 'aborted', 'error'],
-  streaming: ['executing', 'done', 'aborted', 'error'],
+  streaming: ['assembling', 'executing', 'done', 'aborted', 'error'],
   executing: ['assembling', 'aborted', 'error'],
   done: [],
   aborted: [],

@@ -1,3 +1,4 @@
+import { INPUT_HISTORY_LIMIT } from '../../ui/input-history.js';
 import { explorationLabel } from './exploration.js';
 import type { UiEvent } from '../../agent/events.js';
 import type { ToolCall } from '../../providers/types.js';
@@ -39,6 +40,9 @@ import {
   deleteComposerToLineEnd,
   deleteComposerToLineStart,
   deleteComposerWordBackward,
+  searchComposerHistory,
+  finishHistorySearch,
+  previousGraphemeIndex,
   historyNext,
   historyPrevious,
   insertComposerNewline,
@@ -100,6 +104,8 @@ export interface TuiAppOptions {
   readonly initialTurnNumber?: number;
   readonly initialUsage?: TokenUsage;
   readonly initialTranscript?: readonly TranscriptCell[];
+  readonly inputHistory?: readonly string[];
+  readonly onInputHistory?: (text: string) => void;
 }
 
 function dimension(value: number | undefined, fallback: number): number {
@@ -189,8 +195,10 @@ export class TuiApp {
   private readonly now: () => number;
   private current: TuiAppState;
   private nextCellNumber = 0;
+  private readonly onInputHistory: ((text: string) => void) | undefined;
 
   constructor(options: TuiAppOptions) {
+    this.onInputHistory = options.onInputHistory;
     this.now = options.now ?? (() => Date.now());
     const width = dimension(options.width, 80);
     const height = dimension(options.height, 24);
@@ -215,7 +223,7 @@ export class TuiApp {
       status: { state: 'idle', elapsedMs: 0 },
       usage: copyUsage(EMPTY_USAGE),
       queue: [],
-      composer: createComposerState(),
+      composer: createComposerState('', options.inputHistory),
       scroll: { offset: 0 },
       slashIndex: 0,
       slashDismissed: false,
@@ -251,7 +259,7 @@ export class TuiApp {
   }
 
   get slashMenu(): readonly SlashCommand[] {
-    if (this.current.slashDismissed) return [];
+    if (this.current.slashDismissed || this.current.composer.search || this.current.composer.historyIndex >= 0) return [];
     return slashMatches(this.current.composer.text);
   }
 
@@ -516,17 +524,19 @@ export class TuiApp {
   }
 
   /** Append user text as a submitted cell and clear the composer. */
-  submitText(text: string): UiCommand | undefined {
+  submitText(text: string, preserveComposer = false): UiCommand | undefined {
     if (text.trim().length === 0) return undefined;
+    this.finalizeActiveAssistant();
     const cell: UserCell = { type: 'user', id: this.nextId('user'), text };
-    const history = [...this.current.composer.history, text].slice(-100);
+    this.onInputHistory?.(text);
+    const history = [...this.current.composer.history, text].slice(-INPUT_HISTORY_LIMIT);
     const title = this.current.session.title?.trim().length
       ? this.current.session.title
       : deriveTitle(text);
     this.patch({
       transcript: [...this.current.transcript, cell],
       session: { ...this.current.session, ...(title ? { title } : {}) },
-      composer: createComposerState('', history),
+      composer: preserveComposer ? { ...this.current.composer, history } : createComposerState('', history),
       slashIndex: 0,
       slashDismissed: false,
     });
@@ -534,13 +544,18 @@ export class TuiApp {
   }
 
   private submitComposer(): UiCommand | undefined {
+    if (this.current.status.state === 'working' || this.current.status.state === 'awaiting') {
+      this.queueComposer();
+      return undefined;
+    }
     return this.submitText(this.current.composer.text);
   }
 
   /** Clear the composer; optionally add the current text to history. */
   clearComposer(addToHistory = false): void {
     const composer = this.current.composer;
-    const history = addToHistory ? [...composer.history, composer.text].slice(-100) : composer.history;
+    if (addToHistory && composer.text.trim()) this.onInputHistory?.(composer.text);
+    const history = addToHistory && composer.text.trim() ? [...composer.history, composer.text].slice(-INPUT_HISTORY_LIMIT) : composer.history;
     this.patch({ composer: createComposerState('', history), slashIndex: 0, slashDismissed: false });
   }
 
@@ -1017,7 +1032,8 @@ export class TuiApp {
         return undefined;
       }
       const selected = currentAskSelection(ask);
-      return this.finishAskQuestion(selected.length === 0 ? selectAskOption(ask) : ask);
+      if (question.multiSelect && selected.length === 0) return undefined;
+      return this.finishAskQuestion(question.multiSelect ? ask : selectAskOption(ask));
     }
     if (/^[1-9]$/u.test(key.code) && isPlainText(key)) {
       this.patch({ ask: selectAskOptionAt(ask, Number.parseInt(key.code, 10) - 1) });
@@ -1055,6 +1071,21 @@ export class TuiApp {
         return undefined;
       }
       this.applyScrollKey(key);
+      return undefined;
+    }
+
+    if (this.current.composer.search) {
+      const composer = this.current.composer;
+      const query = composer.search!.query;
+      if (isEscape(key) || isCtrl(key, 'c')) this.setComposer(finishHistorySearch(composer, true));
+      else if (key.code === 'enter') this.setComposer(finishHistorySearch(composer));
+      else if (isCtrl(key, 'r')) this.setComposer(searchComposerHistory(composer));
+      else if (key.code === 'backspace') this.setComposer(searchComposerHistory(composer, query.slice(0, previousGraphemeIndex(query, query.length))));
+      else if (key.text && isPlainText(key)) this.setComposer(searchComposerHistory(composer, query + key.text));
+      return undefined;
+    }
+    if (isCtrl(key, 'r')) {
+      this.setComposer(searchComposerHistory(this.current.composer));
       return undefined;
     }
 
@@ -1110,7 +1141,7 @@ export class TuiApp {
     }
 
     if (key.code === 'up' && !key.mods.ctrl && !key.mods.alt) {
-      if (this.current.composer.text.length === 0 || this.current.composer.historyIndex >= 0) {
+      if (!this.current.composer.text.includes('\n') || this.current.composer.historyIndex >= 0) {
         this.setComposer(historyPrevious(this.current.composer));
       } else {
         this.setComposer(moveComposerCursor(this.current.composer, 'up'));
@@ -1119,7 +1150,7 @@ export class TuiApp {
     }
 
     if (key.code === 'down' && !key.mods.ctrl && !key.mods.alt) {
-      if (this.current.composer.text.length === 0 || this.current.composer.historyIndex >= 0) {
+      if (!this.current.composer.text.includes('\n') || this.current.composer.historyIndex >= 0) {
         this.setComposer(historyNext(this.current.composer));
       } else {
         this.setComposer(moveComposerCursor(this.current.composer, 'down'));

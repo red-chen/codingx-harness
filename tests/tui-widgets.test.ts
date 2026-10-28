@@ -578,6 +578,20 @@ describe('Composer', () => {
     expect(rendered).toBe(2);
     expect(rowText(buffer, 0)).toContain('queued one');
     expect(rowText(buffer, 1)).toContain('queued two');
+    expect(buffer.get(4, 0)?.bg).toEqual({ type: 'default' });
+  });
+
+  it('does not preview submissions already shown in the transcript', () => {
+    const submitted = Array.from({ length: 5 }, (_, i) => ({
+      id: 'sent' + i, text: 'already submitted', submitted: true,
+    }));
+    expect(queuePreviewHeight(submitted)).toBe(0);
+    const queue = [...submitted, { id: 'draft', text: 'waiting draft', submitted: false }];
+    expect(queuePreviewHeight(queue)).toBe(1);
+    const buffer = new CellBuffer(60, 4);
+    expect(renderQueuePreview(rect(0, 0, 60, 4), buffer, queue)).toBe(1);
+    expect(rowText(buffer, 0)).toContain('waiting draft');
+    expect(rowText(buffer, 1).trim()).toBe('');
   });
 });
 
@@ -811,9 +825,10 @@ describe('frame composition', () => {
     typeText(app, 'queued work');
     app.handleKey(key('tab'));
     const layout = computeFrameLayout(app.state, 80, 24);
-    expect(layout.transcript.height).toBe(16);
-    expect(layout.status.y).toBe(17);
+    expect(layout.transcript.height).toBe(17);
+    expect(layout.status.y).toBe(18);
     expect(layout.queue.y).toBe(19);
+    expect(layout.queue.y).toBe(layout.status.y + layout.status.height);
     expect(layout.composer.y).toBe(20);
     expect(layout.meta.y).toBe(23);
     const frame = app.renderFrame();

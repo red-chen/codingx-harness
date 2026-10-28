@@ -95,6 +95,37 @@ const fakeSession = {
 } as unknown as SessionHandle;
 
 describe('TuiRuntime', () => {
+  it('accepts searched commands without executing them and Ctrl+C cancels search', () => {
+    const io = new FakeIO();
+    const app = new TuiApp({ session: { sessionId: 's1', cwd: '/work', model: 'test' },
+      version: 'test', inputHistory: ['/clear', '!pwd'] });
+    const local: string[] = [];
+    const commands: unknown[] = [];
+    const runtime = makeRuntime(app, io, commands, local);
+    runtime.start();
+    try {
+      io.dataHandler?.('draft');
+      io.dataHandler?.('\x12');
+      io.dataHandler?.('!pwd');
+      io.dataHandler?.('\r');
+      expect(app.composer.text).toBe('!pwd');
+      expect(local).toEqual([]);
+      expect(commands).toEqual([]);
+      io.dataHandler?.('\x12');
+      io.dataHandler?.('/clear');
+      io.dataHandler?.('\x03');
+      expect(app.composer.search).toBeUndefined();
+      expect(app.composer.text).toBe('!pwd');
+      io.dataHandler?.('\x12');
+      io.dataHandler?.('/clear');
+      io.dataHandler?.('\r');
+      expect(app.composer.text).toBe('/clear');
+      expect(local).toEqual([]);
+      io.dataHandler?.('\r');
+      expect(local).toEqual(['/clear']);
+    } finally { runtime.stop(); }
+  });
+
   it('enters the terminal, renders, submits text and stops idempotently', () => {
     const io = new FakeIO();
     const app = makeApp();
@@ -358,6 +389,8 @@ describe('TuiSession', () => {
     await flush();
     controller.runtime.feed('second\r');
     expect(app.queue.map((item) => item.text)).toEqual(['second']);
+    expect(app.transcript.filter((cell) => cell.type === 'user').map((cell) => cell.text)).toEqual(['first']);
+    expect(app.queue[0]?.submitted).toBe(false);
     releaseFirst();
     await flush();
     await flush();
@@ -366,6 +399,29 @@ describe('TuiSession', () => {
       'first',
       'second',
     ]);
+    controller.exit(0);
+    await running;
+  });
+
+  it('moves the entire queue into the transcript at a step boundary and keeps the draft', async () => {
+    const app = makeApp();
+    const controller = new TuiSession({
+      app, io: new FakeIO(), session: fakeSession,
+      runTurn: async () => { throw new Error('must stay in the active turn'); },
+    });
+    app.handleEvent({ type: 'turn.started', turnId: 't1' });
+    const running = controller.run();
+    await flush();
+    app.handleEvent({ type: 'text.delta', turnId: 't1', text: 'earlier output' });
+    controller.runtime.feed('one\rtwo\rthree\rdraft');
+    expect(app.transcript.filter((cell) => cell.type === 'user')).toHaveLength(0);
+    expect(controller.takeQueuedPrompts()).toEqual(['one', 'two', 'three']);
+    expect(app.queue).toHaveLength(0);
+    expect(app.state.composer.text).toBe('draft');
+    expect(app.transcript.filter((cell) => cell.type === 'user').map((cell) => cell.text)).toEqual(['one', 'two', 'three']);
+    expect(app.transcript[0]?.type).toBe('assistant');
+    expect(app.state.turnNumber).toBe(1);
+    expect(controller.takeQueuedPrompts()).toEqual([]);
     controller.exit(0);
     await running;
   });

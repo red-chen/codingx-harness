@@ -80,7 +80,10 @@ describe('TuiApp approval overlay', () => {
     const screen = screenText(app.frame());
     expect(screen).toContain('Approval required');
     expect(screen).toContain('git push origin main');
-    expect(screen).toContain('Allow once');
+    expect(screen).toContain('› 1. Allow once');
+    expect(screen).toContain('2. Allow for this session');
+    expect(screen).not.toContain('(•)');
+    expect(screen).not.toContain('( )');
     expect(screen).toContain('Allow for this session');
     expect(screen).toContain('Allow this command prefix');
     expect(screen).toContain('Deny with reason');

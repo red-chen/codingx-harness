@@ -78,7 +78,10 @@ function withoutLabel(selected: readonly string[], label: string): string[] {
 function toggleLabel(state: TuiAskState, label: string, multiSelect: boolean): TuiAskState {
   const selected = currentAskSelection(state);
   if (!multiSelect) {
-    return withSelection(state, selected.includes(label) ? [] : [label]);
+    return withSelection({
+      ...state,
+      custom: state.custom.map((value, index) => index === state.index ? '' : value),
+    }, [label]);
   }
   return withSelection(
     state,
@@ -144,6 +147,9 @@ function editCustom(
     ...state,
     custom: state.custom.map((value, index) => (index === state.index ? next.text : value)),
     cursor: next.cursor,
+    ...(currentAskQuestion(state)?.multiSelect === false && next.text.trim().length > 0
+      ? { selections: state.selections.map((value, index) => index === state.index ? [] : value) }
+      : {}),
   };
 }
 
