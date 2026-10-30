@@ -4,14 +4,36 @@ import { DEFAULT_CONTEXT_WINDOW, type Message, type ReasoningEffort } from '../p
 import type { SessionHandle } from '../session/index.js';
 import type { AskHandler, PlanStep, ReadFileTracker } from '../tools/index.js';
 import type { CliApp } from './bootstrap.js';
+import type { StoredModelSelection } from '../agent/history.js';
 
 export const DEFAULT_SHELL_TIMEOUT_MS = 120_000;
+
+/** Explicit CLI/env > cwd preferences > saved session selection > config. */
+export async function initializeReasoningEffort(
+  app: CliApp,
+  session: SessionHandle,
+  restored: StoredModelSelection = {},
+): Promise<ReasoningEffort | undefined> {
+  const explicit = app.loaded.overrides.reasoningEffort !== undefined || app.loaded.workspacePreferences?.model !== undefined;
+  if (!explicit && restored.model !== undefined) return restored.reasoningEffort;
+  const effort = app.config.model.reasoningEffort;
+  if (explicit || effort !== undefined) {
+    await session.append({
+      type: 'model.changed',
+      model: app.router.selection.model,
+      provider: app.router.selection.providerId,
+      route: app.router.selection.routeName,
+      ...(effort === undefined ? {} : { reasoningEffort: effort }),
+    });
+  }
+  return effort;
+}
 
 export interface CreateLoopOptions {
   initialMessages?: readonly Message[];
   initialPlan?: readonly PlanStep[];
   readTracker?: ReadFileTracker;
-  /** Restored /model reasoning effort for resumed sessions. */
+  /** Resolved session effort; explicit undefined restores the provider default. */
   reasoningEffort?: ReasoningEffort;
   /** Present only when the caller can collect answers mid-turn (TUI). */
   ask?: AskHandler;
@@ -46,7 +68,7 @@ export function createLoop(
     policy: app.policy,
     sandbox: app.sandbox,
     hooks: app.hooks,
-    ...(options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }),
+    reasoningEffort: 'reasoningEffort' in options ? options.reasoningEffort : app.config.model.reasoningEffort,
     ...(options.ask === undefined ? {} : { ask: options.ask }),
     ...(options.approve === undefined ? {} : { approve: options.approve }),
     ...(options.readTracker ? { readTracker: options.readTracker } : {}),

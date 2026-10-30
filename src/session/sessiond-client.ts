@@ -32,6 +32,7 @@ import { JsonRpcPeer } from '../sessiond/transport.js';
 
 export interface SessiondClientOptions {
   socketPath: string;
+  cwd?: string;
   clientName?: string;
   clientVersion?: string;
   connectTimeoutMs?: number;
@@ -85,9 +86,13 @@ export class SessiondClient {
   /** Methods advertised by the daemon during initialize; empty for old builds. */
   private methods: ReadonlySet<string> = new Set();
   private closed = false;
+  private readonly cwd: string | undefined;
+  cwdIsolation = false;
+  readableWorkspaces = false;
 
   private constructor(socket: Socket, options: SessiondClientOptions) {
     this.socketPath = options.socketPath;
+    this.cwd = options.cwd;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
     this.peer = new JsonRpcPeer({
       stream: socket,
@@ -115,9 +120,12 @@ export class SessiondClient {
   async initialize(name = 'codingx-cli', version = '0.1.0'): Promise<InitializeResult> {
     const result = await this.request<InitializeResult>('initialize', {
       protocol: SESSIOND_PROTOCOL_VERSION,
+      ...(this.cwd === undefined ? {} : { cwd: this.cwd }),
       client: { name, version, pid: process.pid },
     });
     this.methods = new Set(result.methods ?? []);
+    this.cwdIsolation = result.cwdIsolation === true;
+    this.readableWorkspaces = result.workspaceLayout === 'readable-v1';
     return result;
   }
 

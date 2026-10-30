@@ -1,4 +1,4 @@
-import type { Protocol } from '../providers/types.js';
+import type { Protocol, ReasoningEffort } from '../providers/types.js';
 import type { ApprovalPolicy, ApprovalsReviewer, PermissionsConfig } from '../policy/types.js';
 import type { HookConfig } from '../hooks/types.js';
 
@@ -82,6 +82,7 @@ export interface McpServerConfig {
 
 export interface ModelConfig {
   route: string;
+  reasoningEffort?: ReasoningEffort;
   maxOutputTokens: number;
   temperature: number;
   contextWindow?: number;
@@ -112,6 +113,8 @@ export interface Config {
 }
 
 export interface ConfigOverrides {
+  /** Explicit default clears a configured or restored effort. */
+  reasoningEffort?: ReasoningEffort | 'default';
   route?: string;
   model?: string;
   provider?: string;
@@ -140,6 +143,20 @@ export interface LoadedConfig {
   codingxHome: string;
   configFiles: ConfigFilePaths;
   logLevel: 'info' | 'debug';
+  /** Validated cwd-specific interactive defaults, below explicit CLI/env overrides. */
+  workspacePreferences?: WorkspacePreferences;
+}
+
+export interface WorkspaceModelPreference {
+  model: string;
+  provider: string;
+  route: string;
+  reasoningEffort: ReasoningEffort | 'default';
+}
+
+export interface WorkspacePreferences {
+  model?: WorkspaceModelPreference;
+  permissionProfile?: string;
 }
 
 export interface LoadConfigOptions {

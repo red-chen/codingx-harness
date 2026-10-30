@@ -736,19 +736,20 @@ export class TuiApp {
     if (questions.length === 0) return;
     this.patch({
       mode: 'ask',
-      ask: createAskState(questions),
+      ask: { ...createAskState(questions), resumeState: this.modalResumeState() },
       status: { ...this.current.status, state: 'awaiting' },
       slashDismissed: true,
     });
   }
 
-  /** Close the ask modal and resume the working status. Idempotent. */
+  /** Local pickers return to idle; in-turn questions resume working. Idempotent. */
   clearAsk(): void {
     const status = this.current.status;
+    const ask = this.current.ask;
     this.patch({
       ...(this.current.mode === 'ask' ? { mode: 'main' as const } : {}),
       ask: undefined,
-      ...(status.state === 'awaiting' ? { status: { ...status, state: 'working' as const } } : {}),
+      ...(ask && status.state === 'awaiting' ? { status: { ...status, state: ask.resumeState ?? 'working' } } : {}),
     });
   }
 
@@ -756,20 +757,26 @@ export class TuiApp {
   showApproval(request: TuiApprovalRequest): void {
     this.patch({
       mode: 'approval',
-      approval: createApprovalState(request),
+      approval: { ...createApprovalState(request), resumeState: this.modalResumeState() },
       status: { ...this.current.status, state: 'awaiting' },
       slashDismissed: true,
     });
   }
 
-  /** Close the approval modal and resume the working status. Idempotent. */
+  /** Close the approval modal and restore the preceding execution state. Idempotent. */
   clearApproval(): void {
     const status = this.current.status;
+    const approval = this.current.approval;
     this.patch({
       ...(this.current.mode === 'approval' ? { mode: 'main' as const } : {}),
       approval: undefined,
-      ...(status.state === 'awaiting' ? { status: { ...status, state: 'working' as const } } : {}),
+      ...(approval && status.state === 'awaiting' ? { status: { ...status, state: approval.resumeState ?? 'working' } } : {}),
     });
+  }
+
+  private modalResumeState(): 'idle' | 'working' {
+    if (this.current.status.state !== 'awaiting') return this.current.status.state;
+    return this.current.ask?.resumeState ?? this.current.approval?.resumeState ?? 'working';
   }
 
   private finishApproval(): UiCommand | undefined {

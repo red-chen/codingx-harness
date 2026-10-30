@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { PassThrough } from 'node:stream';
 import os from 'node:os';
 import path from 'node:path';
@@ -181,6 +181,29 @@ function messagesOf(body: Record<string, unknown>): Array<{ role: string; conten
 }
 
 describe('session continuation', () => {
+  it('rejects other cwd session IDs in resume, fork and log, but continues through a symlink', async () => {
+    const server = await startServer([]);
+    const { home, workspace } = await setup(server.url);
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const handle = await store.createSession({ cwd: workspace, model: 'test-model', cliVersion: 'test' });
+    await handle.close();
+    const other = path.join(workspace, 'nested');
+    await mkdir(other);
+    for (const args of [['--resume', handle.id], ['--fork', handle.id], ['log', '--session', handle.id], ['--continue']]) {
+      const result = await runWithInput(['--cd', other, ...args], home, other, '/quit\n');
+      expect(result.code).not.toBe(0);
+      expect(result.stderr.value).toMatch(/No .*session|not found/i);
+    }
+    const alias = path.join(home, 'workspace-alias');
+    await symlink(workspace, alias);
+    const resumed = await runWithInput(['--cd', alias, '--continue'], home, alias, '/quit\n');
+    expect(resumed.code).toBe(0);
+    expect(resumed.stderr.value).toContain('resumed session ' + handle.id);
+    expect(resumed.stderr.value).not.toContain('cwd differs');
+    expect(await store.listSessions()).toHaveLength(1);
+    expect(server.bodies).toHaveLength(0);
+  });
+
   it('continues the most recent session and sends its history on the next turn', async () => {
     const server = await startServer([textResponse('first answer'), textResponse('second answer')]);
     const { home, workspace } = await setup(server.url);

@@ -18,7 +18,7 @@ const HELP_ROWS: ReadonlyArray<readonly [string, string]> = [
   ['Tab', 'queue while working'],
   ['!<command>', 'run shell locally'],
   ['Esc / Ctrl+C', 'interrupt'],
-  ['↑ / ↓', 'input history (200 global entries)'],
+  ['↑ / ↓', 'input history (200 entries per cwd)'],
   ['Ctrl+R', 'search input history; Enter accept, Esc cancel'],
   ['Ctrl+T', 'transcript'],
   ['Ctrl+O', 'tool output details'],

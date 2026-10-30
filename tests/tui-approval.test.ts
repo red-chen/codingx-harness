@@ -59,6 +59,14 @@ function shown(request = shellRequest()): TuiApp {
 }
 
 describe('TuiApp approval overlay', () => {
+  it('returns an idle approval to idle without inventing an active turn', () => {
+    const app = makeApp();
+    app.showApproval(shellRequest());
+    app.handleKey(key('enter'));
+    app.clearApproval();
+    expect(app.status.state).toBe('idle');
+  });
+
   it('shows full command details without allowing Enter to approve', () => {
     const app = shown(shellRequest({ action: { kind: 'exec', tool: 'Shell',
       command: 'echo ' + 'long-command '.repeat(300) + 'COMMAND_END', cwd: '/tmp/work' } }));

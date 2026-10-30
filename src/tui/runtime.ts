@@ -76,8 +76,10 @@ export class TuiRuntime {
     if (this.stopped) return false;
     if (!this.session.enter()) return false;
     this.running = true;
-    // Allocate a viewport on the primary screen without erasing shell scrollback.
-    this.session.write('\r' + '\n'.repeat(this.io.rows) + '\x1b[H');
+    // Start native scrollback at the welcome card. Do this only on entry,
+    // before archiving any restored transcript; later frames retain history.
+    // Repaint the viewport below without ED2 or blank-line scrolling.
+    this.session.write('\x1b[H\x1b[3J');
     this.app.setSize(this.io.columns, this.io.rows);
     debugLog(
       'clipboard',

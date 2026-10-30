@@ -60,6 +60,32 @@ describe('config defaults', () => {
   });
 });
 
+describe('reasoning effort configuration', () => {
+  it('layers global, project, environment and CLI values, including explicit default', async () => {
+    expect((await load()).config.model.reasoningEffort).toBeUndefined();
+    await writeGlobal('[model]\nreasoning_effort = "low"\n');
+    expect((await load()).config.model.reasoningEffort).toBe('low');
+    await writeProject('[model]\nreasoning_effort = "medium"\n');
+    expect((await load()).config.model.reasoningEffort).toBe('medium');
+    const env = { CODINGX_REASONING_EFFORT: 'high' };
+    expect((await load(env)).config.model.reasoningEffort).toBe('high');
+    expect((await load(env, { reasoningEffort: 'xhigh' })).config.model.reasoningEffort).toBe('xhigh');
+    const cleared = await load(env, { reasoningEffort: 'default' });
+    expect(cleared.config.model.reasoningEffort).toBeUndefined();
+    expect(cleared.overrides.reasoningEffort).toBe('default');
+    expect((await load({ CODINGX_REASONING_EFFORT: 'default' })).config.model.reasoningEffort).toBeUndefined();
+    await writeProject('[model]\nreasoning_effort = "default"\n');
+    expect((await load()).config.model.reasoningEffort).toBeUndefined();
+  });
+
+  it('rejects invalid levels with config errors', async () => {
+    await expect(load({ CODINGX_REASONING_EFFORT: 'turbo' })).rejects.toMatchObject({ code: 'CONFIG_ERROR' });
+    await expect(load({}, { reasoningEffort: 'turbo' })).rejects.toThrow(/Invalid reasoning effort/);
+    await writeGlobal('[model]\nreasoning_effort = "turbo"\n');
+    await expect(load()).rejects.toThrow(/model.reasoning_effort/);
+  });
+});
+
 describe('hooks config', () => {
   it('loads hooks from global config only and ignores project hooks', async () => {
     await writeGlobal(

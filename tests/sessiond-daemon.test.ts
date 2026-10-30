@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ensureSessiond } from '../src/session/index.js';
 import { SessiondStore } from '../src/session/sessiond-store.js';
+import { SESSIOND_METHODS } from '../src/sessiond/protocol.js';
 import {
   JsonRpcPeer,
   SESSIOND_PROTOCOL_VERSION,
@@ -42,7 +43,7 @@ interface OutdatedDaemon {
  */
 async function startOutdatedDaemon(
   socketPath: string,
-  options: { busy?: boolean } = {},
+  options: { busy?: boolean; advertiseMethods?: boolean } = {},
 ): Promise<OutdatedDaemon> {
   await mkdir(path.dirname(socketPath), { recursive: true });
   const peers = new Set<JsonRpcPeer>();
@@ -69,6 +70,7 @@ async function startOutdatedDaemon(
               pid: process.pid,
               startedAt: new Date().toISOString(),
               sessionCount: 0,
+              ...(options.advertiseMethods ? { methods: SESSIOND_METHODS, cwdIsolation: true } : {}),
             };
           case 'daemon.shutdown':
             shutdownCalls += 1;
@@ -183,9 +185,9 @@ describe('ensureSessiond', () => {
     }
   });
 
-  it('replaces an outdated daemon and its /clear path works again', async () => {
+  it.each([false, true])('replaces an outdated daemon (methods advertised: %s) and its /clear path works again', async (advertiseMethods) => {
     const paths = await setup();
-    const outdated = await startOutdatedDaemon(paths.socket);
+    const outdated = await startOutdatedDaemon(paths.socket, { advertiseMethods });
     const ensured = await ensureSessiond({
       socketPath: paths.socket,
       sessionDir: paths.sessions,
@@ -206,6 +208,8 @@ describe('ensureSessiond', () => {
       expect(ensured.replacedStale).toBe(true);
       expect(outdated.shutdownCalls).toBe(1);
       expect(ensured.client.supports('session.clear')).toBe(true);
+      expect(ensured.client.cwdIsolation).toBe(true);
+      expect(ensured.client.readableWorkspaces).toBe(true);
 
       const store = new SessiondStore({ client: ensured.client });
       const handle = await store.createSession({

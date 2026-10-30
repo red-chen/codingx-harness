@@ -229,10 +229,16 @@ describe('TuiRuntime', () => {
     runtime.stop();
   });
 
-  it('preserves exact history order in a terminal emulator across incremental output', async () => {
+  it.each([0, 40])('starts scrollback at welcome and preserves history with %i restored rows', async (restoredRows) => {
     const terminal = new xterm.Terminal({ cols: 80, rows: 24, scrollback: 10000, allowProposedApi: true });
+    await new Promise<void>((resolve) => terminal.write(
+      'OLD_SHELL_OUTPUT\r\n'.repeat(50) + '$ codingx', resolve,
+    ));
     const io = new FakeIO();
     const app = makeApp();
+    for (let index = 0; index < restoredRows; index++) {
+      app.addNotice('HISTORY_' + String(index).padStart(3, '0'));
+    }
     const runtime = makeRuntime(app, io, [], []);
     runtime.start();
     const drain = async (): Promise<void> => {
@@ -242,7 +248,9 @@ describe('TuiRuntime', () => {
       await new Promise<void>((resolve) => terminal.write(output, resolve));
     };
     await drain();
-    for (let index = 0; index < 60; index++) {
+    expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toContain('╭');
+    if (restoredRows === 0) expect(terminal.buffer.active.baseY).toBe(0);
+    for (let index = restoredRows; index < 60; index++) {
       if (index === 30) runtime.feed('\x1b[200~line1\nline2\nline3\nline4\x1b[201~');
       if (index === 35) app.clearComposer();
       app.addNotice('HISTORY_' + String(index).padStart(3, '0'));
@@ -251,6 +259,9 @@ describe('TuiRuntime', () => {
     }
     const lines = Array.from({ length: terminal.buffer.active.length }, (_, i) =>
       terminal.buffer.active.getLine(i)?.translateToString(true) ?? '');
+    expect(lines[0]).toContain('╭');
+    expect(lines.join('\n')).not.toContain('OLD_SHELL_OUTPUT');
+    expect(lines.join('\n')).not.toContain('$ codingx');
     const ids = lines.flatMap((line) => line.match(/HISTORY_\d+/gu) ?? []);
     expect(ids).toEqual(Array.from({ length: 60 }, (_, i) => 'HISTORY_' + String(i).padStart(3, '0')));
     runtime.stop();
@@ -622,17 +633,17 @@ describe('TuiSession', () => {
     const running = controller.run();
     await flush();
 
-    controller.runtime.feed('/model\r');
+    controller.runtime.feed('/model --show\r');
     expect(
       app.transcript.some((cell) => cell.type === 'notice' && cell.text.includes('effort: default')),
     ).toBe(true);
 
-    controller.runtime.feed('/model model-b high\r');
+    controller.runtime.feed('/model model-b --effort high\r');
     await flush();
     await flush();
     expect(updates).toEqual([{ model: 'model-b', reasoningEffort: 'high' }]);
     expect(app.state.session).toMatchObject({ model: 'model-b', reasoningEffort: 'high' });
-    expect(app.transcript.some((cell) => cell.type === 'notice' && cell.text.includes('model: model-b'))).toBe(true);
+    expect(app.transcript.some((cell) => cell.type === 'notice' && cell.text === 'Model set to model-b, effort: high.')).toBe(true);
 
     controller.runtime.feed('/model --effort default\r');
     await flush();
@@ -641,6 +652,185 @@ describe('TuiSession', () => {
     expect(app.state.session.reasoningEffort).toBeUndefined();
 
     controller.runtime.feed('/quit\r');
+    await expect(running).resolves.toBe(0);
+  });
+
+  it('selects model and effort atomically, supports custom models, cancellation and default', async () => {
+    const app = makeApp();
+    let selection: { model: string; reasoningEffort?: ReasoningEffort } = { model: 'm' };
+    const updates: typeof selection[] = [];
+    const controller = new TuiSession({
+      app, io: new FakeIO(), session: fakeSession,
+      runTurn: async () => { throw new Error('/model must not call the provider'); },
+      model: {
+        list: () => ['m', 'model-b', 'model-b'],
+        get: () => selection,
+        set: (next) => { selection = next; updates.push(next); },
+      },
+    });
+    const running = controller.run();
+    await flush();
+    controller.runtime.feed('/model\r');
+    expect(app.state.mode).toBe('ask');
+    expect(app.state.ask?.questions[0]?.options.map((option) => option.label)).toEqual(['m', 'model-b']);
+    controller.runtime.feed('2\r');
+    expect(app.state.ask?.index).toBe(1);
+    expect(updates).toEqual([]);
+    controller.runtime.feed('\x1b'); // cancel after choosing a model
+    await vi.waitFor(() => expect(app.state.mode).toBe('main'));
+    expect(updates).toEqual([]);
+
+    controller.runtime.feed('/model\r');
+    controller.runtime.feed('2\r');
+    controller.runtime.feed('4\r'); // high
+    await flush();
+    expect(updates).toEqual([{ model: 'model-b', reasoningEffort: 'high' }]);
+    expect(app.state.session).toMatchObject(selection);
+
+    controller.runtime.feed('/model\r');
+    controller.runtime.feed('\x1b[A\r'); // Other
+    controller.runtime.feed('custom-model\r');
+    expect(updates).toHaveLength(1);
+    controller.runtime.feed('2\r'); // default (current high is first)
+    await flush();
+    expect(updates[1]).toEqual({ model: 'custom-model' });
+    expect(app.state.session.reasoningEffort).toBeUndefined();
+
+    controller.runtime.feed('/model\r');
+    controller.runtime.feed('\r'); // keep current model
+    controller.runtime.feed('\x1b[A\r'); // Other effort
+    controller.runtime.feed('turbo\r');
+    await flush();
+    expect(updates).toHaveLength(2);
+    expect(app.transcript.some((cell) => cell.type === 'notice' && cell.text.includes('Unknown reasoning effort'))).toBe(true);
+
+    controller.runtime.feed('/model\r');
+    controller.exit(); // exiting a picker must not apply pending settings
+    await expect(running).resolves.toBe(0);
+    expect(updates).toHaveLength(2);
+  });
+
+  it('shows cross-provider candidates and submits the selected provider identity', async () => {
+    const app = makeApp();
+    const set = vi.fn((selection) => selection);
+    const controller = new TuiSession({
+      app, io: new FakeIO(), session: fakeSession,
+      runTurn: async () => { throw new Error('unexpected turn'); },
+      model: {
+        list: () => [
+          { model: 'same-model', provider: 'primary', route: 'default' },
+          { model: 'same-model', provider: 'secondary', route: 'other' },
+        ],
+        get: () => ({ model: 'same-model', provider: 'primary', route: 'default' }), set,
+      },
+    });
+    const running = controller.run();
+    await flush();
+    controller.runtime.feed('/model\r');
+    expect(app.state.ask?.questions[0]?.options.map((option) => option.label)).toEqual([
+      'same-model (primary)', 'same-model (secondary)',
+    ]);
+    controller.runtime.feed('2\r4\r');
+    await flush();
+    expect(set).toHaveBeenCalledWith({ model: 'same-model', provider: 'secondary', route: 'other', reasoningEffort: 'high' });
+    expect(app.state.session.model).toBe('same-model');
+    expect(app.transcript.some((cell) => cell.type === 'notice' && cell.text === 'Model set to same-model (secondary), effort: high.')).toBe(true);
+    controller.exit();
+    await expect(running).resolves.toBe(0);
+  });
+
+  it('keeps model settings when persisting a picker selection fails', async () => {
+    const app = makeApp();
+    const controller = new TuiSession({
+      app, io: new FakeIO(), session: fakeSession,
+      runTurn: async () => { throw new Error('unexpected turn'); },
+      model: {
+        list: () => ['model-b'], get: () => ({ model: 'test-model' }),
+        set: async () => { throw new Error('rollout write failed'); },
+      },
+    });
+    const running = controller.run();
+    await flush();
+    controller.runtime.feed('/model\r');
+    controller.runtime.feed('2\r4\r');
+    await flush();
+    expect(app.state.session.model).toBe('test-model');
+    expect(app.state.session.reasoningEffort).toBeUndefined();
+    expect(app.transcript.some((cell) => cell.type === 'notice' && cell.text.includes('rollout write failed'))).toBe(true);
+    controller.exit();
+    await expect(running).resolves.toBe(0);
+  });
+
+  it.each(['select', 'cancel', 'save-error', 'permissions'])(
+    'runs the next prompt after the idle picker closes: %s', async (action) => {
+      const app = makeApp();
+      const runTurn = vi.fn(async (): Promise<TurnResult> => {
+        app.handleEvent({ type: 'turn.started', turnId: 't1' });
+        app.handleEvent({ type: 'turn.finished', turnId: 't1', status: 'done', usage: EMPTY_USAGE, durationMs: 1 });
+        return { turnId: 't1', status: 'done', usage: EMPTY_USAGE, durationMs: 1, steps: 1 };
+      });
+      const controller = new TuiSession({
+        app, io: new FakeIO(), session: fakeSession, runTurn,
+        model: {
+          get: () => ({ model: 'test-model' }),
+          set: () => { if (action === 'save-error') throw new Error('save failed'); },
+        },
+        permissions: {
+          list: () => [':workspace'],
+          current: () => ({ profile: ':workspace', approvalPolicy: 'on-request' }),
+          set: async () => {},
+        },
+      });
+      const running = controller.run();
+      await flush();
+      controller.runtime.feed(action === 'permissions' ? '/permissions\r' : '/model\r');
+      if (action === 'cancel') {
+        controller.runtime.feed('\x1b');
+        await vi.waitFor(() => expect(app.status.state).toBe('idle'));
+      } else {
+        controller.runtime.feed(action === 'permissions' ? '\r' : '\r\r');
+      }
+      await flush();
+      expect(app.status.state).toBe('idle');
+      controller.runtime.feed('hello\r');
+      await flush();
+      expect(runTurn).toHaveBeenCalledExactlyOnceWith('hello', expect.any(AbortSignal));
+      expect(app.queue).toHaveLength(0);
+      controller.exit();
+      await expect(running).resolves.toBe(0);
+    },
+  );
+
+  it('waits for model persistence then consumes input queued during the switch', async () => {
+    const app = makeApp();
+    let release!: () => void;
+    const saved = new Promise<void>((resolve) => { release = resolve; });
+    let model = 'old-model';
+    const requests: string[] = [];
+    const controller = new TuiSession({
+      app, io: new FakeIO(), session: fakeSession,
+      model: {
+        get: () => ({ model }), list: () => ['next-model'],
+        set: async (selection) => { await saved; model = selection.model; },
+      },
+      runTurn: async () => {
+        requests.push(model);
+        app.handleEvent({ type: 'turn.started', turnId: 't1' });
+        app.handleEvent({ type: 'turn.finished', turnId: 't1', status: 'done', usage: EMPTY_USAGE, durationMs: 1 });
+        return { turnId: 't1', status: 'done', usage: EMPTY_USAGE, durationMs: 1, steps: 1 };
+      },
+    });
+    const running = controller.run();
+    await flush();
+    controller.runtime.feed('/model\r2\r1\rhello\r');
+    await flush();
+    expect(requests).toEqual([]);
+    expect(app.queue.map((item) => item.text)).toEqual(['hello']);
+    release();
+    await flush();
+    expect(requests).toEqual(['next-model']);
+    expect(app.queue).toEqual([]);
+    controller.exit();
     await expect(running).resolves.toBe(0);
   });
 
@@ -674,7 +864,9 @@ describe('TuiSession', () => {
     await flush();
 
     controller.runtime.feed('/model model-b high\r');
+    controller.runtime.feed('/model\r');
     await flush();
+    expect(app.state.mode).not.toBe('ask');
     expect(updates).toBe(0);
     expect(
       app.transcript.some(

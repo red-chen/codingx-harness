@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { access, appendFile, chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { access, appendFile, chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { legacyWorkspaceKey, workspaceKey } from '../src/util/workspace.js';
 import {
   EmbeddedSessionStore,
   deriveSessionStatus,
@@ -35,6 +36,56 @@ function event(type: string, extra: Record<string, unknown> = {}): RolloutEvent 
 }
 
 describe('EmbeddedSessionStore lifecycle', () => {
+  it('isolates cwd lookups and writes, shares aliases, and reads only matching legacy sessions', async () => {
+    const cwd = path.join(root, 'repo');
+    const nested = path.join(cwd, 'nested');
+    await mkdir(nested, { recursive: true });
+    const alias = path.join(root, 'alias');
+    await symlink(cwd, alias);
+    const local = new EmbeddedSessionStore({ directory, cwd });
+    const other = new EmbeddedSessionStore({ directory, cwd: nested });
+    const first = await local.createSession({ ...createOptions, cwd });
+    const second = await other.createSession({ ...createOptions, cwd: nested });
+    await first.close();
+    await second.close();
+    expect(path.basename(path.dirname(first.filePath))).toBe(await workspaceKey(cwd));
+    expect(path.dirname(first.filePath)).not.toBe(path.dirname(second.filePath));
+    expect(await local.listSessions()).toEqual([expect.objectContaining({ id: first.id })]);
+    expect(await new EmbeddedSessionStore({ directory, cwd: alias }).listSessions()).toHaveLength(1);
+    await expect(local.attachSession(second.id, 'write')).rejects.toMatchObject({ code: 'SESSION_ERROR' });
+    await expect(local.replaySession(second.id)).rejects.toMatchObject({ code: 'SESSION_ERROR' });
+    await expect(local.forkSession(second.id, { cliVersion: 'test' })).rejects.toMatchObject({ code: 'SESSION_ERROR' });
+    await expect(local.deleteSession(second.id)).rejects.toMatchObject({ code: 'SESSION_ERROR' });
+    await expect(local.createSession({ ...createOptions, cwd: nested })).rejects.toMatchObject({ code: 'SESSION_ERROR' });
+    // Legacy rollouts retain their header cwd and remain available without rewriting them.
+    await rename(first.filePath, path.join(directory, path.basename(first.filePath)));
+    const legacyHashDirectory = path.join(directory, await legacyWorkspaceKey(nested));
+    await mkdir(legacyHashDirectory);
+    await rename(second.filePath, path.join(legacyHashDirectory, path.basename(second.filePath)));
+    expect(await local.replaySession(first.id)).toHaveLength(1);
+    expect(await other.listSessions()).toEqual([expect.objectContaining({ id: second.id })]);
+    expect(await store.listSessions()).toHaveLength(2);
+  });
+
+  it('keeps colliding readable cwd names in separate session directories', async () => {
+    const firstCwd = path.join(root, 'a-b', 'c');
+    const secondCwd = path.join(root, 'a', 'b-c');
+    await mkdir(firstCwd, { recursive: true });
+    await mkdir(secondCwd, { recursive: true });
+    const first = new EmbeddedSessionStore({ directory, cwd: firstCwd });
+    const second = new EmbeddedSessionStore({ directory, cwd: secondCwd });
+    const [a, b] = await Promise.all([
+      first.createSession({ ...createOptions, cwd: firstCwd }),
+      second.createSession({ ...createOptions, cwd: secondCwd }),
+    ]);
+    await a.close();
+    await b.close();
+    expect(path.dirname(a.filePath)).not.toBe(path.dirname(b.filePath));
+    expect((await first.listSessions()).map((session) => session.id)).toEqual([a.id]);
+    expect((await second.listSessions()).map((session) => session.id)).toEqual([b.id]);
+    expect(await store.listSessions()).toHaveLength(2);
+  });
+
   it('creates a 0600 JSONL rollout under a 0700 directory and appends monotonic events', async () => {
     const handle = await store.createSession(createOptions);
     const info = await stat(handle.filePath);

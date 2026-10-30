@@ -119,6 +119,7 @@ describe('WelcomeCard', () => {
     expect(lines[6]).toMatch(/^╰─+╯$/u);
     expect(lines[1]).toContain('codingx (v0.1.0)');
     expect(lines[3]).toContain('model: test-model');
+    expect(lines[3]).toContain('model: test-model (/model to change model)');
     expect(lines[4]).toContain('directory: /tmp/work');
     expect(lines[5]).toContain('session: sess-123');
     expect(lines.every((line) => displayWidth(line) <= 60)).toBe(true);
@@ -162,6 +163,10 @@ describe('WelcomeCard', () => {
     expect(rendered).toBe(7);
     expect(rowText(buffer, 0)).toMatch(/^╭─+╮$/u);
     expect(rowText(buffer, 3)).toContain('model: model-x');
+    expect(rowText(buffer, 3)).toContain('model: model-x (/model to change model)');
+    const commandX = rowText(buffer, 3).indexOf('/model');
+    expect(buffer.get(commandX, 3)?.fg).not.toEqual(buffer.get(commandX - 1, 3)?.fg);
+    expect(buffer.get(commandX, 3)?.fg).not.toEqual(buffer.get(2, 3)?.fg);
     expect(rowText(buffer, 4)).toContain('directory: ~/work');
     expect(rowText(buffer, 5)).toContain('session: sess-x');
   });

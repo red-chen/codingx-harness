@@ -4,6 +4,8 @@ import os from 'node:os';
 import { parse as parseToml } from 'smol-toml';
 import { z } from 'zod';
 import { ConfigError } from '../util/errors.js';
+import { WorkspacePreferencesStore } from './workspace-preferences.js';
+import { REASONING_EFFORTS } from '../providers/types.js';
 import { expandHome } from '../util/paths.js';
 import type {
   Affinity,
@@ -26,6 +28,7 @@ import { DEFAULT_HOOK_TIMEOUT_MS, MAX_HOOK_TIMEOUT_MS } from '../hooks/types.js'
 import { DANGER_PROFILE, parsePermissions, READ_ONLY_PROFILE, WORKSPACE_PROFILE } from '../policy/index.js';
 
 const DEFAULT_ENV_PASSTHROUGH = ['PATH', 'HOME', 'LANG', 'TERM', 'TMPDIR', 'USER', 'SHELL'];
+const reasoningEffortSchema = z.enum([...REASONING_EFFORTS, 'default']);
 
 const httpUrl = z
   .string()
@@ -96,6 +99,7 @@ const rawConfigSchema = z.object({
   model: z
     .object({
       route: z.string().min(1).default('default'),
+      reasoning_effort: reasoningEffortSchema.optional(),
       max_output_tokens: z.number().int().positive().default(8192),
       temperature: z.number().min(0).max(2).default(0),
       context_window: z.number().int().positive().optional(),
@@ -530,6 +534,7 @@ function validateRoutes(config: Config): void {
 }
 
 function collectOverrides(env: NodeJS.ProcessEnv, cli: ConfigOverrides | undefined): ConfigOverrides {
+  const effort = cli?.reasoningEffort ?? env.CODINGX_REASONING_EFFORT;
   const route = cli?.route ?? env.CODINGX_ROUTE;
   const model = cli?.model ?? env.CODINGX_MODEL;
   const provider = cli?.provider ?? env.CODINGX_PROVIDER;
@@ -540,6 +545,13 @@ function collectOverrides(env: NodeJS.ProcessEnv, cli: ConfigOverrides | undefin
   const permissionProfile = cli?.permissionProfile ?? env.CODINGX_PERMISSION_PROFILE;
   const sandboxMode = cli?.sandboxMode ?? (env.CODINGX_SANDBOX as SandboxMode | undefined);
   const overrides: ConfigOverrides = {};
+  if (effort !== undefined) {
+    const parsed = reasoningEffortSchema.safeParse(effort);
+    if (!parsed.success) {
+      throw new ConfigError('Invalid reasoning effort: ' + effort + '. Use ' + REASONING_EFFORTS.join('|') + '|default.');
+    }
+    overrides.reasoningEffort = parsed.data;
+  }
   if (route) overrides.route = route;
   if (model) overrides.model = model;
   if (provider) overrides.provider = provider;
@@ -569,11 +581,17 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
 
   const merged = deepMerge(globalRaw ?? {}, projectRaw ?? {}) as Record<string, unknown>;
   applyEnvOverrides(merged, env);
+  const overrides = collectOverrides(env, options.cli);
+  if (overrides.reasoningEffort !== undefined) {
+    merged.model = { ...asObject(merged.model), reasoning_effort: overrides.reasoningEffort };
+  }
   const raw = parseRaw(merged, globalPath, projectRaw ? projectPath : undefined);
 
   const config: Config = {
     model: {
       route: raw.model.route,
+      ...(raw.model.reasoning_effort === undefined || raw.model.reasoning_effort === 'default'
+        ? {} : { reasoningEffort: raw.model.reasoning_effort }),
       maxOutputTokens: raw.model.max_output_tokens,
       temperature: raw.model.temperature,
       ...(raw.model.context_window === undefined ? {} : { contextWindow: raw.model.context_window }),
@@ -618,9 +636,32 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
   };
   validateRoutes(config);
 
-  const overrides = collectOverrides(env, options.cli);
   if (overrides.approvalMode) config.approval.mode = overrides.approvalMode;
   resolvePolicySettings(raw, merged, config, overrides, warnings);
+
+  const workspacePreferences = await (await WorkspacePreferencesStore.open(codingxHome, cwd)).load(warnings);
+  const saved = workspacePreferences.model;
+  if (saved && (!config.providers[saved.provider] || !config.routes[saved.route])) {
+    warnings.push('The saved cwd model references a removed provider or route; using configured defaults.');
+    delete workspacePreferences.model;
+  }
+  if (workspacePreferences.model) {
+    if (!overrides.model && !overrides.provider && !overrides.route) {
+      config.model.route = workspacePreferences.model.route;
+    }
+    if (overrides.reasoningEffort === undefined) {
+      const effort = workspacePreferences.model.reasoningEffort;
+      config.model.reasoningEffort = effort === 'default' ? undefined : effort;
+    }
+  }
+  const profile = workspacePreferences.permissionProfile;
+  if (profile && !config.permissions.profiles[profile]) {
+    warnings.push('The saved cwd permission profile no longer exists; using configured defaults.');
+    delete workspacePreferences.permissionProfile;
+  } else if (profile && overrides.permissionProfile === undefined && overrides.sandboxMode === undefined &&
+    overrides.dangerouslyBypass !== true) {
+    config.permissions = { ...config.permissions, defaultProfile: profile };
+  }
 
   return {
     config,
@@ -632,6 +673,7 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
       ...(projectRaw ? { project: projectPath } : {}),
     },
     logLevel: env.CODINGX_LOG === 'debug' ? 'debug' : 'info',
+    workspacePreferences,
   };
 }
 

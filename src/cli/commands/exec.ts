@@ -5,7 +5,7 @@ import { PlainRenderer, type TextSink } from '../../ui/plain.js';
 import { VERSION } from '../../version.js';
 import { hookWarnings } from '../../hooks/index.js';
 import { bootstrap } from '../bootstrap.js';
-import { createLoop } from '../runtime.js';
+import { createLoop, initializeReasoningEffort } from '../runtime.js';
 
 export interface ExecCommandOptions {
   prompt: string;
@@ -81,6 +81,7 @@ export async function runExec(options: ExecCommandOptions): Promise<number> {
 
   let result: TurnResult | undefined;
   try {
+    await initializeReasoningEffort(app, session);
     renderer.render({
       type: 'session.info',
       session: { sessionId: session.id, cwd: app.cwd, model: app.router.selection.model },

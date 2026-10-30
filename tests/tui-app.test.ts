@@ -630,7 +630,7 @@ function appMoveRight(app: TuiApp, count: number): void {
   for (let index = 0; index < count; index++) app.handleKey(key('right'));
 }
 
-describe('global input recall and search', () => {
+describe('input recall and search', () => {
   it('limits history to 200 and restores a draft after browsing', () => {
     const saved: string[] = [];
     const app = new TuiApp({ session: SESSION, version: 'test',

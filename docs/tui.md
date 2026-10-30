@@ -2,7 +2,9 @@
 
 这份文档只定义 TUI：终端内核、布局、消息单元、composer、状态行、overlay 与键盘。
 
-**TUI 不包含认证、登录、配置文件、设置页、主题选择器、模型选择器或可配置键位。** 模型、cwd、session 由 core 通过事件传入；TUI 只负责显示与交互。
+**TUI 不包含认证、登录、配置文件、设置页、主题选择器或可配置键位。** 模型、cwd、session 由 core 通过事件传入；`/model` 提供模型与 effort 选择面板，变更由 core 保存并应用。
+
+MetaBar 优先完整显示模型名和 effort，目录与会话标题使用剩余空间；仅模型与 effort 已超过整行宽度时才截断，不按固定比例提前截断模型。空闲状态打开的本地选择面板关闭后恢复 idle，模型运行中的问题/审批关闭后恢复 working；保存模型选择期间的输入在保存完成后自动消费。
 
 ## 结论：Node + 自研 Terminal
 
@@ -166,10 +168,11 @@ model · cwd · session title
 - 最底部固定 1 行 meta，不再显示快捷键行；cwd 在 home 目录下显示为 `~/...`，用户消息使用独立的 `userBg` 整块背景。
 - 每个 turn 完成后追加一行 TurnSummary：完成时间、耗时、in/out/cache tokens。
 - 状态行显示 `turn N · step M`，右侧显示 `ctx used/window · tok total`，默认窗口 1M tokens。
-- exec 命令显示工具耗时；turn 摘要使用紧凑格式 `HH:mm:ss · 15s (L15s/T0s) · ↑8.5k ↓606 C14.1k`（时间、总耗时、LLM/工具耗时、输入/输出 Token、缓存读取与创建 Token 之和），窄窗口自动换行，完整统计仍保存在会话数据中，LLM 耗时不再重复挂在 assistant 内容末尾。
+- exec 命令显示工具耗时；turn 摘要使用紧凑格式 `HH:mm:ss · 15s (L15s/T0s) · ↑8.5k ↓606 C14.1k · 40.4 tok/s`（时间、总耗时、LLM/工具耗时、输入/输出 Token、缓存读取与创建 Token 之和、平均输出速度）。速度按本轮输出 Token 数 / 累计 LLM 请求秒数计算，使用未四舍五入的毫秒耗时，包含首 Token 等待、不包含工具时间，保留一位小数；失败/中断或耗时缺失（包括当前历史回放）、为零或无效时显示 `-- tok/s`。窄窗口自动换行，LLM 耗时不再重复挂在 assistant 内容末尾。
 - 相邻且工具/目标相同的调用（例如同一批次里多次 `ReadFile` 同一文件）合并为一个 Exec 块：标题只出现一次并带 `×N`，各次输出按顺序预览，组内不再额外空行；完全相同的输出只渲染一次。
 - 向上滚动按历史内容 clamp；内容不足一屏时保持停在底部，不会出现空白。
 - welcome 卡作为 transcript 的第一个历史块保留，不会在首条消息后消失；滚动上限包含它。
+- 启动交互界面时清除终端已有的滚动缓冲，从屏幕顶部绘制 welcome 卡；原生向上滚动止于该卡片，不包含启动前的 shell 输出或额外空白。后续重绘不清除对话滚动历史。
 - resume 时从 rollout 重建 user/assistant/tool/plan/turn 摘要，历史 transcript 直接可见。
 - 关闭鼠标上报，保留终端原生拖选。应用内历史通过 PgUp/PgDn、Shift+Up/Down 或 Ctrl+T 查看；运行时使用主屏幕，移出视口的 transcript 行写入终端原生 scrollback，因此滚轮/触控板与直接拖选可同时使用。
 - `/copy` 默认复制完整 transcript；`/copy status|input|meta|screen` 分别复制 StatusRow/Composer/MetaBar/整屏；`/copy all` 复制全部区域（带分区标题），`/copy last` 复制最后一条 assistant 输出。Ctrl+Y 等同 `/copy all`。
@@ -282,7 +285,7 @@ Composer 空输入时 `↑/↓` 走历史；有内容时走光标；保留 `Ctrl
 
 ### Slash
 
-Slash 补全浮在 composer 上方，最多 8 行；命令 + 一句描述，支持过滤、↑/↓、enter、tab、esc、数字 1–9。命令只做本地动作（不发给模型）：`/resume`、`/diff`、`/model`、`/clear`、`/help`、`/quit`。`/model` 查看或设置模型与推理强度（`/model <model> [low|medium|high|xhigh|max|default]`、`/model --effort <level>`），写入 `model.changed`，结果通过 notice 显示（meta 行固定 model · cwd · title）；turn 运行中拒绝修改。`/clear` 重置当前会话的 UI、内存历史与 JSONL rollout（保留新的 `session.start` 头）；turn 运行中拒绝执行。
+Slash 补全浮在 composer 上方，最多 8 行；命令 + 一句描述，支持过滤、↑/↓、enter、tab、esc、数字 1–9。命令只做本地动作（不发给模型）：`/resume`、`/diff`、`/model`、`/clear`、`/help`、`/quit`。`/model` 打开模型 → effort 两步选择面板，提供所有已配置 Provider/model 候选（标明 Provider）及自定义模型名，选择时一并切换对应端点；完成后一起应用，取消不修改。也支持 `/model --show` 查看、`/model <model> [effort]` 或 `/model <model> --effort <level>` 同时设置、`/model --effort <level>` 只改强度；档位为 `low|medium|high|xhigh|max|default`。变更写入 `model.changed`，结果通过 notice 显示，meta 行在模型名旁显示档位；turn 或本地命令运行中拒绝修改。`/clear` 重置当前会话的 UI、内存历史与 JSONL rollout（保留新的 `session.start` 头）；turn 运行中拒绝执行。
 
 ### Transcript
 
@@ -325,7 +328,7 @@ Slash 补全浮在 composer 上方，最多 8 行；命令 + 一句描述，支�
 
 ## 非目标
 
-- 不做登录、认证、配置、设置页、主题/模型选择器、可配置键位。
+- 不做登录、认证、配置、设置页、主题选择器、可配置键位；模型与 effort 切换使用 `/model` 面板。
 - 不做 pets、plugins、voice、图片、side conversation、多 Agent 面板。
 - 主屏幕重绘不发送 ED2（整屏清除），避免 iTerm2 将清屏前的旧视口混入历史。
 - 原生 scrollback 已接入主屏幕；历史行的重排由终端处理，当前视口由 TUI 重绘。`Ctrl+T` 仍可查看应用内完整历史。

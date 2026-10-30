@@ -166,6 +166,8 @@ export interface TuiAskQuestion {
  * text are retained per question so going back does not lose answers.
  */
 export interface TuiAskState {
+  /** Execution state to restore when a local picker or tool question closes. */
+  readonly resumeState?: Exclude<TuiStatusState, 'awaiting'>;
   readonly questions: readonly TuiAskQuestion[];
   readonly index: number;
   readonly selections: readonly (readonly string[])[];
@@ -216,6 +218,7 @@ export interface TuiApprovalRequest {
 
 /** Modal approval state. Choices are fixed by the app; model output cannot add or reorder them. */
 export interface TuiApprovalState {
+  readonly resumeState?: Exclude<TuiStatusState, 'awaiting'>;
   readonly details?: boolean;
   readonly detailsOffset?: number;
   readonly request: TuiApprovalRequest;

@@ -42,12 +42,17 @@
 
 ## M2 · 交互体验（核心与验收完成；mention/session picker/表格 holdback/背压列为 M2.1）
 
+- [x] 输入历史与会话按真实 cwd 隔离存储及查找；子目录独立、符号链接共享，旧 rollout 按 cwd 兼容读取。
+
 目标：日常可用。
 
 - [x] 自研 Terminal：alt screen / raw mode、cell buffer、ANSI 差分、输入解析、resize、异常恢复
 - [x] 布局与 widgets：welcome、transcript viewport、composer、status/footer、固定键位（CLI 接入在 E6）
 - [ ] 消息单元：user/assistant、exec、diff、plan、notice；流式 markdown/diff 已完成，表格 holdback 与 30fps 节流待补
 - [ ] 交互：排队/transcript overlay/slash 补全/`/clear`/`/model`/AskUserQuestion 提问面板/`!` 本地命令已完成；mention、审批、session picker 待补
+- [x] 推理强度：CLI / 环境变量 / TOML 默认值、运行时 `/model --effort`、TUI 档位提示及 resume/fork 恢复
+- [x] cwd 交互偏好：模型/Provider/route/effort 与权限 profile 按目录保存，CLI/env 临时覆盖，旧会话不覆盖最新目录选择
+- [x] `/model` 手动跨 Provider 切换：所有已配置模型候选、按需加载凭证、原子保存选择、恢复 Provider/route；自动多目标路由仍属 M5
 - [x] CJK/emoji、宽字符与 80x24 / 120x40 布局（PTY 冒烟通过）
 - [x] 上下文压缩：截断 → 丢弃 → 模型摘要（三级已完成）
 - [x] 会话 resume / fork（sessiond 启用时通过 IPC/租约）

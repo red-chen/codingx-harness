@@ -6,9 +6,20 @@
 
 1. 命令行参数
 2. 环境变量
-3. 项目配置 `<workspace>/.codingx/config.toml`
-4. 全局配置 `~/.codingx/config.toml`
-5. 内置默认值
+3. 当前 cwd 保存的交互偏好（模型/Provider/route/effort、权限 profile）
+4. 项目配置 `<workspace>/.codingx/config.toml`
+5. 全局配置 `~/.codingx/config.toml`
+6. 内置默认值
+
+### 按 cwd 记住交互设置
+
+通过 `/model` 修改的模型、Provider、route 和 effort，以及通过 `/permissions` 选择的权限 profile，会保存在 `$CODINGX_HOME/workspaces/<cwd-name>/`（默认 `~/.codingx/workspaces/`）中。同一目录新建会话、重启 CLI 或运行 exec 都会继承，`/clear` 不删除这些偏好；不同 cwd（包括子目录）各自独立，符号链接按真实路径归并。
+
+模型与权限分别写入 `model.json`、`permissions.json`，文件权限 0600，原子替换；多个 CLI 修改不同设置不会互相覆盖，同一设置最后一次写入生效。只保存选择值，不写凭证、端点、临时可写目录或会话审批授权。启动参数/环境变量只覆盖当次运行，不改目录默认值；`--yolo`、`--add-dir`、approval policy/reviewer 等启动选项不会自动持久化。
+
+恢复/分叉会话时，模型与 effort 的优先级为 CLI/env > cwd 偏好 > 会话记录 > TOML 默认；目录中新选择不会被旧会话覆盖。显式 model/provider/route 选项作为一组覆盖保存的目标，effort 独立覆盖。保存的 `default` 会继续使用服务端默认，不被 TOML 中的 effort 重新开启。
+
+保存目标引用的 Provider/route 或权限 profile 被删除时，告警并退回配置默认；损坏的偏好文件同样告警并忽略。会话变更成功但目录偏好写入失败时，当前会话保持新设置并明确告警，不能保证下次启动继承。需要恢复 TOML 默认时可删除对应 cwd 目录中的偏好文件。
 
 项目配置只允许覆盖**行为类**设置（模型、工具开关、MCP、联网），且权限相关设置只能收紧（M3 起强制执行）：受信任项目可以追加更窄的 Permission profile / 审批规则，但不能放宽全局权限或网络白名单。项目配置不允许覆盖凭证——避免从远程仓库克隆来的项目配置窃取本地密钥。凭证只从 `codingx login` 的 `auth.json` 或环境变量读取，不写入 `config.toml`。整个 `[sessiond]` 段与 `session.dir` / `retention_days` 是例外：只允许来自全局配置或环境变量，项目配置不得覆盖。`[provider.<id>]` 含端点与凭证，也只允许全局配置；项目配置可以定义/选择 routes，但只能引用全局 provider id。
 
@@ -21,6 +32,8 @@
 route = "default"            # 选择 route；也可用 --route / CODINGX_ROUTE
 max_output_tokens = 8192
 temperature = 0
+# 可选：low | medium | high | xhigh | max | default；省略时使用服务端默认
+# reasoning_effort = "high"
 # 上下文窗口上限，用于触发压缩；留空默认 1,000,000
 # 使用标准 200K 模型时显式改为 200000
 context_window = 1000000
@@ -178,6 +191,48 @@ S1 同时解析旧配置与新键：`[approval]` / `[sandbox]` 仍兼容，新�
 
 `provider.<id>.protocol` 默认 `anthropic-messages`，后续支持 `openai-responses`；协议只决定 wire 格式，`endpoint` 与 `api_key_env` 保持通用配置。
 
+## 推理强度
+
+参照 GPT 的 [reasoning effort](https://developers.openai.com/api/docs/guides/reasoning) 分档方式，当前支持 `low`、`medium`、`high`、`xhigh`、`max`。较低档位偏向速度与较少 token，较高档位允许更多推理；具体支持范围与效果由目标模型决定。`default` 表示不发送 effort 参数，使用服务端默认值，不等于关闭推理。
+
+```bash
+codingx --reasoning-effort high
+codingx --reasoning-effort medium exec "检查当前改动"
+CODINGX_REASONING_EFFORT=low codingx exec "解释这个函数"
+codingx --continue --reasoning-effort default
+```
+
+也可在全局或项目 `config.toml` 中设置：
+
+```toml
+[model]
+reasoning_effort = "high"
+```
+
+新会话优先级为 CLI > 环境变量 > cwd 偏好 > 项目配置 > 全局配置 > 服务端默认。恢复或分叉会话时，CLI/env > cwd 偏好 > 会话保存的选择（包括已清除的 default）> 配置文件。启动时选择的档位只记录到会话，交互中修改才更新 cwd 偏好。非法值在启动时以配置/参数错误拒绝。
+
+TUI 中输入 `/model` 打开两步选择面板：先从所有已配置 route target 中选择模型（或通过 Other 输入模型名），再选择 effort。模型项显示 `模型名 (Provider)`，例如 `glm-5.3 (zhipu)`、`deepseek-flash (deepseek)`；当前值排在首项，同一 Provider/model 去重。完成两步后一起保存，Esc 取消不会修改设置。候选来自启动时加载的本地配置，不代表服务端完整模型列表；修改配置后需重新启动 CLI。
+
+选择模型时一并切换其 Provider 和 route，按需读取该 Provider 的凭证；凭证缺失、不支持协议或会话保存失败时保留原设置。每次请求仍只使用一个明确目标，不启用自动 failover、weighted 或 round-robin。模型、Provider、route 和 effort 经 `model.changed` 保存，同时更新 cwd 偏好；显式 CLI/env 的 model/provider/route 优先于保存的目标。
+
+TUI 与 plain 均支持以下直接命令，下一次请求生效：
+
+```text
+/model --show                       查看当前模型和 effort
+/model <model>                      切换模型，保留 effort
+/model <provider>/<model>           明确选择 Provider 和模型
+/model <model> high                 同时设置模型和 effort
+/model <model> --effort high         同时设置模型和 effort（显式参数）
+/model --effort high                只修改 effort
+/model --effort default             清除 effort 覆盖
+```
+
+plain 模式下，无参数 `/model` 显示当前值和用法。TUI 底部显示如 `model-name (high)`；default 不额外显示档位。运行中的 turn 或本地命令结束后才能切换。
+
+直接输入模型名时，在已配置目标中查找对应 Provider；同名时优先当前 Provider，否则用 `provider/model` 消歧。未配置的自定义模型名沿用当前 Provider；`/model --effort` 只调整强度，保持已选目标。
+
+当前仅接通 Anthropic Messages，沿用 `output_config.effort`，需要端点和模型支持所选值；不会自动降档。OpenAI Responses 仍属后续 M4 范围。已有 `/model` 命令中的 `off`/`none`/`auto` 保持为 default 的兼容别名，不表示 GPT 的 `none` 推理模式；新启动参数和配置统一使用 `default`。
+
 ## Agent Harness hooks
 
 Hooks 是用户配置的生命周期命令，与 Git hooks 无关，只能写在全局 `~/.codingx/config.toml`；项目配置中的 `[[hooks]]` 会被忽略并告警。
@@ -252,6 +307,7 @@ args = ["-y", "@modelcontextprotocol/server-github"]
 | --- | --- |
 | `CODINGX_ROUTE` | 覆盖 route 名 |
 | `CODINGX_MODEL` | 覆盖目标 model |
+| `CODINGX_REASONING_EFFORT` | 推理强度：`low|medium|high|xhigh|max|default` |
 | `CODINGX_PROVIDER` | 在 route 内固定 Provider id |
 | `CODINGX_APPROVAL` | 覆盖审批模式 |
 | `CODINGX_HOME` | 覆盖 `~/.codingx` 目录 |
@@ -294,13 +350,22 @@ args = ["-y", "@modelcontextprotocol/server-github"]
 ├── logs/
 │   └── sessiond.log
 ├── sessions/
-│   ├── index.json       # 元数据缓存，可重建
-│   ├── 2026-10-24T15-20-01_550e8400-e29b-41d4-a716-446655440000.jsonl
-│   └── ...
+│   └── <cwd-name>/
+│       └── 2026-10-24T15-20-01_550e8400-e29b-41d4-a716-446655440000.jsonl
+├── input-history/
+│   └── <cwd-name>/       # 每个 cwd 最近 200 条输入
+├── workspaces/
+│   └── <cwd-name>/       # 模型和权限偏好
 └── tools/               # 自定义工具（需 allow_custom）
 ```
 
-rollout 文件为 append-only JSONL，每行一个事件，默认由 sessiond 单写者追加（`enabled = false` 的嵌入式模式除外）；`index.json` 是元数据缓存，删除后可从 JSONL 重建。清理策略：`retention_days` 之后由 sessiond 自动删除已结束 / 已中断会话，`codingx sessions prune` 可手动触发，活动会话永不清理。协议、租约与崩溃恢复见 [session-manager.md](session-manager.md)。
+cwd-name 将真实绝对 cwd 中的 `/` 替换为 `-`，例如 `/Users/red/workspace/codingx-harness` 对应 `-Users-red-workspace-codingx-harness`；子目录独立，符号链接归并。`session.dir` 指定存储根目录，新 rollout 写入其 `<cwd-name>/` 子目录；共享 sessiond 管理各目录，CLI 的 list/show/watch/prune、continue/resume/fork 和离线 log 仅操作当前 cwd。切换项目时使用 `--cd <目录>`。
+
+目录内的 `cwd.json` 记录归属；不同 cwd 转换后重名时追加 `--2`、`--3` 等后缀，长名称在 220 字节内截断后同样处理重名。输入历史、会话和目录偏好统一采用此命名；旧 SHA-256 目录仍可读取，新记录写入可读目录。
+
+旧版 sessions 根目录中的 rollout 仍按 `session.start.cwd` 归属读取，无需搬移或重写；旧全局 input-history 文件缺少 cwd，保留原文件但不导入项目历史。输入历史每个 cwd 独立裁剪到最近 200 条。
+
+rollout 文件为 append-only JSONL，每行一个事件，默认由 sessiond 单写者追加（`enabled = false` 的嵌入式模式除外）。`codingx sessions prune` 按 `retention_days` 清理当前 cwd 中符合条件的非活动会话；活动或仍有客户端占用的会话不会删除。协议、租约与崩溃恢复见 [session-manager.md](session-manager.md)。
 
 ## 命令行选项
 
@@ -309,6 +374,7 @@ codingx [options] [prompt]
 
       --route <name>        选择 route（默认取 [model] route）
   -m, --model <name>        覆盖目标模型名
+  --reasoning-effort <level> 推理强度：low|medium|high|xhigh|max|default
   -p, --provider <id>       在 route 内固定 Provider id
   -C, --cd <path>           指定工作目录
       --add-dir <DIR>       追加文件与 Shell 工具的可写目录（可重复）

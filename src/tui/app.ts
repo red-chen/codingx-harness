@@ -171,6 +171,7 @@ export function composeFrameWithCursor(state: TuiAppState, options: ComposeFrame
   renderComposer(layout.composer, frame, state.composer);
   renderMetaBar(layout.meta, frame, {
     model: state.session.model,
+    reasoningEffort: state.session.reasoningEffort,
     cwd: state.session.cwd,
     ...(state.session.home ? { home: state.session.home } : {}),
     ...(state.session.title ? { title: state.session.title } : {}),

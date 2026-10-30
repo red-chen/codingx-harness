@@ -1,4 +1,5 @@
 import type { TurnResult } from '../agent/index.js';
+import { REASONING_EFFORTS } from '../providers/types.js';
 import { SessionGrants, approvalPrefixFor } from '../policy/index.js';
 import type { ApprovalDecision, ApprovalRequest } from '../policy/types.js';
 import type { SessionHandle } from '../session/index.js';
@@ -12,7 +13,7 @@ import type { TuiApp, TuiCopyTarget } from '../tui/state/app.js';
 import type { UiCommand } from '../tui/state/commands.js';
 import { copyTextToClipboard } from '../util/clipboard.js';
 import { debugLog } from '../util/debug.js';
-import { describeModelSelection, parseModelCommand, type ModelSelection } from './model-command.js';
+import { describeModelSelection, describeModelUpdate, parseModelCommand, type ModelSelection, type ModelSelectionUpdate } from './model-command.js';
 import {
   localCommandAuditEvents,
   localCommandResultEvent,
@@ -22,8 +23,10 @@ import {
 } from './local-command.js';
 
 export interface TuiModelController {
+  /** Configured provider/model choices; strings are current-provider model names. */
+  list?(): readonly (string | ModelSelection)[];
   get(): ModelSelection;
-  set(selection: ModelSelection): Promise<void> | void;
+  set(selection: ModelSelection): Promise<ModelSelectionUpdate | void> | ModelSelectionUpdate | void;
 }
 
 export interface TuiPermissionController {
@@ -128,6 +131,7 @@ export class TuiSession {
     if (this.exiting) return;
     this.exiting = true;
     this.exitCode = code;
+    this.pendingAsk?.resolve(null);
     const pending = this.pendingApproval;
     if (pending !== undefined) pending.reject(abortError('Session exiting.'));
     this.active?.abort();
@@ -325,7 +329,7 @@ export class TuiSession {
     switch (command.type) {
       case 'submit':
         // TuiApp already appended the user cell before returning this command.
-        if (this.active !== undefined || this.localActive !== undefined) {
+        if (this.active !== undefined || this.localActive !== undefined || this.changingModel) {
           this.app.enqueue(command.text, true);
           this.render();
           return;
@@ -490,6 +494,10 @@ export class TuiSession {
 
   private handleModelCommand(line: string): void {
     const current = this.currentModelSelection();
+    if (line === '/model') {
+      void this.pickModelSelection(current);
+      return;
+    }
     const command = parseModelCommand(line, current);
     if (command.type === 'show') {
       this.app.addNotice(describeModelSelection(current));
@@ -502,20 +510,79 @@ export class TuiSession {
       return;
     }
     if (this.changingModel) return;
-    if (this.active !== undefined) {
-      this.app.addNotice('Cannot change model while a turn is running.', 'warning');
+    if (this.active !== undefined || this.localActive !== undefined) {
+      this.app.addNotice('Cannot change model while a turn is running or a local command is active.', 'warning');
       this.render();
       return;
     }
     void this.applyModelSelection(command.selection);
   }
 
+  private async pickModelSelection(current: ModelSelection): Promise<void> {
+    if (this.changingModel || this.clearing || this.changingPermission) return;
+    if (this.active !== undefined || this.localActive !== undefined) {
+      this.app.addNotice('Cannot change model while a turn is running or a local command is active.', 'warning');
+      this.render();
+      return;
+    }
+    this.changingModel = true;
+    try {
+      const models = new Map<string, ModelSelection>();
+      for (const value of [current, ...(this.model?.list?.() ?? [])]) {
+        const choice = typeof value === 'string' ? { model: value } : value;
+        const label = choice.provider ? choice.model + ' (' + choice.provider + ')' : choice.model;
+        if (!models.has(label)) models.set(label, choice);
+      }
+      const effort = current.reasoningEffort ?? 'default';
+      const efforts = [...new Set([effort, 'default', ...REASONING_EFFORTS])];
+      const answers = await this.ask([
+        {
+          id: 'model', header: 'Model',
+          question: 'Select a model, or enter a model name in Other. Current: ' + current.model,
+          options: [...models.keys()].map((label) => ({ label })), multiSelect: false,
+        },
+        {
+          id: 'effort', header: 'Effort',
+          question: 'Select reasoning effort. Current: ' + effort,
+          options: efforts.map((label) => ({
+            label,
+            ...(label === 'default' ? { description: 'Use the provider default' } : {}),
+          })), multiSelect: false,
+        },
+      ]);
+      if (answers === null || this.exiting || this.active !== undefined || this.localActive !== undefined) return;
+      const modelAnswer = answers.find((answer) => answer.id === 'model');
+      const effortAnswer = answers.find((answer) => answer.id === 'effort');
+      const chosen = modelAnswer?.custom?.trim() ? undefined : models.get(modelAnswer?.selected[0] ?? '');
+      const model = modelAnswer?.custom?.trim() || chosen?.model;
+      const selectedEffort = effortAnswer?.custom?.trim() || effortAnswer?.selected[0];
+      if (!model || /\s/u.test(model) || !selectedEffort || /\s/u.test(selectedEffort)) {
+        this.app.addNotice('Enter one model name and one effort level. Settings were not changed.', 'warning');
+        return;
+      }
+      const command = parseModelCommand('/model ' + model + ' ' + selectedEffort, current);
+      if (command.type === 'error') this.app.addNotice(command.message, 'warning');
+      else if (command.type === 'set') await this.applyModelSelection({
+        ...command.selection,
+        ...(chosen?.provider ? { provider: chosen.provider } : {}),
+        ...(chosen?.route ? { route: chosen.route } : {}),
+      });
+    } catch (error) {
+      this.app.addNotice('Failed to select model: ' + (error instanceof Error ? error.message : String(error)), 'error');
+    } finally {
+      this.changingModel = false;
+      this.render();
+      this.drainQueue();
+    }
+  }
+
   private async applyModelSelection(selection: ModelSelection): Promise<void> {
     this.changingModel = true;
     try {
-      await this.model?.set(selection);
-      this.app.setModel(selection.model, selection.reasoningEffort);
-      this.app.addNotice('Model updated.\n' + describeModelSelection(selection));
+      const applied: ModelSelectionUpdate = await this.model?.set(selection) ?? selection;
+      this.app.setModel(applied.model, applied.reasoningEffort);
+      this.app.addNotice(describeModelUpdate(applied));
+      if (applied.persistenceWarning) this.app.addNotice(applied.persistenceWarning, 'warning');
     } catch (error) {
       this.app.addNotice(
         'Failed to update model: ' + (error instanceof Error ? error.message : String(error)),
@@ -524,6 +591,7 @@ export class TuiSession {
     } finally {
       this.changingModel = false;
       this.render();
+      this.drainQueue();
     }
   }
 
@@ -597,7 +665,7 @@ export class TuiSession {
       this.handleLocalCommand(trimmed);
       return;
     }
-    if (this.app.status.state === 'working' || this.app.status.state === 'awaiting') {
+    if (this.app.status.state === 'working' || this.app.status.state === 'awaiting' || this.changingModel) {
       this.app.enqueue(text);
       this.render();
       return;
@@ -643,7 +711,7 @@ export class TuiSession {
 
   /** Run the next queued prompt once the turn/local command has settled. */
   private drainQueue(): void {
-    if (this.exiting || this.active !== undefined || this.localActive !== undefined) return;
+    if (this.exiting || this.active !== undefined || this.localActive !== undefined || this.changingModel) return;
     const queued = this.app.dequeue();
     if (queued === undefined) return;
     this.render();

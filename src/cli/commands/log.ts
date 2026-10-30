@@ -64,7 +64,8 @@ export function formatEvent(event: RolloutEvent): string {
       return (
         head +
         '  model=' + value(event, 'model') +
-        ' effort=' + (typeof event.reasoningEffort === 'string' ? event.reasoningEffort : 'default')
+        ' effort=' + (typeof event.reasoningEffort === 'string' ? event.reasoningEffort : 'default') +
+        (typeof event.provider === 'string' ? ' provider=' + event.provider : '')
       );
     case 'plan.updated': {
       const steps = Array.isArray(event.steps) ? event.steps : [];
@@ -98,7 +99,7 @@ export async function runLog(options: LogCommandOptions): Promise<number> {
   const env = options.env ?? process.env;
   const stdout = options.stdout ?? process.stdout;
   const loaded = await loadConfig({ cwd: options.cwd ?? process.cwd(), env });
-  const store = new EmbeddedSessionStore({ directory: loaded.config.session.dir });
+  const store = new EmbeddedSessionStore({ directory: loaded.config.session.dir, cwd: options.cwd ?? process.cwd() });
   const events = await store.replaySession(options.sessionId);
   if (options.json) {
     for (const event of events) stdout.write(JSON.stringify(event) + '\n');

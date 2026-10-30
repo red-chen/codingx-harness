@@ -3,6 +3,7 @@ import { chmod, lstat, mkdir, unlink } from 'node:fs/promises';
 import { createServer, connect } from 'node:net';
 import type { Server, Socket } from 'node:net';
 import path from 'node:path';
+import { canonicalizePath } from '../util/paths.js';
 import {
   METHOD,
   NOTIFICATION,
@@ -39,6 +40,7 @@ export interface SessiondServerOptions {
 interface PeerState {
   clientId: string;
   initialized: boolean;
+  cwd?: string;
   closed: boolean;
   clientName?: string;
   subscriptions: Subscription[];
@@ -235,6 +237,16 @@ export class SessiondServer {
     }
     const params = objectParams(rawParams);
 
+    if (state.cwd !== undefined && method.startsWith('session.')) {
+      if (method === METHOD.sessionCreate && await canonicalizePath(requireString(params, 'cwd')) !== state.cwd) {
+        throw new SessiondRpcError('INVALID_PARAMS', 'Session cwd does not match the current workspace.');
+      }
+      if (typeof params.sessionId === 'string') {
+        params.sessionId = await this.registry.resolveForCwd(params.sessionId, state.cwd);
+      }
+      if (method === METHOD.sessionList || method === METHOD.sessionPrune) params.cwd = state.cwd;
+    }
+
     switch (method) {
       case METHOD.daemonStatus:
         return this.daemonStatus();
@@ -363,6 +375,7 @@ export class SessiondServer {
       }
       case METHOD.sessionPrune: {
         const pruneParams: SessionPruneParams = {
+          ...(optionalString(params, 'cwd') ? { cwd: optionalString(params, 'cwd') } : {}),
           ...(optionalNumber(params, 'olderThanDays') === undefined ? {} : { olderThanDays: optionalNumber(params, 'olderThanDays') }),
           ...(params.dryRun === true ? { dryRun: true } : {}),
         };
@@ -399,6 +412,8 @@ export class SessiondServer {
       const name = (client as Record<string, unknown>).name;
       if (typeof name === 'string') state.clientName = name;
     }
+    const cwd = optionalString(params, 'cwd');
+    if (cwd !== undefined) state.cwd = await canonicalizePath(cwd);
     state.initialized = true;
     return {
       protocol: SESSIOND_PROTOCOL_VERSION,
@@ -407,6 +422,8 @@ export class SessiondServer {
       startedAt: this.startedAt,
       sessionCount: await this.registry.countSessions(),
       methods: SESSIOND_METHODS,
+      cwdIsolation: true,
+      workspaceLayout: 'readable-v1',
     };
   }
 

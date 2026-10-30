@@ -57,7 +57,7 @@ function contentLines(options: WelcomeCardOptions): string[] {
   return [
     '>_ ' + title + (label.length > 0 ? ' (' + label + ')' : ''),
     '',
-    'model:     ' + oneLine(options.model),
+    'model:     ' + oneLine(options.model) + ' (/model to change model)',
     'directory: ' + oneLine(tildifyPath(options.cwd, options.home)),
     'session:   ' + oneLine(options.sessionId ?? 'unknown'),
   ];
@@ -96,10 +96,23 @@ export function welcomeCardStyledLines(options: WelcomeCardOptions, width: numbe
     }
     const inner = line.slice(1, -1);
     const style = index === 1 ? ACCENT_STYLE : PLAIN_STYLE;
+    const segments: StyledTextSegment[] = [{ text: inner, style }];
+    if (index === 3) {
+      const prefix = ' ' + oneLine('model: ' + options.model) + ' (';
+      const commandStart = prefix.length;
+      if (inner.startsWith(prefix) && inner.slice(commandStart, commandStart + 6) === '/model') {
+        segments.splice(0, 1,
+          { text: inner.slice(0, commandStart - 1), style: PLAIN_STYLE },
+          { text: '(', style: MUTED_STYLE },
+          { text: '/model', style: ACCENT_STYLE },
+          { text: inner.slice(commandStart + 6), style: MUTED_STYLE },
+        );
+      }
+    }
     return {
       segments: [
         { text: line.slice(0, 1), style: BORDER_STYLE },
-        { text: inner, style },
+        ...segments,
         { text: line.slice(-1), style: BORDER_STYLE },
       ],
     };

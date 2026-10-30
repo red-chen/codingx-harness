@@ -211,8 +211,17 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
   }
 
   const routeName = getSelectedRouteName(loaded);
-  const route = getSelectedRoute(loaded);
+  const configuredRoute = getSelectedRoute(loaded);
+  const savedModel = loaded.overrides.model || loaded.overrides.provider || loaded.overrides.route
+    ? undefined : loaded.workspacePreferences?.model;
+  const route = savedModel
+    ? { ...configuredRoute, targets: [{ provider: savedModel.provider, model: savedModel.model, weight: 1 }] }
+    : configuredRoute;
   const pins: RouterPins = {};
+  if (savedModel) {
+    pins.provider = savedModel.provider;
+    pins.model = savedModel.model;
+  }
   if (loaded.overrides.provider) pins.provider = loaded.overrides.provider;
   if (loaded.overrides.model) pins.model = loaded.overrides.model;
   const target = selectRouteTarget(routeName, route, pins);
@@ -273,6 +282,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
       autostart: loaded.config.sessiond.autostart,
       cliVersion: VERSION,
       env,
+      cwd,
     });
     store = new SessiondStore({ client: ensured.client });
     if (ensured.replacedStale === true) {
@@ -281,7 +291,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
       );
     }
   } else {
-    store = new EmbeddedSessionStore({ directory: loaded.config.session.dir });
+    store = new EmbeddedSessionStore({ directory: loaded.config.session.dir, cwd });
   }
 
   return {

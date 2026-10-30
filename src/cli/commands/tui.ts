@@ -1,5 +1,5 @@
+import { canonicalizePath } from '../../util/paths.js';
 import { InputHistory } from '../../ui/input-history.js';
-import path from 'node:path';
 import { buildSystemPrompt, latestModelSelection, rebuildHistory, restoreReadTracker } from '../../agent/index.js';
 import { DEFAULT_CONTEXT_WINDOW, type Message, type ReasoningEffort, type TokenUsage } from '../../providers/types.js';
 import {
@@ -19,19 +19,22 @@ import { VERSION } from '../../version.js';
 import type { InteractiveCommandOptions } from './interactive.js';
 import { bootstrap } from '../bootstrap.js';
 import { runLocalCommand } from '../local-command.js';
-import { createLoop, DEFAULT_SHELL_TIMEOUT_MS } from '../runtime.js';
+import { createLoop, DEFAULT_SHELL_TIMEOUT_MS, initializeReasoningEffort } from '../runtime.js';
 import { TuiSession, type TuiPermissionController } from '../tui-session.js';
+import { changeModelSelection, configuredModels, currentModelSelection, restoreModelSelection } from '../model-selection.js';
+import { WorkspacePreferencesStore } from '../../config/workspace-preferences.js';
 
 async function findLatestResumable(
   store: SessionStoreApi,
   cwd: string,
 ): Promise<SessionSummary | undefined> {
-  const resolved = path.resolve(cwd);
+  const resolved = await canonicalizePath(cwd);
   const sessions = await store.listSessions();
+  const canonicalCwds = await Promise.all(sessions.map((session) => canonicalizePath(session.cwd)));
   return sessions.find(
-    (session) =>
+    (session, index) =>
       (session.status === 'idle' || session.status === 'interrupted') &&
-      path.resolve(session.cwd) === resolved,
+      canonicalCwds[index] === resolved,
   );
 }
 
@@ -110,6 +113,8 @@ async function replayResumed(
   usage?: TokenUsage;
   transcript?: ReturnType<typeof restoreTranscript>;
   model?: string;
+  provider?: string;
+  route?: string;
   reasoningEffort?: ReasoningEffort;
 }> {
   const events = await session.replay();
@@ -134,7 +139,7 @@ async function replayResumed(
   stderr.write(
     'resumed session ' + session.id + ' (' + rebuilt.messages.length + ' message(s), cwd ' + session.meta.cwd + ')\n',
   );
-  if (path.resolve(session.meta.cwd) !== path.resolve(app.cwd)) {
+  if (await canonicalizePath(session.meta.cwd) !== await canonicalizePath(app.cwd)) {
     stderr.write(
       'warning: session cwd differs from the current workspace; relative paths in history may not resolve.\n',
     );
@@ -152,6 +157,8 @@ async function replayResumed(
     ...(usage ? { usage } : {}),
     ...(transcript.length > 0 ? { transcript } : {}),
     ...(modelSelection.model ? { model: modelSelection.model } : {}),
+    ...(modelSelection.provider ? { provider: modelSelection.provider } : {}),
+    ...(modelSelection.route ? { route: modelSelection.route } : {}),
     ...(modelSelection.reasoningEffort ? { reasoningEffort: modelSelection.reasoningEffort } : {}),
   };
 }
@@ -225,7 +232,7 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
   for (const warning of app.warnings) stderr.write('warning: ' + warning + '\n');
 
   let historyWarning = false;
-  const inputHistory = new InputHistory(app.codingxHome, () => { historyWarning = true; });
+  const inputHistory = await InputHistory.open(app.codingxHome, app.cwd, () => { historyWarning = true; });
   const savedInputHistory = await inputHistory.load();
   let session: SessionHandle | undefined;
   try {
@@ -236,7 +243,8 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
     const resumed = opened.resumed
       ? await replayResumed(app, session, readTracker, stderr)
       : {};
-    if (resumed.model && !options.model) app.router.setModel(resumed.model);
+    await restoreModelSelection(app, resumed, env);
+    const reasoningEffort = await initializeReasoningEffort(app, session, resumed);
 
     const startHooks = await app.hooks.run(
       'session_start',
@@ -259,7 +267,7 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
       version: VERSION,
       width: process.stdout.columns ?? 80,
       height: process.stdout.rows ?? 24,
-      resumed,
+      resumed: { ...resumed, reasoningEffort },
       inputHistory: savedInputHistory,
       onInputHistory: (text) => inputHistory.append(text),
     });
@@ -277,7 +285,7 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
         readTracker,
         ...(resumed.initialMessages ? { initialMessages: resumed.initialMessages } : {}),
         ...(resumed.plan ? { initialPlan: resumed.plan } : {}),
-        ...(resumed.reasoningEffort ? { reasoningEffort: resumed.reasoningEffort } : {}),
+        reasoningEffort,
         ask: (questions, signal) =>
           controller === undefined ? Promise.resolve(null) : controller.ask(questions, signal),
         approve: (request, signal) =>
@@ -324,15 +332,15 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
           }
         }
         const previous = app.policy.profileName;
-        app.policy = policy;
-        app.yolo = policy.yolo;
-        app.config.permissions = { ...app.config.permissions, defaultProfile: name };
         await activeSession.append({
           type: 'profile.changed',
           from: previous,
           to: name,
           source: 'tui',
         });
+        app.policy = policy;
+        app.yolo = policy.yolo;
+        app.config.permissions = { ...app.config.permissions, defaultProfile: name };
         loop.setPolicy(policy);
         const prompt = buildSystemPrompt(app.snapshot, {
           skills: app.skills.summaries(),
@@ -347,6 +355,11 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
           : prompt;
         app.systemPrompt = withHookContext;
         loop.setSystemPrompt(withHookContext);
+        try {
+          await (await WorkspacePreferencesStore.open(app.codingxHome, app.cwd)).savePermissionProfile(name);
+        } catch {
+          tuiApp.addNotice('Permission profile changed for this session, but cwd preferences could not be saved.', 'warning');
+        }
       },
     };
 
@@ -372,20 +385,9 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
         }),
       permissions,
       model: {
-        get: () => ({
-          model: app.router.selection.model,
-          ...(loop.reasoningEffort ? { reasoningEffort: loop.reasoningEffort } : {}),
-        }),
-        set: async (selection) => {
-          await activeSession.append({
-            type: 'model.changed',
-            model: selection.model,
-            ...(selection.reasoningEffort ? { reasoningEffort: selection.reasoningEffort } : {}),
-          });
-          app.router.setModel(selection.model);
-          loop.setModel(selection.model);
-          loop.setReasoningEffort(selection.reasoningEffort);
-        },
+        list: () => configuredModels(app.config),
+        get: () => currentModelSelection(app, loop.reasoningEffort),
+        set: (selection) => changeModelSelection(app, activeSession, loop, selection, env),
       },
       onClear: () => loop.clearHistory(),
       ...(options.initialPrompt ? { initialPrompt: options.initialPrompt } : {}),

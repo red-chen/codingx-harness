@@ -206,6 +206,12 @@ export class AgentLoop {
     this.options.reasoningEffort = effort;
   }
 
+  /** Replace the explicitly selected provider between turns. */
+  setRouter(router: AgentModelClient, model: string): void {
+    this.options.router = router;
+    this.options.model = model;
+  }
+
   /** Swap the active permission runtime after a /permissions change. */
   setPolicy(policy: PolicyRuntime): void {
     this.options.policy = policy;

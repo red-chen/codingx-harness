@@ -154,8 +154,47 @@ Wave F（sessiond）依赖 A 的续接语义，可与 D/E 并行
 
 ## 本轮结果（`/model`）
 
+### cwd 交互偏好持久化
+
+- `/model` 的模型、Provider、route、effort 和 `/permissions` 的权限 profile 保存到 `$CODINGX_HOME/workspaces/<sha256(real cwd)>/`；每个设置组独立原子写入，目录 0700、文件 0600。
+- 启动读取 cwd 默认，优先级 CLI/env > cwd 偏好 > 会话恢复值 > TOML；显式启动覆盖不写回偏好，`default` 保留清除 effort 的语义，`/clear` 不删除偏好。
+- Provider/route/profile 引用失效或文件损坏时告警并回退配置；会话变更已应用但目录保存失败时明确告警，保持当前 UI/Agent/rollout 一致。
+- 验收覆盖同目录新会话、不同 cwd 与符号链接、临时覆盖、旧会话恢复、跨 Provider 凭证选择、自定义模型、并行写入不同设置组以及保存失败。
+
+### 模型面板后的队列卡住与 MetaBar 截断修复
+
+- 本地 `/model`、`/permissions` 面板记录打开前的执行状态：空闲时打开，关闭后恢复 idle；turn 中的问题/审批关闭后恢复 working，重复清理不会虚构运行中的 turn。
+- 模型选择保存期间的输入暂存队列，成功或失败后消费；覆盖确认、取消、保存失败、权限面板及快速连续输入的回归路径。
+- MetaBar 不再把模型限制为行宽的 25%；优先显示完整模型名和 effort，目录/标题使用剩余空间，只有模型与 effort 超过整行时才裁剪；覆盖 40/80/120 列及宽字符。
+- 验证：typecheck、61 个文件 / 740 项测试通过；包括选择后的下一条消息实际启动 turn、保存期间的队列恢复及真实运行中问题/审批的状态保持。
+
+### 跨 Provider 手动模型切换修复
+
+范围：`/model` 列出所有已配置的 route target，并随模型选择切换对应 Provider。每次请求仍使用一个明确目标；自动 failover、weighted、round-robin 保持 M5 边界。
+
+任务与验收：
+
+- [x] 统一候选解析，包含 provider/model/route；同名模型在面板显示 Provider，可用 `provider/model` 明确指定。
+- [x] 选择时按需加载目标 Provider 凭证并创建客户端；凭证加载或会话保存失败时保持原设置，cwd 偏好保存失败时保留本次变更并告警，凭证不进入 rollout。
+- [x] TUI/plain 共用切换链路；`model.changed` 保存 Provider/route，resume/fork 恢复实际请求目标。
+- [x] 使用两个本地假 SSE 端点覆盖模型列表、切换、effort、恢复和失败处理；typecheck 与 61 个文件 / 728 项测试通过。
+
 - 测试：52 个文件、564 项全部通过（typecheck 通过）。
-- **`/model`**：`/model` 查看；`/model <model>` 切模型并保留 effort；`/model <model> <effort>` 同时设置；`/model --effort <level>` 只改 effort；`default`/`off`/`none`/`auto` 清除覆盖。TUI 与 `--plain` 均支持，turn 运行中拒绝修改；TUI 通过 notice 显示模型与 effort，meta 行固定只有 model · cwd · title。
+- **`/model`**：TUI 无参数时打开模型 → effort 两步选择面板（所有 Provider 的配置候选 + 自定义模型名，取消不修改）；plain 无参数显示当前值及用法。`/model --show` 查看；`/model <model>` 切模型并保留 effort；`/model <model> <effort>` 或 `/model <model> --effort <level>` 同时设置；`/model --effort <level>` 只改 effort；`default`/`off`/`none`/`auto` 清除覆盖。TUI 与 `--plain` 均支持直接命令，运行中的 turn/本地命令期间拒绝修改；TUI 通过 notice 显示模型与 effort，meta 行在模型名旁显示选中的档位。
+- **启动推理强度**：`--reasoning-effort` / `CODINGX_REASONING_EFFORT` / `[model].reasoning_effort` 支持 `low|medium|high|xhigh|max|default`；exec/plain/TUI 共用解析与请求链路。选择经 SessionStore 保存，resume/fork 时显式 CLI/env 优先于保存值，保存值优先于配置默认；保存的 default 不会被配置重新开启。
+- **启动推理强度验收（2026-10-30）**：typecheck、60 个测试文件 / 717 项测试、build 均通过；本地假 SSE 覆盖各档位请求、default 不发送参数、无效输入拒绝、配置分层、resume 覆盖及 fork 恢复。
 - **请求链路**：`ModelRequest.reasoningEffort` 由 `buildModelRequest` 透传；Anthropic Messages 映射为 `output_config.effort`（不发送时使用 provider 默认）。`AgentLoop.setModel` 同步更新 `ProviderRouter.selection`，下一 turn 与压缩摘要立即使用新模型。
-- **持久化与 resume**：每次变更写入 `model.changed`（含 model，可选 reasoningEffort）；`latestModelSelection` 在 TUI/plain 的 resume 前恢复模型与 effort；`codingx log` 可读该事件。
+- **持久化与 resume**：每次变更写入 `model.changed`（含 model/provider/route，可选 reasoningEffort）；`latestModelSelection` 在 TUI/plain 的 resume 前恢复模型、Provider、route 与 effort；`codingx log` 可读该事件。
 - 新增测试：`/model` 解析、TUI/plain 命令与运行中拒绝、provider 请求体、router/AgentLoop 切换、resume 后请求恢复、模型/effort 状态与历史解析。
+
+
+## cwd 隔离（2026-10-30）
+
+- [x] 输入历史和新会话分别写入 `input-history/<cwd-name>/` 与 `sessions/<cwd-name>/`，真实 cwd 的路径分隔符替换为 `-` 作为可读名称；每个 cwd 独立保留 200 条输入。
+- [x] 嵌入式 SessionStore 与共享 sessiond 的 CLI 连接均限制当前 cwd，覆盖列表、continue/resume/fork、log、show/watch 与 prune，拒绝其他目录的显式 ID。
+- [x] 旧平铺 rollout 按 header.cwd 读取；旧全局输入历史不自动导入。子目录独立，符号链接共享。
+- [x] sessiond 握手声明 cwd 隔离能力；旧 daemon 走现有空闲替换流程，持有租约时拒绝自动替换。
+- 验收：typecheck、62 个测试文件 / 759 项测试、build 和 CLI 版本冒烟均通过；覆盖 cwd 隔离、旧数据、符号链接、跨目录 ID 拒绝、prune 范围及旧 daemon 替换。
+
+- 可读 cwd 目录：输入历史、会话、目录偏好统一使用 `-Users-red-workspace-codingx-harness` 格式；旧哈希目录兼容读取，归属标记与编号后缀防止重名混用，sessiond 握手检查新布局能力。
+- 可读目录验收：typecheck、63 个文件 / 764 项测试、build 与 CLI 版本冒烟通过；新增覆盖可读名称、长 Unicode 路径、并发重名隔离和旧哈希数据兼容。

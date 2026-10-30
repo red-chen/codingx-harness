@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { CodingxError, SessionBusyError, SessionError } from '../util/errors.js';
 import { generateEventId, generateSessionId, resolveSessionId, sessionFileName } from '../util/ids.js';
 import { redactDeep } from '../util/redact.js';
+import { canonicalizePath } from '../util/paths.js';
+import { legacyWorkspaceKey, workspaceDirectory } from '../util/workspace.js';
 import {
   deriveSessionStatus,
   metaFromHeader,
@@ -463,11 +465,14 @@ class EmbeddedSessionHandle implements SessionHandle {
 export interface SessionStoreOptions {
   /** Absolute session directory. */
   directory: string;
+  /** Restrict all lookups to this cwd; omitted for the shared daemon backend. */
+  cwd?: string;
 }
 
 /** Process-local store with a single-writer file lock. Replaced by sessiond in M2. */
 export class EmbeddedSessionStore {
   readonly directory: string;
+  private readonly cwd: Promise<string> | undefined;
   private readonly summaryCache = new Map<
     string,
     { size: number; mtimeMs: number; summary: SessionSummary }
@@ -475,14 +480,18 @@ export class EmbeddedSessionStore {
 
   constructor(options: SessionStoreOptions) {
     this.directory = path.resolve(options.directory);
+    this.cwd = options.cwd === undefined ? undefined : canonicalizePath(options.cwd);
   }
 
   async createSession(options: CreateSessionOptions): Promise<SessionHandle> {
-    await ensureSessionDir(this.directory);
+    const cwd = await canonicalizePath(options.cwd);
+    if (this.cwd && cwd !== await this.cwd) throw new SessionError('Session cwd does not match the current workspace.');
+    const directory = await workspaceDirectory(this.directory, cwd, true);
+    await ensureSessionDir(directory);
 
     for (let attempt = 0; attempt < 5; attempt++) {
       const id = generateSessionId();
-      const filePath = path.join(this.directory, sessionFileName(id));
+      const filePath = path.join(directory, sessionFileName(id));
       let lock: LockHandle | undefined;
       let fileHandle: FileHandle | undefined;
       let created = false;
@@ -708,24 +717,49 @@ export class EmbeddedSessionStore {
   }
 
   private async sessionFiles(): Promise<Array<{ id: string; filePath: string }>> {
+    const cwd = await this.cwd;
+    const keys = cwd === undefined ? undefined : [
+      path.basename(await workspaceDirectory(this.directory, cwd)), await legacyWorkspaceKey(cwd),
+    ];
+    const files: Array<{ id: string; filePath: string }> = [];
+    await this.collectSessionFiles(this.directory, files, keys, cwd);
+    return files;
+  }
+
+  private async collectSessionFiles(
+    directory: string,
+    files: Array<{ id: string; filePath: string }>,
+    keys?: readonly string[],
+    cwd?: string,
+    nested = false,
+  ): Promise<void> {
     let entries;
     try {
-      entries = await readdir(this.directory, { withFileTypes: true });
+      entries = await readdir(directory, { withFileTypes: true });
     } catch (error) {
-      if (isErrno(error, 'ENOENT')) return [];
+      if (isErrno(error, 'ENOENT')) return;
       throw new SessionError('Cannot list session directory ' + this.directory + ': ' + errorMessage(error), {
         cause: error,
       });
     }
-    const files: Array<{ id: string; filePath: string }> = [];
     for (const entry of entries) {
+      if (!nested && entry.isDirectory() && (entry.name.startsWith('-') || /^[a-f0-9]{64}$/u.test(entry.name)) &&
+        (keys === undefined || keys.includes(entry.name))) {
+        await this.collectSessionFiles(path.join(directory, entry.name), files, keys, cwd, true);
+      }
       if (!entry.isFile()) continue;
       const match = SESSION_FILE_RE.exec(entry.name);
       if (!match) continue;
       const id = match[2];
       if (!id) continue;
-      files.push({ id, filePath: path.join(this.directory, entry.name) });
+      const filePath = path.join(directory, entry.name);
+      if (cwd !== undefined) {
+        try {
+          const loaded = await loadSessionFile(filePath);
+          if (await canonicalizePath(loaded.meta.cwd) !== cwd) continue;
+        } catch { continue; }
+      }
+      files.push({ id, filePath });
     }
-    return files;
   }
 }

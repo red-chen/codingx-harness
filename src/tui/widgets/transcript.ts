@@ -316,6 +316,16 @@ function clockTime(timestamp: number): string {
   return pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds());
 }
 
+/** Average output throughput over LLM request time, including time to first token. */
+function outputTokenRate(cell: TurnSummaryCell): string {
+  const tokens = cell.usage.outputTokens;
+  const seconds = cell.llmDurationMs / 1000;
+  const rate = tokens / seconds;
+  if (cell.outcome !== 'done' || !Number.isFinite(tokens) || tokens < 0 ||
+    !Number.isFinite(seconds) || seconds <= 0 || !Number.isFinite(rate)) return '-- tok/s';
+  return rate.toFixed(1) + ' tok/s';
+}
+
 export function buildTurnSummaryLines(cell: TurnSummaryCell, width: number): StyledTextLine[] {
   const icon = cell.outcome === 'done' ? '✓' : cell.outcome === 'aborted' ? '!' : '✗';
   const style = cell.outcome === 'done' ? SUCCESS : cell.outcome === 'aborted' ? WARNING : ERROR;
@@ -323,7 +333,8 @@ export function buildTurnSummaryLines(cell: TurnSummaryCell, width: number): Sty
     + ' (L' + formatElapsed(cell.llmDurationMs) + '/T' + formatElapsed(cell.toolDurationMs) + ')'
     + ' · ↑' + formatTokenCount(cell.usage.inputTokens)
     + ' ↓' + formatTokenCount(cell.usage.outputTokens)
-    + ' C' + formatTokenCount(cell.usage.cacheReadTokens + cell.usage.cacheCreationTokens);
+    + ' C' + formatTokenCount(cell.usage.cacheReadTokens + cell.usage.cacheCreationTokens)
+    + ' · ' + outputTokenRate(cell);
   return wrapText(summary, Math.max(1, width - 4)).map((text, index) => ({
     segments: [
       { text: '  ', style: MUTED },

@@ -1,4 +1,5 @@
-import { Command, CommanderError } from 'commander';
+import { Command, CommanderError, Option } from 'commander';
+import { REASONING_EFFORTS } from '../providers/types.js';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { ConfigOverrides } from '../config/index.js';
@@ -38,8 +39,8 @@ function collectDir(value: string, previous: string[] | undefined): string[] {
 const SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
 const APPROVAL_POLICIES = new Set(['on-request', 'never']);
 
-/** Translate the permission-related CLI flags into config overrides. */
-function permissionOverrides(options: Record<string, unknown>): ConfigOverrides {
+/** Translate CLI settings into config overrides. */
+function configOverrides(options: Record<string, unknown>): ConfigOverrides {
   const yolo = options.yolo === true || options.allowDangerouslySkipPermissions === true;
   const sandbox = typeof options.sandbox === 'string' ? options.sandbox : undefined;
   const approval = typeof options.askForApproval === 'string' ? options.askForApproval : undefined;
@@ -64,6 +65,9 @@ function permissionOverrides(options: Record<string, unknown>): ConfigOverrides 
   }
 
   const overrides: ConfigOverrides = {};
+  if (options.reasoningEffort !== undefined) {
+    overrides.reasoningEffort = options.reasoningEffort as ConfigOverrides['reasoningEffort'];
+  }
   if (yolo) overrides.dangerouslyBypass = true;
   if (sandbox !== undefined) overrides.sandboxMode = sandbox as NonNullable<ConfigOverrides['sandboxMode']>;
   if (approval !== undefined) {
@@ -109,6 +113,8 @@ export async function runCli(argv: string[], io: Partial<CliIo> = {}): Promise<n
     .option('--full-auto', 'compatibility preset: :workspace + auto_review (auto review not implemented yet)')
     .option('--route <name>', 'select a configured provider route')
     .option('-m, --model <name>', 'override the target model')
+    .addOption(new Option('--reasoning-effort <level>', 'set reasoning intensity (default uses the provider default)')
+      .choices([...REASONING_EFFORTS, 'default']))
     .option('-p, --provider <id>', 'pin a provider inside the selected route')
     .option('--json', 'emit machine-readable JSON Lines on stdout')
     .option('--plain', 'line-oriented plain text output')
@@ -125,7 +131,7 @@ export async function runCli(argv: string[], io: Partial<CliIo> = {}): Promise<n
       if (resumeModes > 1) throw new ConfigError('Use only one of --continue, --resume or --fork.');
       const cwd = await resolveCwd(options.cd as string | undefined);
       const addDirs = (options.addDir as string[] | undefined) ?? [];
-      const cli = permissionOverrides(options as Record<string, unknown>);
+      const cli = configOverrides(options as Record<string, unknown>);
       const initialPrompt = promptParts?.join(' ');
       exitCode = await runInteractive({
         cwd,
@@ -168,7 +174,7 @@ export async function runCli(argv: string[], io: Partial<CliIo> = {}): Promise<n
       }
       const cwd = await resolveCwd(options.cd as string | undefined);
       const addDirs = (options.addDir as string[] | undefined) ?? [];
-      const cli = permissionOverrides(options as Record<string, unknown>);
+      const cli = configOverrides(options as Record<string, unknown>);
       exitCode = await runExec({
         prompt: promptParts.join(' '),
         cwd,

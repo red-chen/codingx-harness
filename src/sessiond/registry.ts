@@ -9,6 +9,7 @@ import {
   type SessionSummary,
 } from '../session/index.js';
 import { resolveSessionId } from '../util/ids.js';
+import { canonicalizePath } from '../util/paths.js';
 import type {
   JsonRpcNotification,
   SessionAppendParams,
@@ -475,7 +476,7 @@ export class SessiondRegistry {
       const cutoff = Date.now() - days * 86_400_000;
       const pruned: string[] = [];
       let skipped = 0;
-      for (const summary of await this.store.listSessions()) {
+      for (const summary of await this.summariesForCwd(params.cwd)) {
         const record = this.records.get(summary.id);
         const status = record?.status ?? summary.status;
         const updated = Date.parse(summary.updatedAt);
@@ -512,9 +513,8 @@ export class SessiondRegistry {
 
   async list(params: SessionListParams = {}): Promise<SessionListResult> {
     return this.runExclusive(async () => {
-      const summaries = await this.store.listSessions();
+      const summaries = await this.summariesForCwd(params.cwd);
       const filtered = summaries.filter((summary) => {
-        if (params.cwd && summary.cwd !== params.cwd) return false;
         const record = this.records.get(summary.id);
         const status = record?.status ?? summary.status;
         return params.status === undefined || params.status === status;
@@ -550,6 +550,31 @@ export class SessiondRegistry {
             }
           : {}),
       };
+    });
+  }
+
+  private async summariesForCwd(cwd?: string): Promise<SessionSummary[]> {
+    const summaries = await this.store.listSessions();
+    if (cwd === undefined) return summaries;
+    const canonical = await canonicalizePath(cwd);
+    const matches = await Promise.all(summaries.map(async (summary) =>
+      await canonicalizePath(summary.cwd) === canonical));
+    return summaries.filter((_, index) => matches[index]);
+  }
+
+  async resolveForCwd(idOrPrefix: string, cwd: string): Promise<string> {
+    return this.runExclusive(async () => {
+      const record = this.records.get(idOrPrefix);
+      if (record) {
+        if (await canonicalizePath(record.cwd) !== await canonicalizePath(cwd)) throw notFound(idOrPrefix);
+        return record.id;
+      }
+      const summaries = await this.summariesForCwd(cwd);
+      try {
+        return resolveSessionId(idOrPrefix, summaries.map((summary) => summary.id));
+      } catch {
+        throw notFound(idOrPrefix);
+      }
     });
   }
 

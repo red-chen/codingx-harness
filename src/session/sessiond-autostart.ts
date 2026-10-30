@@ -8,6 +8,7 @@ import { SessiondClient } from './sessiond-client.js';
 
 export interface EnsureSessiondOptions {
   socketPath: string;
+  cwd?: string;
   sessionDir: string;
   idleTimeoutSeconds: number;
   autostart: boolean;
@@ -92,12 +93,12 @@ async function stopOutdatedSessiond(
   }
 }
 
-async function waitForSessiond(socketPath: string, timeoutMs: number): Promise<SessiondClient> {
+async function waitForSessiond(socketPath: string, timeoutMs: number, cwd?: string): Promise<SessiondClient> {
   const deadline = Date.now() + timeoutMs;
   let lastError: Error | undefined;
   for (;;) {
     try {
-      return await SessiondClient.connect({ socketPath, connectTimeoutMs: 400 });
+      return await SessiondClient.connect({ socketPath, connectTimeoutMs: 400, ...(cwd === undefined ? {} : { cwd }) });
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       if (Date.now() >= deadline) break;
@@ -121,10 +122,13 @@ export async function ensureSessiond(options: EnsureSessiondOptions): Promise<En
   try {
     const client = await SessiondClient.connect({
       socketPath: options.socketPath,
+      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
       connectTimeoutMs: 500,
       ...(options.cliVersion ? { clientVersion: options.cliVersion } : {}),
     });
     const missing = client.missingMethods(SESSIOND_METHODS);
+    if (!client.cwdIsolation) missing.push('cwd isolation');
+    if (!client.readableWorkspaces) missing.push('readable cwd directories');
     if (missing.length === 0) return { client, started: false };
     outdated = { client, missing };
   } catch {
@@ -180,8 +184,10 @@ export async function ensureSessiond(options: EnsureSessiondOptions): Promise<En
     child.unref();
   }
 
-  const client = await waitForSessiond(options.socketPath, 8_000);
+  const client = await waitForSessiond(options.socketPath, 8_000, options.cwd);
   const missing = client.missingMethods(SESSIOND_METHODS);
+  if (!client.cwdIsolation) missing.push('cwd isolation');
+  if (!client.readableWorkspaces) missing.push('readable cwd directories');
   if (missing.length > 0) {
     client.close();
     throw new SessionError(

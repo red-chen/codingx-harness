@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { colorsEqual, computeFrameLayout, TuiApp, TUI_COLORS } from '../src/tui/index.js';
 import type { CellBuffer } from '../src/tui/index.js';
+import { displayWidth } from '../src/tui/text/index.js';
+import { metaText } from '../src/tui/widgets/meta.js';
 
 function key(code: string, text?: string) {
   return {
@@ -98,16 +100,18 @@ describe('TUI bottom surfaces', () => {
     expect(meta).toContain('Fix parser regression');
   });
 
-  it('shows only model, cwd and title in the meta row', () => {
+  it('shows the selected effort beside the model and clears it with default', () => {
     const app = makeApp('Task');
     app.setModel('glm-5.3', 'high');
     app.setPermission(':read-only', 'on-request');
     const layout = computeFrameLayout(app.state, 80, 24);
     const meta = rowText(app.renderFrame(), layout.meta.y);
-    expect(meta).toBe('glm-5.3 · /tmp/work · Task');
+    expect(meta).toBe('glm-5.3 (high) · /tmp/work · Task');
     expect(meta).not.toContain('effort');
     expect(meta).not.toContain('profile');
     expect(meta).not.toContain('approval');
+    app.setModel('glm-5.3');
+    expect(rowText(app.renderFrame(), layout.meta.y)).toBe('glm-5.3 · /tmp/work · Task');
   });
 
   it('derives the title from the first submitted prompt and keeps it on session.info', () => {
@@ -126,6 +130,32 @@ describe('TUI bottom surfaces', () => {
     type(app, 'second message');
     app.handleKey(key('enter'));
     expect(app.state.session.title).toBe('Please fix the parser bug');
+  });
+
+  it.each([40, 80, 120])('prioritizes the full model and effort at %i columns', (width) => {
+    const model = 'deepseek-flash-preview-2026';
+    const session = { sessionId: 's1', model, reasoningEffort: 'high' as const,
+      cwd: '/Users/red/workspace/codingx-harness', title: 'Diagnose the queue regression' };
+    const app = new TuiApp({ session, version: 'test', width, height: 24 });
+    const layout = computeFrameLayout(app.state, width, 24);
+    const text = rowText(app.renderFrame(), layout.meta.y);
+    expect(text).toContain(model + ' (high)');
+    expect(displayWidth(text)).toBeLessThanOrEqual(width);
+    expect(text).toBe(metaText(session, width));
+    expect(text.endsWith(' ·')).toBe(false);
+  });
+
+  it('only clips the model when it exceeds the whole row and preserves the effort', () => {
+    const session = { sessionId: 's1', model: '模型'.repeat(30), reasoningEffort: 'xhigh' as const,
+      cwd: '/tmp/work', title: 'Task' };
+    const app = new TuiApp({ session, version: 'test', width: 40, height: 24 });
+    const layout = computeFrameLayout(app.state, 40, 24);
+    const text = rowText(app.renderFrame(), layout.meta.y);
+    expect(text).toContain('…');
+    expect(text).toContain('(xhigh)');
+    expect(displayWidth(text)).toBeLessThanOrEqual(40);
+    expect(text).toBe(metaText(session, 40));
+    expect(text).not.toContain(' · ');
   });
 
   it('shows the home directory as ~ in welcome and meta', () => {

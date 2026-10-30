@@ -43,6 +43,7 @@ describe('turn summary', () => {
     expect(text).toContain('↑1.2k');
     expect(text).toContain('↓345');
     expect(text).toContain('C67');
+    expect(text).toContain('· 34.5 tok/s');
     expect(text).toContain('✓');
   });
 
@@ -54,7 +55,21 @@ describe('turn summary', () => {
     const lines = buildTurnSummaryLines(cell, 30);
     expect(lines.length).toBeGreaterThan(1);
     const text = lines.map((line) => line.segments.slice(2).map((segment) => segment.text).join('')).join(' ');
-    expect(text).toBe('22:07:51 · 15s (L14s/T1s) · ↑1.2k ↓345 C14.1k');
+    expect(text).toBe('22:07:51 · 15s (L14s/T1s) · ↑1.2k ↓345 C14.1k · 24.6 tok/s');
+  });
+
+  it.each([
+    { outputTokens: 54, llmDurationMs: 1250, expected: '43.2 tok/s' },
+    { outputTokens: 0, llmDurationMs: 1000, expected: '0.0 tok/s' },
+    { outputTokens: 54, llmDurationMs: 0, expected: '-- tok/s' },
+    { outputTokens: 54, llmDurationMs: Number.NaN, expected: '-- tok/s' },
+    { outputTokens: 54, llmDurationMs: Number.POSITIVE_INFINITY, expected: '-- tok/s' },
+  ])('formats output throughput using unrounded LLM timing: $expected', ({ outputTokens, llmDurationMs, expected }) => {
+    const cell: TurnSummaryCell = { type: 'turn', id: 'rate', outcome: 'done', completedAt: 0,
+      durationMs: 60000, toolDurationMs: 50000, llmDurationMs, usage: { ...USAGE, outputTokens } };
+    const text = buildTurnSummaryLines(cell, 120).flatMap((line) => line.segments.map((segment) => segment.text)).join('');
+    expect(text).toContain(expected);
+    expect(text).not.toMatch(/NaN|Infinity/);
   });
 
   it('uses different markers for aborted and failed turns', () => {
@@ -136,6 +151,7 @@ describe('turn summary', () => {
     });
     const text = screenText(app.frame());
     expect(text).toContain('· 3s (L2s/T1s) ·');
+    expect(text).toContain('172.5 tok/s');
     expect(text).not.toContain('tools 1s');
     expect(text).toContain('tok 1.6k');
   });

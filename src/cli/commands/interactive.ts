@@ -1,4 +1,4 @@
-import path from 'node:path';
+import { canonicalizePath } from '../../util/paths.js';
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import {
@@ -31,9 +31,10 @@ import {
   runLocalCommand,
   type LocalCommandOutcome,
 } from '../local-command.js';
-import { describeModelSelection, parseModelCommand } from '../model-command.js';
-import { createLoop, DEFAULT_SHELL_TIMEOUT_MS } from '../runtime.js';
+import { describeModelSelection, describeModelUpdate, MODEL_COMMAND_USAGE, parseModelCommand } from '../model-command.js';
+import { createLoop, DEFAULT_SHELL_TIMEOUT_MS, initializeReasoningEffort } from '../runtime.js';
 import { runTuiInteractive } from './tui.js';
+import { changeModelSelection, currentModelSelection, restoreModelSelection } from '../model-selection.js';
 
 export interface InteractiveCommandOptions {
   cwd: string;
@@ -68,12 +69,13 @@ async function findLatestResumable(
   store: SessionStoreApi,
   cwd: string,
 ): Promise<SessionSummary | undefined> {
-  const resolved = path.resolve(cwd);
+  const resolved = await canonicalizePath(cwd);
   const sessions = await store.listSessions();
+  const canonicalCwds = await Promise.all(sessions.map((session) => canonicalizePath(session.cwd)));
   return sessions.find(
-    (session) =>
+    (session, index) =>
       (session.status === 'idle' || session.status === 'interrupted') &&
-      path.resolve(session.cwd) === resolved,
+      canonicalCwds[index] === resolved,
   );
 }
 
@@ -254,19 +256,23 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
       await restoreReadTracker(rebuilt, app.cwd, readTracker, app.additionalDirs);
       const modelSelection = latestModelSelection(events);
       resumedModel = modelSelection.model;
+      await restoreModelSelection(app, modelSelection, env);
       resumedEffort = modelSelection.reasoningEffort;
       initialMessages = rebuilt.messages;
       rebuiltPlan = rebuilt.plan;
       stderr.write(
         'resumed session ' + session.id + ' (' + rebuilt.messages.length + ' message(s), cwd ' + session.meta.cwd + ')\n',
       );
-      if (path.resolve(session.meta.cwd) !== path.resolve(app.cwd)) {
+      if (await canonicalizePath(session.meta.cwd) !== await canonicalizePath(app.cwd)) {
         stderr.write(
           'warning: session cwd differs from the current workspace; relative paths in history may not resolve.\n',
         );
       }
     }
-    if (resumedModel && !options.model) app.router.setModel(resumedModel);
+    const reasoningEffort = await initializeReasoningEffort(app, session, {
+      model: resumedModel,
+      reasoningEffort: resumedEffort,
+    });
 
     const startHooks = await app.hooks.run(
       'session_start',
@@ -398,7 +404,7 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
       readTracker,
       ...(initialMessages ? { initialMessages } : {}),
       ...(rebuiltPlan ? { initialPlan: rebuiltPlan } : {}),
-      ...(resumedEffort ? { reasoningEffort: resumedEffort } : {}),
+      reasoningEffort,
       ...(json ? {} : { approve }),
     });
     renderer.render({
@@ -498,13 +504,10 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
         continue;
       }
       if (line === '/model' || line.startsWith('/model ')) {
-        const current = {
-          model: app.router.selection.model,
-          ...(loop.reasoningEffort ? { reasoningEffort: loop.reasoningEffort } : {}),
-        };
+        const current = currentModelSelection(app, loop.reasoningEffort);
         const command = parseModelCommand(line, current);
         if (command.type === 'show') {
-          commandOut.write(describeModelSelection(current) + '\n');
+          commandOut.write(describeModelSelection(current) + '\n' + MODEL_COMMAND_USAGE + '\n');
           continue;
         }
         if (command.type === 'error') {
@@ -512,17 +515,9 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
           continue;
         }
         try {
-          await session.append({
-            type: 'model.changed',
-            model: command.selection.model,
-            ...(command.selection.reasoningEffort
-              ? { reasoningEffort: command.selection.reasoningEffort }
-              : {}),
-          });
-          app.router.setModel(command.selection.model);
-          loop.setModel(command.selection.model);
-          loop.setReasoningEffort(command.selection.reasoningEffort);
-          commandOut.write(describeModelSelection(command.selection) + '\n');
+          const applied = await changeModelSelection(app, session, loop, command.selection, env);
+          commandOut.write(describeModelUpdate(applied) + '\n');
+          if (applied.persistenceWarning) stderr.write('warning: ' + applied.persistenceWarning + '\n');
         } catch (error) {
           commandOut.write(
             'Failed to update model: ' + (error instanceof Error ? error.message : String(error)) + '\n',

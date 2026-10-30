@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { PassThrough } from 'node:stream';
 import os from 'node:os';
 import path from 'node:path';
@@ -395,7 +395,7 @@ describe('interactive mode', () => {
     const env = envFor(home, workspace);
 
     const firstInput = new PassThrough();
-    firstInput.end('first\n/model model-b high\n/quit\n');
+    firstInput.end('first\n/model model-b --effort high\n/quit\n');
     const firstStdout = new MemorySink();
     const firstStderr = new MemorySink();
     const firstCode = await runInteractive({
@@ -409,7 +409,7 @@ describe('interactive mode', () => {
     expect(firstCode).toBe(0);
     expect(server.requests).toBe(1);
     expect(firstStdout.value).toContain('First answer.');
-    expect(firstStdout.value).toContain('model: model-b');
+    expect(firstStdout.value).toContain('Model set to model-b (primary), effort: high.');
     expect(firstStdout.value).toContain('effort: high');
     expect(server.bodies[0]).toMatchObject({ model: 'test-model' });
     expect(server.bodies[0]).not.toHaveProperty('output_config');
@@ -444,6 +444,158 @@ describe('interactive mode', () => {
       model: 'model-b',
       output_config: { effort: 'high' },
     });
+  });
+
+  it('switches configured providers and restores the correct endpoint on resume and fork', async () => {
+    const primary = await startServer([textResponse('Primary.')]);
+    const secondary = await startServer(Array.from({ length: 4 }, () => textResponse('Secondary.')));
+    const { home, workspace } = await setup(primary.url);
+    await appendFile(path.join(home, 'config.toml'), `
+[provider.secondary]
+endpoint = "${secondary.url}"
+api_key_env = "SECONDARY_TEST_KEY"
+[[routes.secondary.targets]]
+provider = "secondary"
+model = "second-model"
+`);
+    const env = { ...envFor(home, workspace), SECONDARY_TEST_KEY: 'secondary-private-key' };
+    const stdin = new PassThrough();
+    stdin.end('first\n/model second-model --effort high\nsecond\n/model --effort low\nthird\n/quit\n');
+    const stdout = new MemorySink();
+    expect(await runInteractive({ cwd: workspace, env, stdin, stdout, stderr: new MemorySink() })).toBe(0);
+    expect(primary.requests).toBe(1);
+    expect(secondary.bodies[0]).toMatchObject({ model: 'second-model', output_config: { effort: 'high' } });
+    expect(secondary.bodies[1]).toMatchObject({ model: 'second-model', output_config: { effort: 'low' } });
+    expect(stdout.value).toContain('Model set to second-model (secondary), effort: high.');
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const session = (await store.listSessions())[0]!;
+    const events = await store.replaySession(session.id);
+    expect(events.find((event) => event.type === 'model.changed')).toMatchObject({
+      model: 'second-model', provider: 'secondary', route: 'secondary', reasoningEffort: 'high',
+    });
+    expect(await readFile(session.filePath, 'utf8')).not.toContain('secondary-private-key');
+    for (const mode of ['--resume', '--fork']) {
+      const input = new PassThrough();
+      input.end('next\n/quit\n');
+      const stderr = new MemorySink();
+      expect(await runCli(['-C', workspace, '--plain', mode, session.id], {
+        env, stdin: input, stdout: new MemorySink(), stderr,
+      }), stderr.value).toBe(0);
+    }
+    expect(primary.requests).toBe(1);
+    expect(secondary.requests).toBe(4);
+    expect(secondary.bodies[3]).toMatchObject({ model: 'second-model', output_config: { effort: 'low' } });
+  });
+
+  it('keeps the cwd default cleared after a temporary CLI effort override on resume', async () => {
+    const server = await startServer(Array.from({ length: 5 }, () => textResponse('Done.')));
+    const { home, workspace } = await setup(server.url);
+    await mkdir(path.join(workspace, '.codingx'), { recursive: true });
+    await writeFile(path.join(workspace, '.codingx', 'config.toml'), '[model]\nreasoning_effort = "high"\n');
+    const env = envFor(home, workspace);
+    const firstInput = new PassThrough();
+    firstInput.end('first\n/model --effort default\nsecond\n/quit\n');
+    expect(await runInteractive({
+      cwd: workspace, env, stdin: firstInput, stdout: new MemorySink(), stderr: new MemorySink(),
+    })).toBe(0);
+    expect(server.bodies[0]?.output_config).toEqual({ effort: 'high' });
+    expect(server.bodies[1]).not.toHaveProperty('output_config');
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const id = (await store.listSessions())[0]!.id;
+    for (const extra of [[], ['--reasoning-effort', 'low'], []]) {
+      const stdin = new PassThrough();
+      stdin.end('next\n/quit\n');
+      const stderr = new MemorySink();
+      expect(await runCli(['-C', workspace, '--plain', '--resume', id, ...extra], {
+        env, stdin, stdout: new MemorySink(), stderr,
+      }), stderr.value).toBe(0);
+    }
+    expect(server.bodies[2]).not.toHaveProperty('output_config');
+    expect(server.bodies[3]?.output_config).toEqual({ effort: 'low' });
+    expect(server.bodies[4]).not.toHaveProperty('output_config');
+  });
+
+  it('reuses model settings in new sessions only for the same cwd and gives cwd settings priority over old sessions', async () => {
+    const primary = await startServer([textResponse('Override.'), textResponse('Other directory.')]);
+    const secondary = await startServer([textResponse('Remembered.'), textResponse('Latest preference.')]);
+    const { home, workspace } = await setup(primary.url);
+    await appendFile(path.join(home, 'config.toml'), `
+[provider.secondary]
+endpoint = "${secondary.url}"
+api_key_env = "SECONDARY_TEST_KEY"
+[[routes.secondary.targets]]
+provider = "secondary"
+model = "second-model"
+`);
+    const env = { ...envFor(home, workspace), SECONDARY_TEST_KEY: 'secondary-private-key' };
+    const run = async (cwd: string, input: string, args: string[] = [], selectedEnv: NodeJS.ProcessEnv = env) => {
+      const stdin = new PassThrough();
+      stdin.end(input);
+      const stderr = new MemorySink();
+      expect(await runCli(['-C', cwd, '--plain', ...args], { env: selectedEnv, stdin, stdout: new MemorySink(), stderr }), stderr.value).toBe(0);
+    };
+    await run(workspace, '/model second-model high\n/quit\n');
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const oldSession = (await store.listSessions())[0]!.id;
+    const secondaryOnlyEnv: NodeJS.ProcessEnv = { ...env };
+    delete secondaryOnlyEnv.TEST_API_KEY;
+    // Selecting the saved provider must happen before resolving credentials.
+    await run(workspace, 'hello\n/quit\n', [], secondaryOnlyEnv);
+    expect(secondary.bodies[0]).toMatchObject({ model: 'second-model', output_config: { effort: 'high' } });
+    await run(workspace, 'temporary\n/quit\n', ['--route', 'default', '--reasoning-effort', 'low']);
+    expect(primary.bodies[0]).toMatchObject({ model: 'test-model', output_config: { effort: 'low' } });
+    const other = path.join(workspace, 'other');
+    await mkdir(other);
+    await run(other, 'hello\n/quit\n');
+    expect(primary.bodies[1]).toMatchObject({ model: 'test-model' });
+    expect(primary.bodies[1]).not.toHaveProperty('output_config');
+    await run(workspace, '/model --effort max\n/clear\n/quit\n');
+    await run(workspace, 'latest\n/quit\n', ['--resume', oldSession]);
+    expect(secondary.bodies[1]).toMatchObject({ model: 'second-model', output_config: { effort: 'max' } });
+    expect(primary.requests).toBe(2);
+  });
+
+  it('remembers a custom model on a different provider even when it is not a target of the saved route', async () => {
+    const primary = await startServer([]);
+    const secondary = await startServer([textResponse('Custom.')]);
+    const { home, workspace } = await setup(primary.url);
+    await appendFile(path.join(home, 'config.toml'), `
+[provider.secondary]
+endpoint = "${secondary.url}"
+api_key_env = "SECONDARY_TEST_KEY"
+`);
+    const env = { ...envFor(home, workspace), SECONDARY_TEST_KEY: 'secondary-private-key' };
+    for (const text of ['/model secondary/custom-model medium\n/quit\n', 'hello\n/quit\n']) {
+      const stdin = new PassThrough();
+      stdin.end(text);
+      const stderr = new MemorySink();
+      expect(await runInteractive({ cwd: workspace, env, stdin, stdout: new MemorySink(), stderr }), stderr.value).toBe(0);
+    }
+    expect(primary.requests).toBe(0);
+    expect(secondary.bodies[0]).toMatchObject({ model: 'custom-model', output_config: { effort: 'medium' } });
+  });
+
+  it('restores the configured startup effort when forking after config changes', async () => {
+    const server = await startServer([textResponse('First.'), textResponse('Forked.')]);
+    const { home, workspace } = await setup(server.url);
+    const configDir = path.join(workspace, '.codingx');
+    await mkdir(configDir, { recursive: true });
+    await writeFile(path.join(configDir, 'config.toml'), '[model]\nreasoning_effort = "medium"\n');
+    const env = envFor(home, workspace);
+    const first = new PassThrough();
+    first.end('first\n/quit\n');
+    expect(await runInteractive({
+      cwd: workspace, env, stdin: first, stdout: new MemorySink(), stderr: new MemorySink(),
+    })).toBe(0);
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const id = (await store.listSessions())[0]!.id;
+    await writeFile(path.join(configDir, 'config.toml'), '[model]\nreasoning_effort = "high"\n');
+    const second = new PassThrough();
+    second.end('next\n/quit\n');
+    expect(await runInteractive({
+      cwd: workspace, env, forkSessionId: id, stdin: second, stdout: new MemorySink(), stderr: new MemorySink(),
+    })).toBe(0);
+    expect(server.bodies[1]?.output_config).toEqual({ effort: 'medium' });
   });
 
   it('keeps JSON stdout machine-readable for slash commands', async () => {

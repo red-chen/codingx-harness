@@ -32,6 +32,7 @@ async function connect(options: SessionsCommandOptions): Promise<{
     throw new Error('sessiond is disabled in config; sessions commands require [sessiond] enabled = true.');
   }
   const ensured = await ensureSessiond({
+    cwd: options.cwd,
     socketPath: loaded.config.sessiond.socket,
     sessionDir: loaded.config.session.dir,
     idleTimeoutSeconds: loaded.config.sessiond.idleTimeoutSeconds,

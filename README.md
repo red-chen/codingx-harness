@@ -20,6 +20,7 @@ M1 已经可以完成「读文件 → 改文件 → 跑测试 / 命令」的闭�
 
 M2 本轮已落地：
 
+- **cwd 隔离**：新会话保存在 `$CODINGX_HOME/sessions/<cwd-name>/`（如 `sessions/-Users-red-workspace-codingx-harness/`；自定义 `session.dir` 同样追加 cwd 子目录）；列表、resume、fork、log、watch、prune 只操作当前 cwd。子目录独立，符号链接按真实路径归并；旧会话按 header 中的 cwd 继续读取，旧全局输入历史保留但不自动导入。
 - **会话续接**：`--continue` / `--resume <id>` / `--fork <id>`；从 rollout 重建消息历史，悬空工具调用补合成 `tool_result`，恢复已读文件状态
 - **上下文压缩**：三级压缩（截断 → 丢弃 → 模型摘要），写入 `context.compacted`；30 轮大工具输出压测通过
 - **工具扩展**：`Glob`、`Grep`（优先 rg，缺失时内置回退）、`WriteFile`、`UpdatePlan`、`ApplyPatch`、`Skill`、`AskUserQuestion`
@@ -31,8 +32,9 @@ M2 本轮已落地：
 - **Git hooks**：仓库已有的 `pre-commit` 等 hooks 默认可以执行（`git commit` 会运行它们）；`.git/hooks` / `.git/config` 写入默认拒绝，防止静默安装持久化 hook。需要安装/管理 hooks 时使用 `:workspace-git-hooks` profile（或自定义 `:git_hooks` / `:git_config` 作用域），启动时会有安全告警
 - **macOS Seatbelt 沙箱（M3.3）**：Shell 通过 `sandbox-exec` 在 `(deny default)` profile 中运行；写入严格限制在 profile 根（workspace、`--add-dir`、TMPDIR、`/tmp` 等），读取限制在系统/工具链/profile 根，`~/.ssh`、`~/.aws`、`~/.gnupg`、`.env*`、私钥等敏感路径与文件名由 Seatbelt 再次拒绝；网络默认 deny，profile 启用时整网放行（域名白名单待 S6）；拒绝写入 `sandbox.denied` 并回填 `SANDBOX_DENIED`；`sandbox-exec` 能力探测失败时 Shell fail closed，`--yolo` 在必须沙箱的平台拒绝启动
 - **绕过权限检查**：`--yolo` / `--allow-dangerously-skip-permissions` 映射到 `:danger-full-access` + `never`，关闭文件工具策略、审批与 OS 沙箱并打印醒目告警；`exec policy` 的 `forbidden` 仍是尽力而为的硬拒绝。仅建议在一次性、外部已隔离的容器中使用
-- **运行时模型切换**：`/model` 查看或切换当前模型与推理强度（`low|medium|high|xhigh|max`，`default` 清除）；变更立即作用于后续请求，写入 `model.changed`，并在 resume 时恢复。Anthropic Messages 通过 `output_config.effort` 传递（需目标模型支持该参数）
-- **输入历史**：TUI 全局保存最近 200 条输入（`$CODINGX_HOME/input-history/`，默认 `~/.codingx/input-history/`），跨项目、会话及重启共享；单行输入用 ↑/↓ 翻查，↓ 越过最新条目恢复草稿，多行输入保留上下移动光标。Ctrl+R 按内容搜索（忽略大小写），再次 Ctrl+R 查找更早匹配，Enter 放回输入框编辑，Esc/Ctrl+C 取消并恢复原草稿；历史文件中的常见凭证会脱敏，`/clear` 不清除全局输入历史。
+- **模型与推理强度**：通过 `--reasoning-effort`、`CODINGX_REASONING_EFFORT` 或 `[model].reasoning_effort` 设置 `low|medium|high|xhigh|max`（`default` 使用服务端默认值）；交互中 `/model --effort high` 即时切换，TUI 模型名旁显示档位。选择写入 `model.changed` 并在 resume/fork 时恢复，显式 CLI/env 可覆盖保存值。Anthropic Messages 通过 `output_config.effort` 传递（需目标模型支持该参数）。详见 [推理强度配置](docs/config.md#推理强度)
+- **输入历史**：TUI 按 cwd 各保存最近 200 条输入（`$CODINGX_HOME/input-history/<cwd-name>/`，默认在 `~/.codingx/` 下），同一目录跨会话及重启共享，不同目录独立；单行输入用 ↑/↓ 翻查，↓ 越过最新条目恢复草稿，多行输入保留上下移动光标。Ctrl+R 按内容搜索（忽略大小写），再次 Ctrl+R 查找更早匹配，Enter 放回输入框编辑，Esc/Ctrl+C 取消并恢复原草稿；历史文件中的常见凭证会脱敏，`/clear` 不清除当前 cwd 的输入历史。
+- **目录偏好**：`/model` 的模型、Provider、route、effort 与 `/permissions` 的权限 profile 按真实 cwd 保存，新会话和重启自动继承；不同目录隔离。CLI/env 仅临时覆盖，`/clear` 不清除目录偏好；详见 [配置优先级](docs/config.md#按-cwd-记住交互设置)。
 - **Terminal 与 TUI 层**：Terminal 内核 + TuiApp/TuiRuntime/TuiSession、独立背景 composer/用户消息、底部 meta（model · cwd · session title）、硬件光标/IME 定位、resume transcript 重建、欢迎卡常驻历史顶部、`/copy` 按区域复制、`/clear` 重置会话（UI 与 JSONL rollout 一并清空）、Ctrl+Y 全量复制、滚轮/触控板原生翻阅历史、PgUp/PgDn 应用内翻页、终端原生拖选 + ⌘C 复制、markdown/code/diff 消息单元、连续读取/搜索/列目录调用聚合为 `Explored` 摘要（Ctrl+O 在历史视图中展开/收起原始结果，Esc 返回；最多 3 条摘要，失败数量始终可见），其他相邻同名同目标工具调用合并为 `×N` 块、turn 完成摘要（时间、总耗时、LLM/工具耗时、输入/输出及缓存 Token，紧凑标签）、状态行上下文用量（默认 1M）、累计 Token 与 turn/step 信息、help/transcript overlay、slash 补全菜单；TTY 默认全屏 TUI，`--plain` 退化
 - **Skills 与用户提问**：`~/.agents/skills`、`~/.codingx/skills` 与 `<project>/.codingx/skills` 的 `SKILL.md` 按需加载（系统提示只放目录）；TUI 底部提问面板支持单选/多选/自由文本，答案经 `tool.result` 入 rollout
 - **sessiond**：JSON-RPC/NDJSON、Unix socket server、注册表/写租约/heartbeat/崩溃恢复、typed client、remote SessionStore、自动拉起、空闲退出、方法握手（升级后自动替换缺少新方法的旧 daemon）；CLI 默认通过 IPC 写入
@@ -99,7 +101,14 @@ node bin/codingx.js --yolo exec "跨目录整理文件"
 # 交互式：TTY 默认全屏 TUI；--plain 强制逐行
 node bin/codingx.js
 # 交互内 slash：/help /session /model /clear /copy /queue /quit
-# /model <model> [effort] 切模型与推理强度；/clear 会清空当前会话的 UI、内存历史与 JSONL rollout
+# /model 打开模型与 effort 选择面板；/model --show 查看当前值
+# 列出所有配置的模型及 Provider，选择时同步切换对应端点
+# /model <model> --effort high 同时切换；/model --effort high 只改强度
+# /model <provider>/<model> 明确指定 Provider（同名模型时使用）
+# /clear 会清空当前会话的 UI、内存历史与 JSONL rollout
+# 启动时设置推理强度（交互模式和 exec 均支持）
+node bin/codingx.js --reasoning-effort high
+node bin/codingx.js --reasoning-effort medium exec "检查当前改动"
 # 交互内 !<command>：直接执行终端命令（如 !pwd），仍经过权限策略、审批与沙箱
 
 # 机器可读事件流
@@ -144,7 +153,7 @@ ReadFile(src/util.ts) → EditFile(foo → bar) → Shell(grep 校验) → 最�
 
 | 能力 | M1 状态 | 计划 |
 | --- | --- | --- |
-| 多目标路由 / failover / weighted / round-robin | 只允许单目标；多目标配置会明确报错 | M5 |
+| 多目标路由 / failover / weighted / round-robin | 每次只使用单目标；`/model` 可手动切换已配置 Provider/model，自动多目标路由仍未实现 | M5 |
 | sessiond / 跨 CLI 查询 | daemon、租约、自动拉起、sessions list/show/watch/prune 已实现；慢订阅者背压待补 | M2 |
 | 自研 TUI | Terminal/TuiApp/TuiRuntime/TuiSession 已接入 CLI（TTY 默认）；markdown/diff、help/transcript overlay、slash 补全、`/clear`、`/model`、提问面板已完成；mention、session picker 待做；审批 overlay 属 M3 | M2 |
 | 上下文压缩 | 三级已实现：截断 / 丢弃 / 模型摘要 | M2 已完成 |
@@ -193,7 +202,7 @@ description: Create, read, edit and validate Word documents.
 - 不做 IDE 插件与图形界面
 - 不做多用户 / 远程服务端形态；sessiond 只监听本机 Unix socket / 命名管道
 - 不逐像素复刻 Codex 的 TUI；对齐信息架构、核心状态与键盘手感
-- TUI 不含登录、认证、配置文件、设置页、主题/模型选择器或可配置键位
+- TUI 不含登录、认证、配置文件、设置页、主题选择器或可配置键位；模型与 effort 由 `/model` 面板切换
 - 不自研模型，只做 Harness 层
 
 ## 核心概念

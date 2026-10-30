@@ -127,6 +127,8 @@ export type SessiondNotification = (typeof NOTIFICATION)[keyof typeof NOTIFICATI
 
 export interface InitializeParams {
   protocol: number;
+  /** Scope session operations to an exact canonical cwd. */
+  cwd?: string;
   client: { name: string; version: string; pid?: number };
 }
 
@@ -142,6 +144,8 @@ export interface InitializeResult {
    * outdated by clients that know which methods they require.
    */
   methods?: readonly SessiondMethod[];
+  cwdIsolation?: boolean;
+  workspaceLayout?: 'readable-v1';
 }
 
 export interface DaemonStatusResult {
@@ -300,6 +304,7 @@ export interface SessionEndParams {
 }
 
 export interface SessionPruneParams {
+  cwd?: string;
   /** Delete ended sessions older than this many days; defaults to 30. */
   olderThanDays?: number;
   /** Report candidates without deleting. */

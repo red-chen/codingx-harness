@@ -188,6 +188,38 @@ function envFor(home: string, workspace: string): NodeJS.ProcessEnv {
 }
 
 describe('codingx exec end-to-end', () => {
+  it.each(['low', 'medium', 'high', 'xhigh', 'max', 'default'])(
+    'passes --reasoning-effort %s to the provider and saves it for resume', async (effort) => {
+      const server = await startServer([textResponse('Done.')]);
+      const { home, workspace } = await setupWorkspace(server.url);
+      const stdout = new MemorySink();
+      const stderr = new MemorySink();
+      const code = await runCli(['-C', workspace, '--reasoning-effort', effort, 'exec', 'hello'], {
+        env: { ...envFor(home, workspace), CODINGX_REASONING_EFFORT: 'medium' }, stdout, stderr,
+      });
+      expect(code, stderr.value).toBe(0);
+      if (effort === 'default') expect(server.bodies[0]).not.toHaveProperty('output_config');
+      else expect(server.bodies[0]?.output_config).toEqual({ effort });
+      const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+      const sessions = await store.listSessions();
+      const events = await store.replaySession(sessions[0]!.id);
+      const selection = events.find((event) => event.type === 'model.changed');
+      expect(selection?.model).toBe('test-model');
+      expect(selection?.reasoningEffort).toBe(effort === 'default' ? undefined : effort);
+    },
+  );
+
+  it('rejects an invalid CLI effort before making a provider request', async () => {
+    const server = await startServer([]);
+    const { home, workspace } = await setupWorkspace(server.url);
+    const stderr = new MemorySink();
+    expect(await runCli(['-C', workspace, '--reasoning-effort', 'turbo', 'exec', 'hello'], {
+      env: envFor(home, workspace), stdout: new MemorySink(), stderr,
+    })).toBe(2);
+    expect(stderr.value).toContain('--reasoning-effort');
+    expect(server.bodies).toEqual([]);
+  });
+
   it('completes ReadFile -> EditFile -> shell -> final answer and writes a replayable rollout', async () => {
     const server = await startServer([
       toolResponse('toolu_read', 'ReadFile', { path: 'src/util.ts' }),

@@ -157,6 +157,35 @@ max_output_chars = 30000
 }
 
 describe('CLI over sessiond', () => {
+  it('keeps session commands within the CLI cwd on a shared daemon', async () => {
+    const { home, workspace, socket } = await setup();
+    const admin = await SessiondClient.connect({ socketPath: socket });
+    clients.push(admin);
+    const other = path.join(workspace, 'nested');
+    await mkdir(other);
+    const local = await admin.create({ cwd: workspace, model: 'test-model', cliVersion: 'test' });
+    const foreign = await admin.create({ cwd: other, model: 'test-model', cliVersion: 'test' });
+    await admin.detach(local.sessionId, local.leaseId);
+    await admin.detach(foreign.sessionId, foreign.leaseId);
+    const listOut = new MemorySink();
+    expect(await runCli(['--cd', workspace, 'sessions', 'list', '--json'], {
+      env: envFor(home, workspace), stdout: listOut, stderr: new MemorySink(),
+    })).toBe(0);
+    expect(listOut.value).toContain(local.sessionId);
+    expect(listOut.value).not.toContain(foreign.sessionId);
+    for (const args of [['sessions', 'show', foreign.sessionId], ['log', '--session', foreign.sessionId], ['--resume', foreign.sessionId], ['--fork', foreign.sessionId]]) {
+      const errors = new MemorySink();
+      expect(await runCli(['--cd', workspace, ...args], {
+        env: envFor(home, workspace), stdout: new MemorySink(), stderr: errors,
+      })).not.toBe(0);
+      expect(errors.value).toMatch(/not found|No session/i);
+    }
+    expect(await runCli(['--cd', workspace, 'sessions', 'prune', '--older-than', '0'], {
+      env: envFor(home, workspace), stdout: new MemorySink(), stderr: new MemorySink(),
+    })).toBe(0);
+    expect((await admin.list()).sessions.map((item) => item.id)).toEqual([foreign.sessionId]);
+  });
+
   it('runs exec through the daemon and exposes sessions list/show', async () => {
     const { home, workspace, socket } = await setup();
     const stdout = new MemorySink();

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -56,6 +56,31 @@ afterEach(async () => {
 });
 
 describe('SessiondClient', () => {
+  it('scopes list, lookup, mutation and prune to the connection cwd', async () => {
+    const cwd = path.join(root, 'repo');
+    const nested = path.join(cwd, 'nested');
+    await mkdir(nested, { recursive: true });
+    const alias = path.join(root, 'alias');
+    await symlink(cwd, alias);
+    const first = await store.createSession({ ...createParams, cwd });
+    const second = await store.createSession({ ...createParams, cwd: nested });
+    await first.close();
+    await second.close();
+    const scoped = await SessiondClient.connect({ socketPath: server.address, cwd: alias });
+    extraClients.push(scoped);
+    expect(scoped.cwdIsolation).toBe(true);
+    expect((await scoped.list({ cwd: nested })).sessions.map((item) => item.id)).toEqual([first.id]);
+    expect((await scoped.get(first.id.slice(0, 8))).session.id).toBe(first.id);
+    await expect(scoped.get(second.id)).rejects.toMatchObject({ kind: 'SESSION_NOT_FOUND' });
+    await expect(scoped.attach({ sessionId: second.id, mode: 'write' })).rejects.toMatchObject({ kind: 'SESSION_NOT_FOUND' });
+    await expect(scoped.replay({ sessionId: second.id })).rejects.toMatchObject({ kind: 'SESSION_NOT_FOUND' });
+    await expect(scoped.fork({ sessionId: second.id })).rejects.toMatchObject({ kind: 'SESSION_NOT_FOUND' });
+    await expect(scoped.clear({ sessionId: second.id })).rejects.toMatchObject({ kind: 'SESSION_NOT_FOUND' });
+    await expect(scoped.create({ ...createParams, cwd: nested })).rejects.toMatchObject({ kind: 'INVALID_PARAMS' });
+    expect((await scoped.prune({ olderThanDays: 0, cwd: nested })).pruned).toEqual([first.id]);
+    expect((await store.listSessions()).map((item) => item.id)).toEqual([second.id]);
+  });
+
   it('handshakes and exposes daemon status', async () => {
     const status = await client.status();
     expect(status).toMatchObject({

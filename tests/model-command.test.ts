@@ -11,6 +11,7 @@ describe('/model parsing', () => {
   it('shows the current selection', () => {
     expect(parseModelCommand('/model', current)).toEqual({ type: 'show' });
     expect(parseModelCommand('  /model  ', current)).toEqual({ type: 'show' });
+    expect(parseModelCommand('/model --show', current)).toEqual({ type: 'show' });
   });
 
   it('sets the model and keeps the current effort', () => {
@@ -46,6 +47,15 @@ describe('/model parsing', () => {
     });
   });
 
+  it.each(['--effort', '-e'])('sets model and effort together using %s', (flag) => {
+    expect(parseModelCommand('/model claude-next ' + flag + ' high', current)).toEqual({
+      type: 'set', selection: { model: 'claude-next', reasoningEffort: 'high' },
+    });
+    expect(parseModelCommand('/model claude-next ' + flag + ' default', current)).toEqual({
+      type: 'set', selection: { model: 'claude-next' },
+    });
+  });
+
   it('clears the effort override with default/off/none/auto', () => {
     for (const alias of ['default', 'off', 'none', 'auto']) {
       expect(parseModelCommand('/model --effort ' + alias, current)).toEqual({
@@ -66,6 +76,10 @@ describe('/model parsing', () => {
       '/model claude-next turbo',
       '/model claude-next high extra',
       '/model --unknown',
+      '/model claude-next --effort',
+      '/model claude-next --effort turbo',
+      '/model claude-next --effort high extra',
+      '/model --show extra',
     ]) {
       const parsed = parseModelCommand(line, current);
       expect(parsed.type).toBe('error');

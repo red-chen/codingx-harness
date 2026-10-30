@@ -168,6 +168,8 @@ export function rebuildHistory(events: readonly RolloutEvent[]): RebuiltHistory 
 /** Latest model/effort selected in a rollout; absent fields mean provider defaults. */
 export interface StoredModelSelection {
   model?: string;
+  provider?: string;
+  route?: string;
   reasoningEffort?: ReasoningEffort;
 }
 
@@ -183,6 +185,8 @@ export function latestModelSelection(events: readonly RolloutEvent[]): StoredMod
     const effort = isReasoningEffort(event.reasoningEffort) ? event.reasoningEffort : undefined;
     return {
       ...(model && model.length > 0 ? { model } : {}),
+      ...(asString(event.provider) ? { provider: asString(event.provider) } : {}),
+      ...(asString(event.route) ? { route: asString(event.route) } : {}),
       ...(effort === undefined ? {} : { reasoningEffort: effort }),
     };
   }

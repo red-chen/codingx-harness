@@ -69,6 +69,18 @@ function shown(questions: AskQuestion[] = QUESTIONS): TuiApp {
 }
 
 describe('TuiApp ask overlay', () => {
+  it.each(['answer', 'cancel'])('restores idle after a local picker closes with %s', (action) => {
+    const app = makeApp();
+    app.showQuestion(QUESTIONS);
+    app.showQuestion(QUESTIONS); // replacing a picker must retain its original execution state
+    app.handleKey(key(action === 'answer' ? 'enter' : 'escape'));
+    app.clearAsk(); // the session controller also performs cleanup
+    expect(app.status.state).toBe('idle');
+    typeText(app, 'hello');
+    expect(app.handleKey(key('enter'))).toEqual({ type: 'submit', text: 'hello' });
+    expect(app.queue).toEqual([]);
+  });
+
   it('opens an awaiting modal and renders the question, options and keys', () => {
     const app = shown();
     expect(app.mode).toBe('ask');

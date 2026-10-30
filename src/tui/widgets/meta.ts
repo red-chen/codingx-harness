@@ -3,10 +3,12 @@ import { ATTR_BOLD, ATTR_DIM } from '../terminal/buffer.js';
 import type { CellBuffer, Style } from '../terminal/buffer.js';
 import type { Rect } from '../layout/index.js';
 import { displayWidth, tildifyPath, truncateToWidth } from '../text/index.js';
+import type { ReasoningEffort } from '../../providers/types.js';
 
 /** Bottom metadata row: model · cwd · current session title. */
 export interface MetaBarOptions {
   readonly model: string;
+  readonly reasoningEffort?: ReasoningEffort;
   readonly cwd: string;
   readonly home?: string;
   readonly title?: string;
@@ -43,39 +45,44 @@ function cwdBudget(width: number): number {
   return Math.max(width >= 60 ? 12 : 8, Math.floor(width * (width >= 60 ? 0.4 : 0.2)));
 }
 
-function fit(parts: readonly string[], width: number): string {
-  const joined = parts.filter((part) => part.length > 0).join(META_SEPARATOR);
-  return truncateToWidth(joined, Math.max(0, width));
-}
-
 /** Height of the metadata row; hidden on very narrow terminals. */
 export function metaHeight(width: number): number {
   return width >= 40 ? 1 : 0;
 }
 
+function modelLabel(options: MetaBarOptions, width: number): string {
+  const effort = options.reasoningEffort ? ' (' + options.reasoningEffort + ')' : '';
+  return truncateToWidth(oneLine(options.model) || 'model', Math.max(1, width - displayWidth(effort))) + effort;
+}
+
 export function metaText(options: MetaBarOptions, width: number): string {
   if (width < 40) return '';
-  const model = oneLine(options.model) || 'model';
-  const title = oneLine(options.title ?? '') || NEW_SESSION_TITLE;
-  const cwd = shortPath(options.cwd, cwdBudget(width), options.home);
-  return fit([model, cwd, title], width);
+  return metaPieces(options, width).map((piece) => piece.text).join('');
+}
+
+/** Give the model/effort the full row before budgeting optional metadata. */
+function metaPieces(options: MetaBarOptions, width: number): Array<{ text: string; style: Style }> {
+  const model = modelLabel(options, width);
+  const pieces = [{ text: model, style: MODEL }];
+  const separatorWidth = displayWidth(META_SEPARATOR);
+  let remaining = width - displayWidth(model);
+  if (remaining > separatorWidth) {
+    const cwd = shortPath(options.cwd, Math.min(cwdBudget(width), remaining - separatorWidth), options.home);
+    if (cwd) {
+      pieces.push({ text: META_SEPARATOR, style: MUTED }, { text: cwd, style: CWD });
+      remaining -= separatorWidth + displayWidth(cwd);
+    }
+  }
+  if (remaining > separatorWidth) {
+    const title = truncateToWidth(oneLine(options.title ?? '') || NEW_SESSION_TITLE, remaining - separatorWidth);
+    pieces.push({ text: META_SEPARATOR, style: MUTED }, { text: title, style: TITLE });
+  }
+  return pieces;
 }
 
 export function renderMetaBar(area: Rect, frame: CellBuffer, options: MetaBarOptions): number {
   if (area.width <= 0 || area.height <= 0 || metaHeight(area.width) === 0) return 0;
-  const model = truncateToWidth(oneLine(options.model) || 'model', Math.max(1, Math.floor(area.width * 0.25)));
-  const cwd = shortPath(options.cwd, cwdBudget(area.width), options.home);
-  const separators = ((cwd ? 1 : 0) + 1) * displayWidth(META_SEPARATOR);
-  const titleBudget = Math.max(
-    1,
-    area.width - displayWidth(model) - displayWidth(cwd) - separators,
-  );
-  const title = truncateToWidth(oneLine(options.title ?? '') || NEW_SESSION_TITLE, titleBudget);
-  const pieces = [
-    { text: model, style: MODEL },
-    ...(cwd ? [{ text: META_SEPARATOR, style: MUTED }, { text: cwd, style: CWD }] : []),
-    { text: META_SEPARATOR + title, style: TITLE },
-  ];
+  const pieces = metaPieces(options, area.width);
   let x = area.x;
   const right = area.x + area.width;
   for (const piece of pieces) {
