@@ -1,5 +1,8 @@
 import { INPUT_HISTORY_LIMIT } from '../../ui/input-history.js';
+import { stripControlSequences } from '../text/index.js';
+import { tipsPreview } from '../widgets/tips.js';
 import { explorationLabel } from './exploration.js';
+import { readFileDiffs } from '../../tools/file-diff.js';
 import type { UiEvent } from '../../agent/events.js';
 import type { ToolCall } from '../../providers/types.js';
 import {
@@ -81,6 +84,7 @@ import {
   selectApprovalChoiceAt,
 } from './approval.js';
 import { transcriptHeight } from '../widgets/transcript.js';
+import type { WelcomeCardOptions } from '../widgets/welcome.js';
 
 /**
  * Explicit TUI state machine.
@@ -93,6 +97,7 @@ import { transcriptHeight } from '../widgets/transcript.js';
 export type TuiCopyTarget = 'transcript' | 'last' | 'status' | 'input' | 'meta' | 'screen' | 'all';
 
 export interface TuiAppOptions {
+  readonly tip?: string;
   readonly session: TuiSessionState;
   readonly version: string;
   readonly width?: number;
@@ -215,6 +220,7 @@ export class TuiApp {
         ...(options.session.approvalPolicy ? { approvalPolicy: options.session.approvalPolicy } : {}),
       },
       version: options.version,
+      ...(options.tip ? { tip: options.tip } : {}),
       width,
       height,
       transcript: options.initialTranscript ? [...options.initialTranscript] : [],
@@ -405,6 +411,7 @@ export class TuiApp {
       }
 
       case 'tool.finished': {
+        const fileDiffs = readFileDiffs(event.result.meta);
         const transcript = [...this.current.transcript];
         let updated = false;
         for (let index = transcript.length - 1; index >= 0; index--) {
@@ -413,6 +420,7 @@ export class TuiApp {
           transcript[index] = {
             ...cell,
             output: event.result.content,
+            ...(fileDiffs === undefined ? {} : { fileDiffs }),
             isError: event.result.isError === true,
             durationMs: event.durationMs,
             running: false,
@@ -428,6 +436,7 @@ export class TuiApp {
             name: event.name,
             command: event.name,
             output: event.result.content,
+            ...(fileDiffs === undefined ? {} : { fileDiffs }),
             isError: event.result.isError === true,
             durationMs: event.durationMs,
             running: false,
@@ -583,6 +592,7 @@ export class TuiApp {
       plan: [],
       ask: undefined,
       approval: undefined,
+      tips: undefined,
       status: { state: 'idle', elapsedMs: 0 },
       usage: copyUsage(EMPTY_USAGE),
       queue: [],
@@ -871,6 +881,41 @@ export class TuiApp {
     this.patch({ mode: 'help' });
   }
 
+  openTips(values: readonly string[]): void {
+    // Never replace an unanswered tool question or approval.
+    if (this.current.mode === 'ask' || this.current.mode === 'approval') return;
+    const items = values.map((value) => stripControlSequences(value).replace(/\s+/gu, ' ').trim()).filter(Boolean);
+    if (items.length === 0) {
+      this.addNotice('No tips configured. Edit tips.json in CODINGX_HOME and restart.', 'info');
+      return;
+    }
+    this.patch({ mode: 'tips', slashDismissed: true, tips: {
+      items, index: Math.max(0, items.indexOf(this.current.tip ?? '')), offset: 0,
+    } });
+  }
+
+  private handleTipsKey(key: KeyEvent): UiCommand | undefined {
+    const tips = this.current.tips;
+    if (!tips) return undefined;
+    if (isEscape(key) || isCtrl(key, 'c') || (key.code === 'q' && isPlainText(key))) {
+      this.patch({ mode: 'main', tips: undefined });
+    } else if (key.code === 'enter') {
+      const tip = tips.items[tips.index];
+      if (tip === undefined) return undefined;
+      this.patch({ mode: 'main', tip, tips: undefined });
+      this.setComposer(createComposerState(tip, this.current.composer.history));
+    } else if (key.code === 'up' || key.code === 'down' || key.code === 'home' || key.code === 'end') {
+      const index = key.code === 'home' ? 0 : key.code === 'end' ? tips.items.length - 1
+        : (tips.index + (key.code === 'up' ? -1 : 1) + tips.items.length) % tips.items.length;
+      this.patch({ tips: { ...tips, index, offset: 0 } });
+    } else if (key.code === 'pageup' || key.code === 'pagedown') {
+      const preview = tipsPreview(tips, this.current.width, this.current.height);
+      this.patch({ tips: { ...tips, offset: Math.max(0, Math.min(preview.maxOffset,
+        preview.offset + (key.code === 'pageup' ? -preview.rows : preview.rows))) } });
+    }
+    return undefined;
+  }
+
   /** Open the transcript overlay. */
   openTranscript(): void {
     this.patch({ mode: 'transcript' });
@@ -889,7 +934,7 @@ export class TuiApp {
     return Math.max(1, Math.floor(this.current.height / 2));
   }
 
-  private welcomeOptions(): { version: string; model: string; cwd: string; home?: string; sessionId: string } | null {
+  private welcomeOptions(): WelcomeCardOptions | null {
     if (this.current.width < 40) return null;
     return {
       version: this.current.version,
@@ -1066,6 +1111,7 @@ export class TuiApp {
 
     if (mode === 'ask') return this.handleAskKey(key);
     if (mode === 'approval') return this.handleApprovalKey(key);
+    if (mode === 'tips') return this.handleTipsKey(key);
 
     if ((mode === 'main' || mode === 'transcript') && isCtrl(key, 'o')) {
       const expanded = !this.current.transcript.some((cell) => cell.type === 'exec' && cell.expanded);
@@ -1138,6 +1184,10 @@ export class TuiApp {
 
     if (key.code === 'tab' && !key.mods.shift) {
       if (this.completeSlash()) return undefined;
+      if (this.current.composer.text.length === 0 && this.current.tip) {
+        this.setComposer(createComposerState(stripControlSequences(this.current.tip), this.current.composer.history));
+        return undefined;
+      }
       if (this.current.status.state === 'working') this.queueComposer();
       return undefined;
     }

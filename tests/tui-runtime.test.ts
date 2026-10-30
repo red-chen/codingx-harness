@@ -47,8 +47,9 @@ class FakeIO implements TerminalIO {
   }
 }
 
-function makeApp(): TuiApp {
+function makeApp(tip?: string): TuiApp {
   return new TuiApp({
+    ...(tip ? { tip } : {}),
     session: { sessionId: 's1', cwd: '/work', model: 'test-model' },
     version: '0.1.0',
     width: 80,
@@ -95,6 +96,56 @@ const fakeSession = {
 } as unknown as SessionHandle;
 
 describe('TuiRuntime', () => {
+  it('handles a terminal Tab as filling the current tip without emitting a command', () => {
+    const app = makeApp('Review 当前修改');
+    const io = new FakeIO();
+    const commands: unknown[] = [];
+    const local: string[] = [];
+    const runtime = makeRuntime(app, io, commands, local);
+    runtime.start();
+    try {
+      runtime.feed('\t');
+      expect(app.composer.text).toBe('Review 当前修改');
+      expect(commands).toEqual([]);
+      expect(local).toEqual([]);
+      expect(app.queue).toEqual([]);
+    } finally { runtime.stop(); }
+  });
+
+  it('selects configured tips locally without provider calls or rollout writes', async () => {
+    const app = makeApp('First');
+    const io = new FakeIO();
+    const runTurn = vi.fn(async (): Promise<TurnResult> => { throw new Error('unexpected turn'); });
+    const append = vi.fn();
+    const controller = new TuiSession({ app, io, session: { ...fakeSession, append }, runTurn,
+      tips: ['First', '\u001b[31m第二条\u001b[0m\n完整提示'] });
+    const done = controller.run();
+    try {
+      controller.runtime.feed('/tips\r');
+      expect(app.mode).toBe('tips');
+      expect(app.state.tips?.items).toEqual(['First', '第二条 完整提示']);
+      controller.runtime.feed('\x1b[B\r');
+      expect(app.mode).toBe('main');
+      expect(app.state.tip).toBe('第二条 完整提示');
+      expect(app.composer.text).toBe('第二条 完整提示');
+      expect(app.composer.cursor).toBe(app.composer.text.length);
+      expect(runTurn).not.toHaveBeenCalled();
+      app.clearComposer();
+      controller.runtime.feed('/tips\r');
+      expect(app.state.tips?.index).toBe(1);
+      controller.runtime.feed('\x1b[A\x03');
+      expect(app.state.tip).toBe('第二条 完整提示');
+      expect(app.mode).toBe('main');
+      expect(app.composer.text).toBe('');
+      expect(app.transcript).toEqual([]);
+      expect(runTurn).not.toHaveBeenCalled();
+      expect(append).not.toHaveBeenCalled();
+      app.resetSession();
+      expect(app.state.tip).toBe('第二条 完整提示');
+    } finally { controller.exit(); }
+    expect(await done).toBe(0);
+  });
+
   it('accepts searched commands without executing them and Ctrl+C cancels search', () => {
     const io = new FakeIO();
     const app = new TuiApp({ session: { sessionId: 's1', cwd: '/work', model: 'test' },
@@ -235,7 +286,7 @@ describe('TuiRuntime', () => {
       'OLD_SHELL_OUTPUT\r\n'.repeat(50) + '$ codingx', resolve,
     ));
     const io = new FakeIO();
-    const app = makeApp();
+    const app = makeApp('Use /help for shortcuts.');
     for (let index = 0; index < restoredRows; index++) {
       app.addNotice('HISTORY_' + String(index).padStart(3, '0'));
     }
@@ -262,6 +313,10 @@ describe('TuiRuntime', () => {
     expect(lines[0]).toContain('╭');
     expect(lines.join('\n')).not.toContain('OLD_SHELL_OUTPUT');
     expect(lines.join('\n')).not.toContain('$ codingx');
+    expect(lines.join('\n').split('  └ Tip: Use /help for shortcuts.')).toHaveLength(2);
+    const tipRow = lines.findIndex((line) => line.includes('  └ Tip:'));
+    expect(tipRow).toBeGreaterThanOrEqual(terminal.buffer.active.baseY);
+    expect(lines[tipRow - 1]).toContain('Ready');
     const ids = lines.flatMap((line) => line.match(/HISTORY_\d+/gu) ?? []);
     expect(ids).toEqual(Array.from({ length: 60 }, (_, i) => 'HISTORY_' + String(i).padStart(3, '0')));
     runtime.stop();
@@ -277,7 +332,7 @@ describe('TuiRuntime', () => {
     const drain = async (): Promise<void> => {
       await new Promise<void>((resolve) => terminal.write(io.writes.splice(0).join(''), resolve));
     };
-    const tools = ['ReadFile', 'WriteFile', 'EditFile', 'ApplyPatch', 'ListDir', 'Glob', 'Grep'];
+    const tools = ['Read', 'Write', 'Edit', 'ApplyPatch', 'ListDir', 'Glob', 'Grep'];
     const markdown = [
       '工具列表', '', '## 文件与搜索', '| 工具 | 用途 |', '|---|---|',
       ...tools.map((tool) => '| `' + tool + '` | 文件操作 |'),
@@ -303,15 +358,18 @@ describe('TuiRuntime', () => {
       await drain();
       const text = Array.from({ length: terminal.buffer.active.length }, (_, i) =>
         terminal.buffer.active.getLine(i)?.translateToString(true) ?? '').join('\n');
-      for (const label of ['工具列表', '文件与搜索', ...tools, 'Shell']) {
+      for (const label of ['工具列表', '文件与搜索']) {
         expect(text.split(label), label).toHaveLength(2);
+      }
+      for (const tool of [...tools, 'Shell']) {
+        expect(text.match(new RegExp('│ ' + tool + ' +│', 'gu')), tool).toHaveLength(1);
       }
       expect(text).toMatch(/│ 工具\s+│ 用途/u);
       expect(text).not.toContain('OLD_HISTORY_');
       io.writes.length = 0;
       runtime.render(true);
       expect(io.writes.join('')).not.toContain('\x1b[3J');
-      expect(io.writes.join('')).not.toContain('ReadFile');
+      expect(io.writes.join('')).not.toContain('Read');
     } finally {
       runtime.stop();
       terminal.dispose();

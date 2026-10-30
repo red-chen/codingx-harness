@@ -251,7 +251,7 @@ describe('interactive mode', () => {
     await mkdir(tmpDir, { recursive: true });
     const target = path.join(root, 'plain-outside.txt');
     responses.push(
-      toolResponse('toolu_plain_approval', 'WriteFile', { path: target, content: 'approved in plain mode\n' }),
+      toolResponse('toolu_plain_approval', 'Write', { path: target, content: 'approved in plain mode\n' }),
       textResponse('Wrote it.'),
     );
     const input = new PassThrough();
@@ -270,7 +270,7 @@ describe('interactive mode', () => {
     expect(code).toBe(0);
     expect(await readFile(target, 'utf8')).toBe('approved in plain mode\n');
     expect(stdout.value).toContain('Wrote it.');
-    expect(stderr.value).toContain('[approval] WriteFile: ');
+    expect(stderr.value).toContain('[approval] Write: ');
     expect(stderr.value).toContain('plain-outside.txt');
     expect(stderr.value).toContain('[a]llow once');
 
@@ -280,7 +280,7 @@ describe('interactive mode', () => {
     if (!sessionId) throw new Error('missing session');
     const events = await store.replaySession(sessionId);
     expect(events.find((event) => event.type === 'approval.requested')).toMatchObject({
-      tool: 'WriteFile',
+      tool: 'Write',
     });
     expect(events.find((event) => event.type === 'approval.decided')).toMatchObject({
       decision: 'allow',
@@ -293,7 +293,7 @@ describe('interactive mode', () => {
     const server = await startServer([]);
     const { home, workspace } = await setup(server.url);
     const input = new PassThrough();
-    input.end('/help\n/session\n/quit\n');
+    input.end('/help\n/session\n/process\n/quit\n');
     const stdout = new MemorySink();
     const stderr = new MemorySink();
 
@@ -306,8 +306,9 @@ describe('interactive mode', () => {
     });
 
     expect(code).toBe(0);
-    expect(stdout.value).toContain('Commands: /help, /session, /model, /clear, /quit');
+    expect(stdout.value).toContain('Commands: /help, /session, /model, /process [list|logs <id> [cursor]|stop <id>], /clear, /quit');
     expect(stdout.value).toContain('session: ');
+    expect(stdout.value).toContain('No managed processes in this CLI session.');
     expect(server.requests).toBe(0);
     const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
     const sessions = await store.listSessions();
@@ -602,7 +603,7 @@ api_key_env = "SECONDARY_TEST_KEY"
     const server = await startServer([]);
     const { home, workspace } = await setup(server.url);
     const input = new PassThrough();
-    input.end('/help\n/session\n/quit\n');
+    input.end('/help\n/session\n/process\n/quit\n');
     const stdout = new MemorySink();
     const stderr = new MemorySink();
 
@@ -620,8 +621,9 @@ api_key_env = "SECONDARY_TEST_KEY"
     const lines = stdout.value.trimEnd().split('\n').map((line) => JSON.parse(line));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ type: 'session.info' });
-    expect(stderr.value).toContain('Commands: /help, /session, /model, /clear, /quit');
+    expect(stderr.value).toContain('Commands: /help, /session, /model, /process [list|logs <id> [cursor]|stop <id>], /clear, /quit');
     expect(stderr.value).toContain('session: ');
+    expect(stderr.value).toContain('No managed processes in this CLI session.');
   });
 
   it('runs an initial prompt and supports JSON event output', async () => {
@@ -680,20 +682,20 @@ describe('log replay', () => {
       type: 'assistant.message',
       turnId: 'turn-1',
       text: 'reading a file',
-      calls: [{ id: 'call-1', name: 'ReadFile', input: { path: 'a.ts' } }],
+      calls: [{ id: 'call-1', name: 'Read', input: { path: 'a.ts' } }],
     });
     await session.append({
       type: 'tool.call',
       turnId: 'turn-1',
       callId: 'call-1',
-      name: 'ReadFile',
+      name: 'Read',
       input: { path: 'a.ts' },
     });
     await session.append({
       type: 'tool.result',
       turnId: 'turn-1',
       callId: 'call-1',
-      name: 'ReadFile',
+      name: 'Read',
       content: '1\tconst a = 1;',
       isError: false,
     });
@@ -723,7 +725,7 @@ describe('log replay', () => {
     expect(humanOut.value).toContain('hello log');
     expect(humanOut.value).toContain('reading a file');
     expect(humanOut.value).toContain('tool.call');
-    expect(humanOut.value).toContain('ReadFile');
+    expect(humanOut.value).toContain('Read');
     expect(humanOut.value).toContain('status=done');
 
     const jsonOut = new MemorySink();

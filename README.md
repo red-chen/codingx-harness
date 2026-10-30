@@ -14,16 +14,20 @@ M1 已经可以完成「读文件 → 改文件 → 跑测试 / 命令」的闭�
 - Anthropic Messages 流式 Provider（tool use / prompt caching / 错误分类 / 超时与中断）
 - 单目标 ProviderRouter（首个内容事件前重试；多目标路由留到 M5）
 - Agent 循环（串行工具、maxSteps、abort、usage、完整 rollout）
-- 工具：`ReadFile`、`ListDir`、`EditFile`（先读后写）、`Shell`（进程组 + 超时回收）
+- 工具：`Read`、`ListDir`、`Edit`（先读后写）、`Shell`（进程组 + 超时回收）
+- 受管进程：`ProcessStart`、`ProcessList`、`ProcessRead`、`ProcessStop`；跨 turn 保留服务，有界日志与读取游标，`/clear` / 正常退出回收进程组。网络权限沿用 profile；不跨 CLI 托管。见 [Process 使用与边界](docs/processes.md)。
+- 直接管理进程：`/process` 查看列表，`/process logs <id>` 查看日志，`/process stop <id>` 停止；plain / TUI 均支持，无需调用模型，id 可用唯一前缀。
 - 纯文本 CLI：`codingx exec`、逐行交互模式、`--json` 事件流、`codingx log` 离线回放
 - 进程内 JSONL SessionStore（单写者文件锁、seq、去重、脱敏、未完成尾行恢复）
 
 M2 本轮已落地：
 
+- **编辑 Diff**：`Write`、`Edit`、`ApplyPatch` 成功后显示 `Edited N files (+新增 -删除)`；相邻编辑按文件聚合，显示行号、红绿背景与代码着色，每个文件默认预览 3 行，Ctrl+O 展开详情。变更随 rollout 保存，resume 可回放；大 Diff 明示截断。
+- **Tips**：TUI 在 StatusBar 正下方显示一条随机使用提示；`/tips` 可浏览完整提示，选中后填入输入框供编辑、发送，同时更新本次运行显示的提示。编辑 `$CODINGX_HOME/tips.json`（默认 `~/.codingx/tips.json`）可替换提示列表或关闭自动显示，首次启动自动生成。详见 [Tips 配置](docs/config.md#tips)。
 - **cwd 隔离**：新会话保存在 `$CODINGX_HOME/sessions/<cwd-name>/`（如 `sessions/-Users-red-workspace-codingx-harness/`；自定义 `session.dir` 同样追加 cwd 子目录）；列表、resume、fork、log、watch、prune 只操作当前 cwd。子目录独立，符号链接按真实路径归并；旧会话按 header 中的 cwd 继续读取，旧全局输入历史保留但不自动导入。
 - **会话续接**：`--continue` / `--resume <id>` / `--fork <id>`；从 rollout 重建消息历史，悬空工具调用补合成 `tool_result`，恢复已读文件状态
 - **上下文压缩**：三级压缩（截断 → 丢弃 → 模型摘要），写入 `context.compacted`；30 轮大工具输出压测通过
-- **工具扩展**：`Glob`、`Grep`（优先 rg，缺失时内置回退）、`WriteFile`、`UpdatePlan`、`ApplyPatch`、`Skill`、`AskUserQuestion`
+- **工具扩展**：`Glob`、`Grep`（优先 rg，缺失时内置回退）、`Write`、`UpdatePlan`、`ApplyPatch`、`Skill`、`AskUserQuestion`
 - **额外工作目录**：`--add-dir <DIR>` 可重复，把主 workspace 之外的目录显式加入文件与 Shell 工具的允许根；当前只有 profile 的 `:workspace_roots` 允许写时才能追加，`:read-only` 会报错。仅对当前调用生效，`--continue`/`--resume` 需再次传入
 - **权限策略（M3.1）**：Permission profiles（`:read-only` / `:workspace` / `:workspace-git-hooks` / `:danger-full-access` + 命名 profile）、`approval_policy`（`on-request` / `never`）、`--sandbox` / `--ask-for-approval` / `--permission-profile` 已接入文件工具与 Shell；越界在非交互模式下返回 `APPROVAL_REQUIRED`/`PERMISSION_DENIED`，并写 `permission.decision` 审计事件
 - **审批交互（M3.2）**：TUI 底部审批弹层与 plain 交互提示；允许一次 / 本会话 / 命令前缀 / 拒绝并说明原因；授权仅存在内存，`/clear` 清除，resume 不继承；`/permissions` 可列出并切换 profile；写 `approval.requested/decided`、`permission.granted`、`profile.changed`
@@ -144,7 +148,7 @@ node bin/codingx.js sessiond stop
 自动化测试使用本地假 Anthropic SSE 服务覆盖完整链路：
 
 ```text
-ReadFile(src/util.ts) → EditFile(foo → bar) → Shell(grep 校验) → 最终回答
+Read(src/util.ts) → Edit(foo → bar) → Shell(grep 校验) → 最终回答
 ```
 
 测试同时断言 rollout 可回放、`--json` stdout 无人类文本、会话结束后写 `session.end`、续接/分叉历史、悬空工具调用修复与 30 轮压缩。当前 **59 个测试文件、680 项测试**全部通过；还覆盖真实 Ctrl+C 后 `--continue`、两个 CLI 的写租约互斥、TUI 帧/按键预算、slash 补全、`!` 本地命令（策略/审批/沙箱/排队/恢复）、Agent Harness hooks（六事件、exit 2 阻止、JSON stdin、session 生命周期、审计）、`/clear` 重写 JSONL、`/model` 模型与推理强度切换、`--add-dir` 额外可写目录、`--yolo` 绕过 workspace 限制（含别名与告警）、Permission profile / `--sandbox` / `--ask-for-approval` / 非交互 fail closed / `permission.decision` 审计、TUI/plain 审批与拒绝理由 / 会话与前缀授权 / `/permissions` 切换 / `approval.*` 审计、macOS Seatbelt 的越界写入/凭证读取/网络 deny/Node 工具链/git status/git hooks/`sandbox.denied`、`sessions prune`、旧 daemon 方法握手与自动替换、composer/用户消息背景与底部 meta，以及“CLI → 自动拉起 sessiond → rollout → sessions list/show → status/stop”和 80x24/120x40 TUI PTY 冒烟。真实 Provider 的冒烟需要配置 `API_KEY` 后手工执行；CI 不访问外网。
@@ -158,7 +162,7 @@ ReadFile(src/util.ts) → EditFile(foo → bar) → Shell(grep 校验) → 最�
 | 自研 TUI | Terminal/TuiApp/TuiRuntime/TuiSession 已接入 CLI（TTY 默认）；markdown/diff、help/transcript overlay、slash 补全、`/clear`、`/model`、提问面板已完成；mention、session picker 待做；审批 overlay 属 M3 | M2 |
 | 上下文压缩 | 三级已实现：截断 / 丢弃 / 模型摘要 | M2 已完成 |
 | resume / fork | 已实现；sessiond 启用时通过 IPC/租约，嵌入式存储保留 | M2 |
-| 工具 | `Glob`、`Grep`、`WriteFile`、`UpdatePlan`、`ApplyPatch`、`Skill`、`AskUserQuestion` 已实现；`AskUserQuestion` 仅在 TUI 可交互 | M2 |
+| 工具 | `Glob`、`Grep`、`Write`、`UpdatePlan`、`ApplyPatch`、`Skill`、`AskUserQuestion` 已实现；`AskUserQuestion` 仅在 TUI 可交互 | M2 |
 | 权限体系 / 审批 / Permission profiles | M3.1 + M3.2 已落地：文件工具受 profile + approval policy 约束；TUI/plain 可审批并做会话/前缀授权；非交互 fail closed；权限选择器与长命令全屏查看已实现。设计见 [permissions.md](docs/permissions.md) | M3（[任务拆分](docs/implementation-plan-m3.md)） |
 | Agent Harness hooks | 全局 `[[hooks]]` 六个生命周期事件；JSON stdin、matcher、exit 2 阻止 prompt/工具、`hook.finished` 审计；项目配置不能定义 hooks | 已实现（MVP） |
 | Git hooks | 仓库 hooks 默认可执行；`.git/hooks` / `.git/config` 写入默认 deny；`:workspace-git-hooks` 或 `:git_hooks` / `:git_config` 作用域显式放开并告警 | 已实现 |

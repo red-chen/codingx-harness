@@ -72,6 +72,8 @@ export interface FilesystemRule {
 
 export interface NetworkPolicy {
   enabled: boolean;
+  /** Omitted by legacy enabled-only profiles: true means all, false means none. */
+  mode?: 'none' | 'local' | 'all';
   /** Domain pattern (exact, *.example.com or **.example.com) to allow/deny. */
   domains: Record<string, 'allow' | 'deny'>;
 }

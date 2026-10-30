@@ -189,7 +189,7 @@ export async function runLocalCommand(options: LocalCommandOptions): Promise<Loc
     });
   }
 
-  const { result, sandboxKind, sandboxActive, sandboxDenied, networkDenied } = outcome.execution;
+  const { result, sandboxKind, sandboxActive, sandboxDenied, networkDenied, hint } = outcome.execution;
   const content = formatOutput(
     result.stdout,
     result.stderr,
@@ -220,7 +220,7 @@ export async function runLocalCommand(options: LocalCommandOptions): Promise<Loc
     : undefined;
 
   return {
-    content,
+    content: hint === undefined ? content : hint + '\n\n' + content,
     isError: failed,
     exitCode: result.exitCode,
     durationMs: result.durationMs,

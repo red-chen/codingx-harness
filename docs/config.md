@@ -23,6 +23,35 @@
 
 项目配置只允许覆盖**行为类**设置（模型、工具开关、MCP、联网），且权限相关设置只能收紧（M3 起强制执行）：受信任项目可以追加更窄的 Permission profile / 审批规则，但不能放宽全局权限或网络白名单。项目配置不允许覆盖凭证——避免从远程仓库克隆来的项目配置窃取本地密钥。凭证只从 `codingx login` 的 `auth.json` 或环境变量读取，不写入 `config.toml`。整个 `[sessiond]` 段与 `session.dir` / `retention_days` 是例外：只允许来自全局配置或环境变量，项目配置不得覆盖。`[provider.<id>]` 含端点与凭证，也只允许全局配置；项目配置可以定义/选择 routes，但只能引用全局 provider id。
 
+## Tips
+
+TUI 每次启动随机选取一条提示，显示在 StatusBar 正下方（输入框上方），空闲和任务执行中均显示；可用 `/tips` 手动切换，格式为：
+
+```text
+  └ Tip: Use /model to choose a model and reasoning effort.
+```
+
+首次启动会将默认提示写入 `$CODINGX_HOME/tips.json`；未设置 `CODINGX_HOME` 时为 `~/.codingx/tips.json`。这是全局 UI 配置，各工作目录共享。直接编辑此文件，下次启动生效：
+
+```json
+{
+  "enabled": true,
+  "tips": [
+    "Use /model to choose a model and reasoning effort.",
+    "Press Ctrl+R to search your input history.",
+    "完成改动后，记得运行 npm run typecheck 和 npm test。"
+  ]
+}
+```
+
+- `enabled` 默认为 `true`；设为 `false` 关闭提示。
+- `tips` 为字符串数组，替换整份默认列表；省略时使用内置默认提示，空数组或全空白内容不显示提示。
+- 输入框为空时按 Tab，将当前显示的完整 Tip 填入输入框，光标置于末尾；空闲和任务执行中均可用，不自动发送或排队。输入框已有内容时保留原有 Tab 行为（命令补全、任务执行中排队），不覆盖草稿。
+- `/tips` 打开当前配置列表：↑/↓ 浏览，Home/End 到首尾，Enter 将所选完整提示填入输入框（替换当前草稿，光标在末尾），可继续编辑，再按 Enter 发送；Esc 或 Ctrl+C 取消。面板中的预览自动换行，PgUp/PgDn 翻页阅读长提示。选择同时更新本次运行显示的提示，不修改 `tips.json`，不自动发送；即使 `enabled: false`，手动选择仍可在本次运行显示提示。空列表会提示无可选项。
+- 除手动选择外，提示在同一次启动中保持不变，重绘、滚动和 `/clear` 不重新抽取，也不滚入终端历史。提示占一行，过长时以省略号截断；终端小于 12 列、8 行或底部空间不足时隐藏，优先保留输入框和交互菜单。
+- 文件不存在时自动生成默认值（文件权限 0600）；读取、格式校验或创建失败会告警并回退内置提示，不覆盖已有文件。
+- Tips 的展示和选择不写入会话、不自动发送给模型；只有用户提交输入框内容后才按普通输入处理。不影响 `--plain`、`exec` 或 JSON 输出。默认提示包含已支持的命令、快捷键及基于真实场景的深度 Review 建议；`/theme` 当前尚未实现。
+
 ## 完整示例
 
 ```toml
@@ -245,13 +274,13 @@ timeout_ms = 5000
 
 [[hooks]]
 event = "pre_tool_use"
-matcher = "Shell|WriteFile"      # 仅工具事件；工具名正则
+matcher = "Shell|Write"      # 仅工具事件；工具名正则
 command = "python3 ~/.codingx/hooks/guard.py"
 timeout_ms = 10000
 
 [[hooks]]
 event = "post_tool_use"
-matcher = "EditFile|WriteFile|ApplyPatch"
+matcher = "Edit|Write|ApplyPatch"
 command = "npm run lint --silent"
 ```
 

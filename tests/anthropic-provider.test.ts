@@ -132,7 +132,7 @@ const toolStream =
   sse('content_block_start', {
     type: 'content_block_start',
     index: 0,
-    content_block: { type: 'tool_use', id: 'toolu_1', name: 'ReadFile', input: {} },
+    content_block: { type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} },
   }) +
   sse('content_block_delta', {
     type: 'content_block_delta',
@@ -158,7 +158,7 @@ function request(): ModelRequest {
     system: 'You are codingx.',
     messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
     tools: [
-      { name: 'ReadFile', description: 'read', inputSchema: { type: 'object' } },
+      { name: 'Read', description: 'read', inputSchema: { type: 'object' } },
       { name: 'Shell', description: 'run', inputSchema: { type: 'object' } },
     ],
     maxOutputTokens: 123,
@@ -279,7 +279,7 @@ describe('AnthropicMessagesProvider streaming', () => {
     expect(events).toContainEqual({
       type: 'tool.call',
       id: 'toolu_1',
-      name: 'ReadFile',
+      name: 'Read',
       input: { path: 'src/a.ts' },
     });
     expect(events.at(-1)).toEqual({ type: 'stop', reason: 'tool_use' });

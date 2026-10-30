@@ -9,6 +9,7 @@ import {
   resolveProfileRoots,
 } from './profile.js';
 import { parseShellCommand } from './shell-parse.js';
+import { isLocalHost, networkMode } from './network.js';
 import type {
   ApprovalPolicy,
   ApprovalRequest,
@@ -24,9 +25,9 @@ import type {
   ShellSegment,
 } from './types.js';
 
-const READ_TOOLS = new Set(['ReadFile', 'ListDir', 'Glob', 'Grep']);
-const WRITE_TOOLS = new Set(['WriteFile', 'EditFile', 'ApplyPatch']);
-const PASSIVE_TOOLS = new Set(['AskUserQuestion', 'UpdatePlan', 'Skill']);
+const READ_TOOLS = new Set(['Read', 'ListDir', 'Glob', 'Grep']);
+const WRITE_TOOLS = new Set(['Write', 'Edit', 'ApplyPatch']);
+const PASSIVE_TOOLS = new Set(['AskUserQuestion', 'UpdatePlan', 'Skill', 'ProcessList', 'ProcessRead', 'ProcessStop']);
 
 const FORBIDDEN_PROGRAMS = new Set([
   'sudo',
@@ -238,7 +239,7 @@ class Runtime implements PolicyRuntime {
   private readonly denyGlobs: ReadonlyArray<{ base: string | null; pattern: string }>;
   private readonly alwaysAsk: boolean;
   private readonly readOnly: boolean;
-  private readonly network: { enabled: boolean; domains: Record<string, 'allow' | 'deny'> };
+  private readonly network: SandboxPolicy['network'];
   private readonly sessionDir: string | undefined;
 
   constructor(
@@ -377,12 +378,12 @@ class Runtime implements PolicyRuntime {
     return strictest ?? this.allow({ kind: access === 'write' ? 'file.write' : 'file.read', tool }, 'low', 'profile.allow');
   }
 
-  private async evaluateShell(input: unknown): Promise<PolicyDecision> {
+  private async evaluateShell(input: unknown, tool = 'Shell'): Promise<PolicyDecision> {
     const record = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {};
     const command = typeof record.command === 'string' ? record.command : '';
     const requestedCwd = typeof record.cwd === 'string' ? record.cwd : '.';
     const cwd = path.resolve(this.cwd, expandHome(requestedCwd, homeOf(this.env)));
-    const action: PolicyAction = { kind: 'exec', tool: 'Shell', command, cwd, network: false };
+    const action: PolicyAction = { kind: 'exec', tool, command, cwd, network: false };
     const parsed = parseShellCommand(command, cwd);
     if (pipelinePipesToShell(parsed.segments)) {
       return denied(action, 'Piping a download directly into a shell is forbidden.', 'exec.forbidden', 'POLICY_FORBIDDEN', 'high');
@@ -461,7 +462,7 @@ class Runtime implements PolicyRuntime {
       }
       if (isNetworkSegment(segment)) {
         action.network = true;
-        if (!this.network.enabled) {
+        if (networkMode(this.network) === 'none') {
           consider(
             this.askOrDeny(
               action,
@@ -470,6 +471,12 @@ class Runtime implements PolicyRuntime {
               'high',
             ),
           );
+          continue;
+        }
+        if (networkMode(this.network) === 'local' && !isLocalHost(hostFromSegment(segment))) {
+          consider(this.askOrDeny(action,
+            'This profile only permits connections to this host; command approval does not widen the OS sandbox.',
+            'network.local', 'high'));
           continue;
         }
         if (!networkAllowed(this.network.domains, hostFromSegment(segment))) {
@@ -563,7 +570,7 @@ class Runtime implements PolicyRuntime {
       const action: PolicyAction = { kind: 'tool', tool };
       return this.allow(action, 'low', 'profile.passive');
     }
-    if (tool === 'Shell') return this.evaluateShell(input);
+    if (tool === 'Shell' || tool === 'ProcessStart') return this.evaluateShell(input, tool);
     if (READ_TOOLS.has(tool) || WRITE_TOOLS.has(tool)) return this.evaluateFile(tool, input);
     const action: PolicyAction = { kind: 'tool', tool };
     return this.askOrDeny(action, 'Tool "' + tool + '" has no declared permission action.', 'tool.unknown', 'medium');

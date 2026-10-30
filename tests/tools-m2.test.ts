@@ -273,34 +273,42 @@ describe('grep ripgrep preference', () => {
   });
 });
 
-describe('WriteFile', () => {
+describe('Write', () => {
   it('creates a file, creates parent directories, reports bytes and marks it read', async () => {
-    const result = await registry.execute('WriteFile', { path: 'src/deep/new.txt', content: 'hello\n' }, ctx);
+    const result = await registry.execute('Write', { path: 'src/deep/new.txt', content: 'hello\n' }, ctx);
     expect(result.isError).toBeUndefined();
     expect(result.content).toBe('Created src/deep/new.txt (6 bytes).');
-    expect(result.meta).toEqual({ path: 'src/deep/new.txt', created: true, bytes: 6 });
+    expect(result.meta).toMatchObject({ path: 'src/deep/new.txt', created: true, bytes: 6 });
+    expect(result.meta?.fileDiffs).toMatchObject([{
+      path: 'src/deep/new.txt', additions: 1, deletions: 0,
+      lines: [{ kind: 'add', line: 1, text: 'hello' }],
+    }]);
     expect(await readFile(path.join(cwd, 'src/deep/new.txt'), 'utf8')).toBe('hello\n');
     expect(ctx.readTracker.hasRead(await realpath(path.join(cwd, 'src/deep/new.txt')))).toBe(true);
   });
 
   it('refuses to overwrite a file that has not been read', async () => {
     const file = await put('existing.txt', 'original');
-    const result = await registry.execute('WriteFile', { path: 'existing.txt', content: 'changed' }, ctx);
+    const result = await registry.execute('Write', { path: 'existing.txt', content: 'changed' }, ctx);
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/before it has been read/);
     expect(result.meta).toMatchObject({ reason: 'read-before-write' });
     expect(await readFile(file, 'utf8')).toBe('original');
   });
 
-  it('overwrites after ReadFile and preserves the existing mode', async () => {
+  it('overwrites after Read and preserves the existing mode', async () => {
     const file = await put('mode.txt', 'old');
     await chmod(file, 0o640);
-    await registry.execute('ReadFile', { path: 'mode.txt' }, ctx);
+    await registry.execute('Read', { path: 'mode.txt' }, ctx);
 
-    const result = await registry.execute('WriteFile', { path: 'mode.txt', content: 'new content' }, ctx);
+    const result = await registry.execute('Write', { path: 'mode.txt', content: 'new content' }, ctx);
     expect(result.isError).toBeUndefined();
     expect(result.content).toBe('Overwrote mode.txt (11 bytes).');
-    expect(result.meta).toEqual({ path: 'mode.txt', created: false, bytes: 11 });
+    expect(result.meta).toMatchObject({ path: 'mode.txt', created: false, bytes: 11 });
+    expect(result.meta?.fileDiffs).toMatchObject([{
+      additions: 1, deletions: 1,
+      lines: [{ kind: 'remove', text: 'old' }, { kind: 'add', text: 'new content' }],
+    }]);
     expect(await readFile(file, 'utf8')).toBe('new content');
     if (process.platform !== 'win32') {
       expect((await stat(file)).mode & 0o777).toBe(0o640);
@@ -309,23 +317,23 @@ describe('WriteFile', () => {
 
   it('rejects directories, binary/non-UTF-8 files and paths outside the workspace', async () => {
     await mkdir(path.join(cwd, 'dir'));
-    const directory = await registry.execute('WriteFile', { path: 'dir', content: 'x' }, ctx);
+    const directory = await registry.execute('Write', { path: 'dir', content: 'x' }, ctx);
     expect(directory.isError).toBe(true);
     expect(directory.content).toMatch(/not a regular file/);
 
     const binaryFile = await put('binary.dat', Buffer.from([0x66, 0x00, 0x80]));
     ctx.readTracker.markRead(await realpath(binaryFile));
-    const binary = await registry.execute('WriteFile', { path: 'binary.dat', content: 'x' }, ctx);
+    const binary = await registry.execute('Write', { path: 'binary.dat', content: 'x' }, ctx);
     expect(binary.isError).toBe(true);
     expect(binary.content).toMatch(/binary/);
 
     const invalidFile = await put('invalid.txt', Buffer.from([0x66, 0x6f, 0x80]));
     ctx.readTracker.markRead(await realpath(invalidFile));
-    const invalid = await registry.execute('WriteFile', { path: 'invalid.txt', content: 'x' }, ctx);
+    const invalid = await registry.execute('Write', { path: 'invalid.txt', content: 'x' }, ctx);
     expect(invalid.isError).toBe(true);
     expect(invalid.content).toMatch(/UTF-8/);
 
-    const outside = await registry.execute('WriteFile', { path: '../outside.txt', content: 'x' }, ctx);
+    const outside = await registry.execute('Write', { path: '../outside.txt', content: 'x' }, ctx);
     expect(outside.isError).toBe(true);
     expect(outside.content).toMatch(/outside the workspace/);
   });
@@ -333,7 +341,7 @@ describe('WriteFile', () => {
   it('refuses to write through a dangling symlink', async () => {
     const target = path.join(root, 'missing-outside.txt');
     await symlink(target, path.join(cwd, 'dangling.txt'));
-    const result = await registry.execute('WriteFile', { path: 'dangling.txt', content: 'x' }, ctx);
+    const result = await registry.execute('Write', { path: 'dangling.txt', content: 'x' }, ctx);
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/symbolic link/);
     await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });

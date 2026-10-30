@@ -1,4 +1,5 @@
 import { CodingxError } from '../util/errors.js';
+import { networkMode } from '../policy/network.js';
 import type { SandboxPolicy } from '../policy/types.js';
 import { createSeatbeltBackend } from './seatbelt.js';
 import type {
@@ -71,7 +72,7 @@ export async function createSandboxBackend(options: SandboxBackendOptions = {}):
 export function sandboxSummary(status: SandboxStatus, policy: SandboxPolicy): {
   kind: string;
   active: boolean;
-  network: 'deny' | 'allow' | 'none';
+  network: 'deny' | 'allow' | 'none' | 'local';
   required: boolean;
   reason?: string;
 } {
@@ -79,7 +80,7 @@ export function sandboxSummary(status: SandboxStatus, policy: SandboxPolicy): {
   return {
     kind: status.kind,
     active,
-    network: !active ? 'none' : policy.network.enabled ? 'allow' : 'deny',
+    network: !active ? 'none' : networkMode(policy.network) === 'local' ? 'local' : networkMode(policy.network) === 'all' ? 'allow' : 'deny',
     required: status.required,
     ...(active ? {} : { reason: status.reason ?? 'the selected profile disables OS sandboxing' }),
   };

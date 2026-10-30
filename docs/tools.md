@@ -1,5 +1,11 @@
 # 工具系统
 
+当前文件工具名称为 `Read`、`Write`、`Edit`（旧会话中的 `ReadFile` 仍可恢复已读状态）。
+`Write`、`Edit` 和 `ApplyPatch` 的成功结果在 `meta.fileDiffs` 中附带有界的文件变更快照，
+供 TUI 的 `Edited` 视图和会话回放使用，不回传模型。每个文件包含路径、增删行数、
+带原/新行号的变更行以及截断/粗略替换标记；计数聚合的是各次编辑操作，非整个 turn 的净 Git Diff。
+TUI 默认每文件预览 3 行，Ctrl+O 展开保留的变更；无快照的旧结果继续显示原工具输出。
+
 ## 工具接口
 
 ```ts
@@ -70,7 +76,7 @@ export interface ToolContext {
 
 | 工具 | 入参 | 说明 |
 | --- | --- | --- |
-| `ReadFile` | `path`, `offset?`, `limit?` | 按行读取，带行号；默认最多 2000 行 |
+| `Read` | `path`, `offset?`, `limit?` | 按行读取，带行号；默认最多 2000 行 |
 | `ListDir` | `path`, `depth?` | 树状列出目录，自动忽略 `.gitignore` 与二进制 |
 | `Glob` | `pattern`, `path?` | 文件名匹配，返回按修改时间排序的路径列表 |
 | `Grep` | `pattern`, `path?`, `glob?`, `context?` | 内容搜索，优先调用 `rg`，缺失时退化为内置实现 |
@@ -79,18 +85,26 @@ export interface ToolContext {
 
 | 工具 | 入参 | 说明 |
 | --- | --- | --- |
-| `WriteFile` | `path`, `content` | 整文件写入；写入前检查是否已存在并提示覆盖 |
-| `EditFile` | `path`, `old_string`, `new_string`, `replace_all?` | 精确字符串替换；`old_string` 必须唯一匹配，否则报错让模型重试 |
+| `Write` | `path`, `content` | 整文件写入；写入前检查是否已存在并提示覆盖 |
+| `Edit` | `path`, `old_string`, `new_string`, `replace_all?` | 精确字符串替换；`old_string` 必须唯一匹配，否则报错让模型重试 |
 | `ApplyPatch` | `patch` | unified diff 形式的多文件补丁，用于批量改动 |
 
-`EditFile` 与 `ApplyPatch` 都要求**先读后写**：工具会检查该文件在本会话中是否被读取过，未读取则拒绝并提示先调用 `ReadFile`。这条约束显著降低了模型凭想象改文件的情况。
+`Edit` 与 `ApplyPatch` 都要求**先读后写**：工具会检查该文件在本会话中是否被读取过，未读取则拒绝并提示先调用 `Read`。这条约束显著降低了模型凭想象改文件的情况。
 
 ### 执行
 
 | 工具 | 入参 | 说明 |
 | --- | --- | --- |
 | `Shell` | `command`, `cwd?`, `timeout_ms?`, `description?` | 执行命令，返回 stdout / stderr / 退出码 |
-| `ShellInteractive` | `command` | 长驻进程（dev server 等），返回会话句柄，后续可读取输出（M5） |
+| `ProcessStart` | `command`, `cwd?`, `description?` | 启动会话内受管进程，返回 processId；复用 Shell 权限/沙箱 |
+| `ProcessList` | 无 | 查询当前 CLI 会话进程及最近退出状态 |
+| `ProcessRead` | `process_id`, `cursor?`, `max_chars?`, `wait_ms?` | 读取有界合并日志与状态，按 nextCursor 增量读取 |
+| `ProcessStop` | `process_id` | TERM → KILL 回收进程组，可重复调用 |
+
+Process 跨 turn 存活，在 `/clear` 和正常退出时清理；不会从历史 PID 恢复监管。
+用户可通过 `/process`、`/process logs <id>`、`/process stop <id>` 直接管理，无需模型调用。
+running 不等于服务已就绪；HTTP server 需要 profile 允许网络。详见 [受管进程](processes.md)。
+PTY / stdin 交互与跨 CLI 托管仍待后续实现。
 
 `Shell` 的默认超时 120s，超时后向整个进程组发 `SIGTERM`，再等 5s 后 `SIGKILL`。工作目录受 Permission profile 约束；策略层会解析命令、拦截已知网络命令/重定向/硬拒绝，macOS 上再交给 Seatbelt（默认 deny、写入限 profile 根、网络默认 deny）。Linux 目前没有 OS 级沙箱，任意程序仍可绕过命令启发式；`--yolo` 在 macOS 上也跳过 Seatbelt。
 
@@ -191,7 +205,7 @@ description: Create, read, edit and validate Word documents.
 
 ### 当前限制
 
-文件工具默认限制在 workspace 内；未通过 `--add-dir` 添加该目录时，**全局技能目录中的补充文件无法被 `ReadFile` 读取**。需要引用补充文件时，把技能放在项目的 `.codingx/skills` 下，或用 `--add-dir` 显式加入技能目录。技能正文本身不受此限制（由 `Skill` 工具直接加载）。
+文件工具默认限制在 workspace 内；未通过 `--add-dir` 添加该目录时，**全局技能目录中的补充文件无法被 `Read` 读取**。需要引用补充文件时，把技能放在项目的 `.codingx/skills` 下，或用 `--add-dir` 显式加入技能目录。技能正文本身不受此限制（由 `Skill` 工具直接加载）。
 
 ## 工具输出的裁剪
 
@@ -200,7 +214,7 @@ description: Create, read, edit and validate Word documents.
 | 工具 | 策略 |
 | --- | --- |
 | `Shell` | 保留最后 200 行 + 首个错误块；截断时标注总行数 |
-| `ReadFile` | 超过 `limit` 时明确告知「文件共 N 行，已返回 A-B 行」 |
+| `Read` | 超过 `limit` 时明确告知「文件共 N 行，已返回 A-B 行」 |
 | `Grep` | 最多 100 条命中，超出提示缩小范围 |
 | `ListDir` | 超过 500 个条目时折叠为目录统计 |
 

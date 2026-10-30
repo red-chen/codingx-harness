@@ -323,13 +323,13 @@ describe('session continuation', () => {
       type: 'assistant.message',
       turnId: 'turn-old',
       text: '',
-      calls: [{ id: 'call-x', name: 'ReadFile', input: { path: 'src/a.ts' } }],
+      calls: [{ id: 'call-x', name: 'Read', input: { path: 'src/a.ts' } }],
     });
     await session.append({
       type: 'tool.call',
       turnId: 'turn-old',
       callId: 'call-x',
-      name: 'ReadFile',
+      name: 'Read',
       input: { path: 'src/a.ts' },
     });
     await session.append({ type: 'turn.aborted', turnId: 'turn-old', reason: 'interrupted' });
@@ -354,7 +354,7 @@ describe('session continuation', () => {
     const messages = messagesOf(server.bodies[0] ?? {});
     expect(messages).toHaveLength(3);
     expect(messages[1]?.content).toEqual([
-      { type: 'tool_use', id: 'call-x', name: 'ReadFile', input: { path: 'src/a.ts' } },
+      { type: 'tool_use', id: 'call-x', name: 'Read', input: { path: 'src/a.ts' } },
     ]);
     expect(messages[2]?.content).toEqual([
       { type: 'tool_result', tool_use_id: 'call-x', content: SYNTHETIC_TOOL_RESULT, is_error: true },

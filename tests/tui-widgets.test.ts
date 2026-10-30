@@ -303,8 +303,8 @@ describe('transcript cells', () => {
       output: 'raw-result', isError: false, running: false,
     });
     const cells: TranscriptCell[] = [make('Grep', '1', 'Search pattern in src'),
-      make('ReadFile', '2', 'Read src/a.ts'),
-      { ...make('EditFile', '3', ''), command: 'EditFile src/a.ts' },
+      make('Read', '2', 'Read src/a.ts'),
+      { ...make('Edit', '3', ''), command: 'Edit src/a.ts' },
       { ...make('ListDir', '4', 'List missing'), isError: true, output: 'not found' }];
     const buffer = new CellBuffer(80, 20);
     renderTranscript(rect(0, 0, 80, 20), buffer, { cells });
@@ -312,15 +312,15 @@ describe('transcript cells', () => {
     expect(text.match(/• Explored/gu)).toHaveLength(2);
     expect(text).toContain('Search pattern in src');
     expect(text).toContain('Read src/a.ts');
-    expect(text).toContain('Ran EditFile');
+    expect(text).toContain('Ran Edit');
     expect(text).toContain('(failed)');
     expect(text).toContain('1 failed');
   });
 
   it('caps explored summaries and preserves all calls in details', () => {
     const cells: ExecCell[] = Array.from({ length: 7 }, (_, i) => ({
-      type: 'exec', id: String(i), callId: String(i), name: 'ReadFile',
-      command: 'ReadFile file' + i, output: 'content' + i, running: false, isError: i === 0,
+      type: 'exec', id: String(i), callId: String(i), name: 'Read',
+      command: 'Read file' + i, output: 'content' + i, running: false, isError: i === 0,
     }));
     const collapsed = styledTexts(buildExecGroupLines(cells, 80));
     expect(collapsed).toHaveLength(5);
@@ -704,13 +704,13 @@ describe('frame composition', () => {
       app.handleEvent({
         type: 'tool.started',
         turnId: 't1',
-        call: { id, name: 'ReadFile', input: { path: 'src/a.ts', offset } },
+        call: { id, name: 'Read', input: { path: 'src/a.ts', offset } },
       });
       app.handleEvent({
         type: 'tool.finished',
         turnId: 't1',
         callId: id,
-        name: 'ReadFile',
+        name: 'Read',
         result: { content: output, isError: false },
         durationMs: 1,
       });

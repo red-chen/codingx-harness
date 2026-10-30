@@ -4,6 +4,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { CodingxError } from '../util/errors.js';
+import { networkMode } from '../policy/network.js';
 import type { SandboxPolicy } from '../policy/types.js';
 import type {
   SandboxBackend,
@@ -270,7 +271,14 @@ export function buildSeatbeltProfile(policy: SandboxPolicy): string {
   }
   for (const device of DEVICE_WRITE_LITERALS) addLiteral(lines, 'allow file-write*', device);
 
-  if (policy.network.enabled) lines.push('(allow network*)');
+  const network = networkMode(policy.network);
+  if (network === 'all') lines.push('(allow network*)');
+  if (network === 'local') {
+    // Seatbelt localhost means this host (including its interface addresses).
+    lines.push('(allow network-bind (local ip "localhost:*"))');
+    lines.push('(allow network-inbound (local ip "localhost:*"))');
+    lines.push('(allow network-outbound (remote ip "localhost:*"))');
+  }
 
   for (const root of unique(policy.denyRoots.map(canonicalRoot))) {
     if (!root.startsWith('/')) continue;

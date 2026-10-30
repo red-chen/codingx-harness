@@ -6,9 +6,11 @@ export {
   GIT_HOOKS_PROFILE,
   READ_ONLY_PROFILE,
   WORKSPACE_PROFILE,
+  LOCAL_PROFILE,
   parsePermissions,
   resolveProfileRoots,
   isReadOnlyProgram,
 } from './profile.js';
 export { parseShellCommand } from './shell-parse.js';
+export { networkMode, isLocalHost } from './network.js';
 export type * from './types.js';

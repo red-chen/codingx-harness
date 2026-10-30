@@ -1,3 +1,4 @@
+import { LOCAL_NETWORK_NOTICE, networkMode } from '../policy/network.js';
 import os from 'node:os';
 import path from 'node:path';
 import { stat } from 'node:fs/promises';
@@ -159,7 +160,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
       warnings.push(
         'M3.1 enforces the permission profile for file tools and Shell. macOS Seatbelt is active: ' +
           'file writes are limited to the profile roots and network access is ' +
-          (policy.sandboxPolicy.network.enabled ? 'allowed wholesale' : 'denied') + '.',
+          (networkMode(policy.sandboxPolicy.network) === 'local' ? 'limited to this host (including its interface addresses)' : policy.sandboxPolicy.network.enabled ? 'allowed wholesale' : 'denied') + '.',
       );
       warnings.push(
         'OS sandbox: Seatbelt (sandbox-exec). Interactive approvals are available in TUI/plain mode; ' +
@@ -170,10 +171,13 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
           '" is enforced for file tools and Shell.',
       );
       warnings.push(...sandboxStatus.warnings);
-      if (policy.sandboxPolicy.network.enabled && Object.keys(policy.sandboxPolicy.network.domains).length > 0) {
+      if (networkMode(policy.sandboxPolicy.network) === 'local') warnings.push(LOCAL_NETWORK_NOTICE);
+      if (networkMode(policy.sandboxPolicy.network) !== 'none' && Object.keys(policy.sandboxPolicy.network.domains).length > 0) {
         warnings.push(
           'The permission profile configures a network domain allowlist, but Seatbelt cannot enforce per-domain rules; ' +
-            'outbound network is allowed wholesale until the local proxy (S6) lands.',
+            (networkMode(policy.sandboxPolicy.network) === 'local'
+              ? 'host-local OS enforcement remains active, but domain rules need the local proxy (S6).'
+              : 'outbound network is allowed wholesale until the local proxy (S6) lands.'),
         );
       }
     } else {

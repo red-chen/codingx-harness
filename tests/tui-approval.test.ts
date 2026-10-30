@@ -151,8 +151,8 @@ describe('TuiApp approval overlay', () => {
   it('hides the prefix option for file actions and renders long commands', () => {
     const request = shellRequest({
       requestId: 'req-file',
-      tool: 'WriteFile',
-      action: { kind: 'file.write', tool: 'WriteFile', path: '/tmp/work/out.txt' },
+      tool: 'Write',
+      action: { kind: 'file.write', tool: 'Write', path: '/tmp/work/out.txt' },
       allowPrefix: false,
       reason: undefined,
     });

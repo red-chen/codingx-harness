@@ -1,7 +1,9 @@
-import type { ExecResult } from '../exec/types.js';
+import type { ExecInvocation, ExecResult } from '../exec/types.js';
 import { runShellCommand } from '../exec/index.js';
 import type { PolicyRuntime } from '../policy/types.js';
 import type { SandboxBackend } from '../sandbox/types.js';
+import { networkMode } from '../policy/network.js';
+import { sandboxFailure } from '../sandbox/diagnostics.js';
 
 /**
  * Shared shell execution used by the model-facing Shell tool and by local
@@ -29,6 +31,7 @@ export interface SandboxedShellExecution {
   sandboxActive: boolean;
   sandboxDenied: boolean;
   networkDenied: boolean;
+  hint?: string;
 }
 
 export interface SandboxUnavailable {
@@ -46,7 +49,9 @@ export type SandboxedShellOutcome =
  * Resolve the sandbox invocation, run the command and classify sandbox denials.
  * Fail-closed behavior (required backend missing) is preserved for both callers.
  */
-export async function runSandboxedShell(options: SandboxedShellOptions): Promise<SandboxedShellOutcome> {
+export function prepareSandboxedShell(options: Pick<SandboxedShellOptions, 'command' | 'env' | 'sandbox' | 'policy' | 'yolo'>):
+  | { ok: true; invocation?: ExecInvocation; sandboxKind?: string; env: Record<string, string> }
+  | SandboxUnavailable {
   const { sandbox, policy } = options;
   let invocation: { file: string; args: string[] } | undefined;
   let sandboxKind: string | undefined;
@@ -84,6 +89,14 @@ export async function runSandboxedShell(options: SandboxedShellOptions): Promise
   const childEnv = invocation === undefined || sandboxKind === undefined
     ? options.env
     : { ...options.env, CODINGX_SANDBOX: sandboxKind };
+  return { ok: true, invocation, sandboxKind, env: childEnv };
+}
+
+export async function runSandboxedShell(options: SandboxedShellOptions): Promise<SandboxedShellOutcome> {
+  const prepared = prepareSandboxedShell(options);
+  if (!prepared.ok) return prepared;
+  const { invocation, sandboxKind, env: childEnv } = prepared;
+  const { policy } = options;
   const result = await runShellCommand({
     command: options.command,
     ...(invocation === undefined ? {} : { invocation }),
@@ -96,18 +109,10 @@ export async function runSandboxedShell(options: SandboxedShellOptions): Promise
 
   const failed = result.timedOut || result.exitCode !== 0 || result.signal !== null;
   const combinedOutput = result.stdout + '\n' + result.stderr;
-  const filesystemDenied =
-    invocation !== undefined &&
-    failed &&
-    /(Operation not permitted|sandbox-exec: .*(?:deny|Operation not permitted))/i.test(combinedOutput);
-  const networkDenied =
-    invocation !== undefined &&
-    failed &&
-    policy !== undefined &&
-    policy.sandboxPolicy.network.enabled === false &&
-    /(Could not resolve host|Network is unreachable|Temporary failure in name resolution|nodename nor servname provided)/i.test(
-      combinedOutput,
-    );
+  const diagnostic = sandboxFailure(combinedOutput, failed,
+    sandboxKind === undefined || policy === undefined ? undefined : {
+      kind: sandboxKind, network: networkMode(policy.sandboxPolicy.network),
+    });
 
   return {
     ok: true,
@@ -115,8 +120,9 @@ export async function runSandboxedShell(options: SandboxedShellOptions): Promise
       result,
       ...(sandboxKind === undefined ? {} : { sandboxKind }),
       sandboxActive: invocation !== undefined,
-      sandboxDenied: filesystemDenied || networkDenied,
-      networkDenied,
+      sandboxDenied: diagnostic.denied,
+      networkDenied: diagnostic.networkDenied,
+      hint: diagnostic.hint,
     },
   };
 }

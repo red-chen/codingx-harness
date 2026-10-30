@@ -166,8 +166,8 @@ enabled = true               # 示例：仅此 profile 需要联网；默认是 
 
 ### 3.4 其他工具
 
-- `ReadFile` / `ListDir` / `Glob` / `Grep`：只读 Action，仍受 profile 读路径限制；不能因为「只读」就绕过 `deny` 规则。
-- `WriteFile` / `EditFile` / `ApplyPatch`：写 Action，按路径与 profile 判定；读后写约束继续生效，不受权限系统影响。
+- `Read` / `ListDir` / `Glob` / `Grep`：只读 Action，仍受 profile 读路径限制；不能因为「只读」就绕过 `deny` 规则。
+- `Write` / `Edit` / `ApplyPatch`：写 Action，按路径与 profile 判定；读后写约束继续生效，不受权限系统影响。
 - `AskUserQuestion` / `UpdatePlan`：不改变文件系统或网络，不需要审批；它们也不能被当作提权通道。
 - `Skill`：读取技能文件本身受 profile 限制；技能正文是本地指令，不是权限提升，不能修改 policy。
 - MCP / 自定义工具：必须声明 `Action`；`readOnlyHint` 只是提示，不可全信。副作用未知时默认 ask（`on-request`）或 deny（`never`）；服务器进程的启动也受文件与网络策略约束（M4）。

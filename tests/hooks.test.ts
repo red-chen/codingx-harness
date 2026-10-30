@@ -151,7 +151,7 @@ describe('HookRunner', () => {
 
     const skipped = await hooks.run(
       'pre_tool_use',
-      { sessionId: session.id, cwd, toolName: 'ReadFile', toolInput: { path: 'a' } },
+      { sessionId: session.id, cwd, toolName: 'Read', toolInput: { path: 'a' } },
       { session },
     );
     expect(skipped.outcomes).toHaveLength(0);

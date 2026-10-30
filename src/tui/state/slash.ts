@@ -7,11 +7,13 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: '/help', description: 'show shortcuts' },
   { name: '/session', description: 'show session id and file' },
   { name: '/model', description: 'select model and reasoning effort' },
+  { name: '/process', description: 'list processes, read logs or stop a process' },
   { name: '/permissions', description: 'show or switch the permission profile' },
   { name: '/clear', description: 'clear session history (UI + JSONL)' },
   { name: '/copy', description: 'copy transcript/status/input/meta' },
   { name: '/queue', description: 'show queued prompts' },
   { name: '/quit', description: 'exit codingx' },
+  { name: '/tips', description: 'select a tip to fill the input' },
 ];
 
 /** Matches the 8-row slash menu budget in docs/tui.md. */

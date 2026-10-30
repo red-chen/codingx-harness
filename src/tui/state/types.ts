@@ -1,5 +1,6 @@
 import type { ReasoningEffort, TokenUsage } from '../../providers/types.js';
 import type { PlanStep } from '../../tools/types.js';
+import type { FileDiff } from '../../tools/file-diff.js';
 import type { Color } from '../terminal/buffer.js';
 import { ansiColor, color256, rgbColor } from '../terminal/buffer.js';
 
@@ -11,7 +12,7 @@ import { ansiColor, color256, rgbColor } from '../terminal/buffer.js';
  * UiEvent; the TUI answers with UiCommand.
  */
 
-export type TuiMode = 'main' | 'transcript' | 'help' | 'ask' | 'approval';
+export type TuiMode = 'main' | 'transcript' | 'help' | 'ask' | 'approval' | 'tips';
 
 export type TuiStatusState = 'idle' | 'working' | 'awaiting';
 export type TuiTurnOutcome = 'done' | 'error' | 'aborted';
@@ -48,6 +49,7 @@ export interface AssistantCell {
 }
 
 export interface ExecCell {
+  readonly fileDiffs?: readonly FileDiff[];
   readonly exploration?: string;
   readonly expanded?: boolean;
   readonly type: 'exec';
@@ -228,7 +230,16 @@ export interface TuiApprovalState {
   readonly cursor: number;
 }
 
+export interface TuiTipsState {
+  readonly items: readonly string[];
+  readonly index: number;
+  readonly offset: number;
+}
+
 export interface TuiAppState {
+  /** Startup tip, replaceable through /tips for this TUI instance. */
+  readonly tip?: string;
+  readonly tips?: TuiTipsState;
   readonly mode: TuiMode;
   readonly session: TuiSessionState;
   readonly version: string;
@@ -278,6 +289,8 @@ export interface TuiColors {
   readonly planBg: Color;
   readonly diffAdd: Color;
   readonly diffDel: Color;
+  readonly diffAddBg: Color;
+  readonly diffDelBg: Color;
   readonly border: Color;
 }
 
@@ -316,5 +329,7 @@ export const TUI_COLORS: TuiColors = Object.freeze({
   planBg: color256(234),
   diffAdd: TRANSCRIPT_COLORS.success,
   diffDel: softColor(224, 108, 117),
+  diffAddBg: rgbColor(24, 59, 44),
+  diffDelBg: rgbColor(77, 30, 26),
   border: ansiColor(8),
 });

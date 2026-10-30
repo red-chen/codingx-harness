@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import type { ProcessManager } from '../exec/process-manager.js';
 import type { ApprovalHandler, PolicyRuntime } from '../policy/types.js';
 import type { SandboxBackend } from '../sandbox/types.js';
 import type { ReadFileTracker } from './read-tracker.js';
@@ -83,6 +84,8 @@ export interface ToolContext {
   readTracker: ReadFileTracker;
   maxOutputChars: number;
   shell: ShellToolContext;
+  /** CLI/session-owned processes, retained across turns. */
+  processes?: ProcessManager;
   /** Present when the agent loop provides session plan state. */
   plan?: PlanController;
   /** Present only when the UI can collect answers during a turn. */
@@ -101,7 +104,7 @@ export interface ToolResult {
 }
 
 export interface ToolDef<S extends z.ZodTypeAny = z.ZodTypeAny> {
-  /** Model-visible name; PascalCase (for example ReadFile). */
+  /** Model-visible name; PascalCase (for example Read). */
   name: string;
   description: string;
   schema: S;

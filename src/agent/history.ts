@@ -147,7 +147,7 @@ export function rebuildHistory(events: readonly RolloutEvent[]): RebuiltHistory 
           synthetic: true,
         });
       }
-      if (call.name === 'ReadFile' && isObject(call.input)) {
+      if ((call.name === 'Read' || call.name === 'ReadFile') && isObject(call.input)) {
         const rawPath = asString(call.input.path);
         if (rawPath) readFileCalls.push({ path: rawPath, isError });
       }
@@ -193,7 +193,7 @@ export function latestModelSelection(events: readonly RolloutEvent[]): StoredMod
   return {};
 }
 
-/** Mark files successfully read before a resume so EditFile still works. */
+/** Mark files successfully read before a resume so Edit still works. */
 export async function restoreReadTracker(
   rebuilt: RebuiltHistory,
   cwd: string,

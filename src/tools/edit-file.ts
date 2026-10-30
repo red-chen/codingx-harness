@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ToolError } from '../util/errors.js';
 import { resolveWorkspacePath } from './paths.js';
 import type { ToolDef } from './types.js';
+import { createFileDiff } from './file-diff.js';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
@@ -14,10 +15,10 @@ const schema = z.object({
 });
 
 export const editFileTool: ToolDef<typeof schema> = {
-  name: 'EditFile',
+  name: 'Edit',
   description:
     'Replace an exact string in an existing UTF-8 file. By default old_string must appear exactly once; ' +
-    'otherwise use replace_all. The file must have been read with ReadFile in this session first. ' +
+    'otherwise use replace_all. The file must have been read with Read in this session first. ' +
     'Include enough surrounding context in old_string to make it unique. Use this for targeted edits; ' +
     'do not rewrite unrelated content. ' +
     'If the edit is rejected because old_string is missing or matches more than once, re-read that region and ' +
@@ -32,7 +33,7 @@ export const editFileTool: ToolDef<typeof schema> = {
     if (!ctx.readTracker.hasRead(resolved.absolute)) {
       return {
         content:
-          'Refusing to edit ' + rel + ' before it has been read. Call ReadFile on this file first, then retry the edit.',
+          'Refusing to edit ' + rel + ' before it has been read. Call Read on this file first, then retry the edit.',
         isError: true,
         meta: { path: rel, reason: 'read-before-write' },
       };
@@ -92,6 +93,7 @@ export const editFileTool: ToolDef<typeof schema> = {
         replacements,
         bytesBefore: buffer.byteLength,
         bytesAfter: Buffer.byteLength(next, 'utf8'),
+        fileDiffs: [createFileDiff(rel, text, next)],
       },
     };
   },

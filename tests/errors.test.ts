@@ -40,10 +40,10 @@ describe('errors', () => {
 
 describe('provider message helpers', () => {
   it('builds assistant messages with text and tool calls', () => {
-    const msg = assistantMessage('hello', [{ id: 't1', name: 'ReadFile', input: { path: 'a.ts' } }]);
+    const msg = assistantMessage('hello', [{ id: 't1', name: 'Read', input: { path: 'a.ts' } }]);
     expect(msg.role).toBe('assistant');
     expect(msg.content).toHaveLength(2);
-    expect(msg.content[1]).toMatchObject({ type: 'tool_use', name: 'ReadFile' });
+    expect(msg.content[1]).toMatchObject({ type: 'tool_use', name: 'Read' });
     expect(messageText(msg)).toBe('hello');
   });
 

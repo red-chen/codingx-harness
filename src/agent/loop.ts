@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ProcessManager } from '../exec/process-manager.js';
 import { generateTurnId } from '../util/ids.js';
 import {
   abortError,
@@ -121,6 +122,7 @@ export interface TurnResult {
  * policy (and, for Shell, the OS sandbox) before execution.
  */
 export class AgentLoop {
+  readonly processes: ProcessManager;
   private readonly options: AgentLoopOptions;
   private readonly messages: Message[];
   private readonly toolSchemas: ToolSchema[];
@@ -140,6 +142,9 @@ export class AgentLoop {
   constructor(options: AgentLoopOptions) {
     if (options.maxSteps < 1) throw new Error('maxSteps must be at least 1.');
     this.options = options;
+    this.processes = new ProcessManager({
+      onState: async (process) => { await options.session.append({ type: 'process.state', process }); },
+    });
     this.readTracker = options.readTracker ?? new ReadFileTracker();
     this.messages = options.initialMessages ? [...options.initialMessages] : [];
     this.planSteps = options.initialPlan ? options.initialPlan.map((step) => ({ ...step })) : [];
@@ -155,6 +160,7 @@ export class AgentLoop {
       readTracker: this.readTracker,
       maxOutputChars: options.maxOutputChars,
       shell: options.shell,
+      processes: this.processes,
       ...(options.additionalDirs === undefined || options.additionalDirs.length === 0
         ? {}
         : { additionalDirs: options.additionalDirs }),
@@ -215,7 +221,7 @@ export class AgentLoop {
   /** Swap the active permission runtime after a /permissions change. */
   setPolicy(policy: PolicyRuntime): void {
     this.options.policy = policy;
-    this.toolContextBase = { ...this.toolContextBase, policy };
+    this.toolContextBase = { ...this.toolContextBase, policy, yolo: policy.yolo };
   }
 
   /** Replace the system prompt after permission metadata changes. */

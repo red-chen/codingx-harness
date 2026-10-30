@@ -62,7 +62,7 @@ export const listDirTool: ToolDef<typeof schema> = {
     const depth = input.depth ?? 2;
     const resolved = await resolveWorkspacePath(ctx, requested, { mustExist: true, access: 'read' });
     const info = await stat(resolved.absolute);
-    if (!info.isDirectory()) throw new ToolError('Not a directory: ' + requested + '. Use ReadFile for files.');
+    if (!info.isDirectory()) throw new ToolError('Not a directory: ' + requested + '. Use Read for files.');
 
     const root = resolved.root;
     let gitignore = '';

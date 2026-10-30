@@ -32,6 +32,7 @@ import {
   type LocalCommandOutcome,
 } from '../local-command.js';
 import { describeModelSelection, describeModelUpdate, MODEL_COMMAND_USAGE, parseModelCommand } from '../model-command.js';
+import { isProcessCommand, runProcessCommand } from '../process-command.js';
 import { createLoop, DEFAULT_SHELL_TIMEOUT_MS, initializeReasoningEffort } from '../runtime.js';
 import { runTuiInteractive } from './tui.js';
 import { changeModelSelection, currentModelSelection, restoreModelSelection } from '../model-selection.js';
@@ -147,6 +148,7 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
   };
 
   let app: CliApp | undefined;
+  let activeLoop: ReturnType<typeof createLoop> | undefined;
   let session: SessionHandle | undefined;
   let activeController: AbortController | undefined;
   let lastSigint = 0;
@@ -400,7 +402,7 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
       return decision;
     };
 
-    const loop = createLoop(app, session, (event) => renderer.render(event), {
+    const loop = activeLoop = createLoop(app, session, (event) => renderer.render(event), {
       readTracker,
       ...(initialMessages ? { initialMessages } : {}),
       ...(rebuiltPlan ? { initialPlan: rebuiltPlan } : {}),
@@ -495,12 +497,17 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
       if (EXIT_COMMANDS.has(line)) break;
       if (line === '/help') {
         commandOut.write(
-          'Commands: /help, /session, /model, /clear, /quit. Ctrl+C interrupts a running turn; press it twice to exit.\n',
+          'Commands: /help, /session, /model, /process [list|logs <id> [cursor]|stop <id>], /clear, /quit. Ctrl+C interrupts a running turn; press it twice to exit.\n',
         );
         continue;
       }
       if (line === '/session') {
         commandOut.write('session: ' + session.id + '\nfile: ' + session.filePath + '\n');
+        continue;
+      }
+      if (isProcessCommand(line)) {
+        const result = await runProcessCommand(line, loop.processes);
+        commandOut.write(result.content + '\n');
         continue;
       }
       if (line === '/model' || line.startsWith('/model ')) {
@@ -527,6 +534,7 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
       }
       if (line === '/clear') {
         try {
+          await loop.processes.clear();
           await session.clear();
           grants.clear();
           loop.clearHistory();
@@ -552,6 +560,9 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
   } finally {
     process.removeListener('SIGINT', onSigint);
     rl.close();
+    try { await activeLoop?.processes.close(); } catch (error) {
+      stderr.write('warning: process cleanup: ' + (error instanceof Error ? error.message : String(error)) + '\n');
+    }
     if (session && app) {
       try {
         const endHooks = await app.hooks.run(

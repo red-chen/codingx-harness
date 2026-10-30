@@ -1,6 +1,6 @@
 import type { Color, Style } from '../terminal/buffer.js';
 import { ATTR_BOLD, ATTR_DIM, ATTR_ITALIC, ATTR_UNDERLINE } from '../terminal/buffer.js';
-import { displayWidth, graphemeSegments, wrapText } from '../text/index.js';
+import { displayWidth, graphemeSegments, truncateToWidth, wrapText } from '../text/index.js';
 import { TUI_COLORS, TRANSCRIPT_COLORS } from '../state/types.js';
 import type { StyledTextLine, StyledTextSegment } from './welcome.js';
 
@@ -117,6 +117,18 @@ function codeStyle(line: string, language: string): Style {
     if (line.startsWith('-')) return DIFF_DEL;
   }
   return PLAIN;
+}
+
+/** Reserve padding before wrapping so continuation lines keep the same inset. */
+function codeBlockLines(text: string, style: Style, width: number, label = false): StyledTextLine[] {
+  const padding = ' '.repeat(Math.min(2, Math.max(0, Math.floor((width - 2) / 2))));
+  const inner = Math.max(1, width - padding.length * 2);
+  const content = label ? truncateToWidth(text, inner) : text;
+  return wrapStyledSegments([{ text: content, style }], inner).map((segments) => styledLine([
+    { text: padding, style: PLAIN },
+    ...segments,
+    { text: padding, style: PLAIN },
+  ], CODE_BG));
 }
 
 /** Split table cells without treating escaped or inline-code pipes as separators. */
@@ -239,9 +251,9 @@ export function renderMarkdown(text: string, width: number): StyledTextLine[] {
     if (fenceMatch) {
       if (fence === null) {
         fence = fenceMatch[1]?.trim().split(/\s+/u)[0] ?? '';
-        output.push(styledLine([{ text: '┌ ' + (fence || 'code'), style: MUTED }]));
+        output.push(...codeBlockLines(fence || 'code', MUTED, available, true));
       } else {
-        output.push(styledLine([{ text: '└─', style: MUTED }]));
+        output.push(styledLine([], CODE_BG));
         fence = null;
       }
       continue;
@@ -249,7 +261,7 @@ export function renderMarkdown(text: string, width: number): StyledTextLine[] {
 
     if (fence !== null) {
       const content = raw.length === 0 ? ' ' : raw;
-      output.push(...wrapAndStyle([{ text: content, style: codeStyle(raw, fence) }], available, CODE_BG));
+      output.push(...codeBlockLines(content, codeStyle(raw, fence), available));
       continue;
     }
 

@@ -35,6 +35,14 @@ function ev(type: string, extra: Record<string, unknown> = {}): RolloutEvent {
 }
 
 describe('rebuildHistory', () => {
+  it('keeps legacy ReadFile events usable for read-before-write after resume', () => {
+    const rebuilt = rebuildHistory([
+      ev('assistant.message', { calls: [{ id: 'legacy', name: 'ReadFile', input: { path: 'a.ts' } }] }),
+      ev('tool.result', { callId: 'legacy', name: 'ReadFile', content: 'old content', isError: false }),
+    ]);
+    expect(rebuilt.readFileCalls).toEqual([{ path: 'a.ts', isError: false }]);
+  });
+
   it('rebuilds user/assistant/tool messages in order', () => {
     const events = [
       ev('session.start', { cwd: '/work', model: 'm' }),
@@ -44,10 +52,10 @@ describe('rebuildHistory', () => {
       ev('assistant.message', {
         turnId: 't1',
         text: 'reading',
-        calls: [{ id: 'c1', name: 'ReadFile', input: { path: 'a.ts' } }],
+        calls: [{ id: 'c1', name: 'Read', input: { path: 'a.ts' } }],
       }),
-      ev('tool.call', { turnId: 't1', callId: 'c1', name: 'ReadFile', input: { path: 'a.ts' } }),
-      ev('tool.result', { turnId: 't1', callId: 'c1', name: 'ReadFile', content: '1\tconst a', isError: false }),
+      ev('tool.call', { turnId: 't1', callId: 'c1', name: 'Read', input: { path: 'a.ts' } }),
+      ev('tool.result', { turnId: 't1', callId: 'c1', name: 'Read', content: '1\tconst a', isError: false }),
       ev('assistant.message', { turnId: 't1', text: 'done', calls: [] }),
       ev('turn.end', { turnId: 't1', status: 'done' }),
     ];
@@ -57,7 +65,7 @@ describe('rebuildHistory', () => {
     expect(rebuilt.messages[0]).toEqual({ role: 'user', content: [{ type: 'text', text: 'hello' }] });
     expect(rebuilt.messages[1]).toMatchObject({ role: 'assistant' });
     expect(rebuilt.messages[1]?.content[0]).toMatchObject({ type: 'text', text: 'reading' });
-    expect(rebuilt.messages[1]?.content[1]).toMatchObject({ type: 'tool_use', name: 'ReadFile' });
+    expect(rebuilt.messages[1]?.content[1]).toMatchObject({ type: 'tool_use', name: 'Read' });
     expect(rebuilt.messages[2]).toEqual({
       role: 'user',
       content: [{ type: 'tool_result', tool_use_id: 'c1', content: '1\tconst a' }],
@@ -75,15 +83,15 @@ describe('rebuildHistory', () => {
         turnId: 't-dangling',
         text: '',
         calls: [
-          { id: 'c1', name: 'ReadFile', input: { path: 'a.ts' } },
+          { id: 'c1', name: 'Read', input: { path: 'a.ts' } },
           { id: 'c2', name: 'Shell', input: { command: 'sleep 100' } },
         ],
       }),
-      ev('tool.call', { turnId: 't-dangling', callId: 'c1', name: 'ReadFile', input: { path: 'a.ts' } }),
+      ev('tool.call', { turnId: 't-dangling', callId: 'c1', name: 'Read', input: { path: 'a.ts' } }),
       ev('tool.result', {
         turnId: 't-dangling',
         callId: 'c1',
-        name: 'ReadFile',
+        name: 'Read',
         content: 'line',
         isError: false,
       }),
@@ -137,12 +145,12 @@ describe('rebuildHistory', () => {
       ev('assistant.message', {
         turnId: 't1',
         text: '',
-        calls: [{ id: 'r1', name: 'ReadFile', input: { path: 'missing.ts' } }],
+        calls: [{ id: 'r1', name: 'Read', input: { path: 'missing.ts' } }],
       }),
       ev('tool.result', {
         turnId: 't1',
         callId: 'r1',
-        name: 'ReadFile',
+        name: 'Read',
         content: 'not found',
         isError: true,
       }),
@@ -200,14 +208,14 @@ describe('restoreReadTracker', () => {
         turnId: 't1',
         text: '',
         calls: [
-          { id: 'c1', name: 'ReadFile', input: { path: 'a.ts' } },
-          { id: 'c2', name: 'ReadFile', input: { path: '../outside.ts' } },
-          { id: 'c3', name: 'ReadFile', input: { path: 'missing.ts' } },
+          { id: 'c1', name: 'Read', input: { path: 'a.ts' } },
+          { id: 'c2', name: 'Read', input: { path: '../outside.ts' } },
+          { id: 'c3', name: 'Read', input: { path: 'missing.ts' } },
         ],
       }),
-      ev('tool.result', { callId: 'c1', name: 'ReadFile', content: 'a', isError: false }),
-      ev('tool.result', { callId: 'c2', name: 'ReadFile', content: 'outside', isError: false }),
-      ev('tool.result', { callId: 'c3', name: 'ReadFile', content: 'missing', isError: true }),
+      ev('tool.result', { callId: 'c1', name: 'Read', content: 'a', isError: false }),
+      ev('tool.result', { callId: 'c2', name: 'Read', content: 'outside', isError: false }),
+      ev('tool.result', { callId: 'c3', name: 'Read', content: 'missing', isError: true }),
     ];
 
     const rebuilt = rebuildHistory(events);
@@ -235,12 +243,12 @@ describe('restoreReadTracker', () => {
         turnId: 't1',
         text: '',
         calls: [
-          { id: 'c1', name: 'ReadFile', input: { path: extraFile } },
-          { id: 'c2', name: 'ReadFile', input: { path: outsideFile } },
+          { id: 'c1', name: 'Read', input: { path: extraFile } },
+          { id: 'c2', name: 'Read', input: { path: outsideFile } },
         ],
       }),
-      ev('tool.result', { callId: 'c1', name: 'ReadFile', content: 'shared', isError: false }),
-      ev('tool.result', { callId: 'c2', name: 'ReadFile', content: 'outside', isError: false }),
+      ev('tool.result', { callId: 'c1', name: 'Read', content: 'shared', isError: false }),
+      ev('tool.result', { callId: 'c2', name: 'Read', content: 'outside', isError: false }),
     ];
 
     const tracker = new ReadFileTracker();

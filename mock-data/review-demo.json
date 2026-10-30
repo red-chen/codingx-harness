@@ -1,0 +1,19 @@
+{
+  "id": "demo-001",
+  "name": "review demo",
+  "version": 1,
+  "tags": ["mock", "diff"],
+  "enabled": true,
+  "description": "用于演示 diff 效果的临时 mock 数据",
+  "owner": "codingx",
+  "createdAt": "2026-10-30T00:00:00Z",
+  "updatedAt": "2026-10-30T00:00:00Z",
+  "env": "staging",
+  "notes": "第 2 步：新增 5 行",
+  "endpoints": [
+    { "method": "DELETE", "path": "/users/:id", "status": 204 }
+  ],
+  "limits": {
+    "timeoutMs": 3000
+  }
+}

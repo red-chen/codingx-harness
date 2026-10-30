@@ -35,6 +35,20 @@ function makeApp(): TuiApp {
 }
 
 describe('slash completion', () => {
+  it('completes /process and describes its management commands', () => {
+    const app = makeApp();
+    type(app, '/pro');
+    expect(app.slashMenu.map((command) => command.name)).toEqual(['/process']);
+    app.handleKey(key('tab'));
+    expect(app.composer.text).toBe('/process ');
+  });
+  it('completes /tips', () => {
+    const app = makeApp();
+    type(app, '/ti');
+    expect(app.slashMenu.map((command) => command.name)).toEqual(['/tips']);
+    app.handleKey(key('tab'));
+    expect(app.composer.text).toBe('/tips ');
+  });
   it('filters commands and renders a menu above the composer', () => {
     const app = makeApp();
     type(app, '/se');

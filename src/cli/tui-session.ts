@@ -13,6 +13,8 @@ import type { TuiApp, TuiCopyTarget } from '../tui/state/app.js';
 import type { UiCommand } from '../tui/state/commands.js';
 import { copyTextToClipboard } from '../util/clipboard.js';
 import { debugLog } from '../util/debug.js';
+import { DEFAULT_TIPS } from '../ui/tips.js';
+import { isProcessCommand, type ProcessCommandResult } from './process-command.js';
 import { describeModelSelection, describeModelUpdate, parseModelCommand, type ModelSelection, type ModelSelectionUpdate } from './model-command.js';
 import {
   localCommandAuditEvents,
@@ -39,18 +41,23 @@ export interface TuiPermissionController {
 export type TuiLocalCommandRunner = (command: string, signal: AbortSignal) => Promise<LocalCommandOutcome>;
 
 export interface TuiSessionOptions {
+  /** Configured tips, including when automatic display is disabled. */
+  tips?: readonly string[];
   app: TuiApp;
   io: TerminalIO;
   session: SessionHandle;
   runTurn: (text: string, signal: AbortSignal) => Promise<TurnResult>;
   /** Run '!command' through policy/approval/sandbox; absent disables the feature. */
   runLocalCommand?: TuiLocalCommandRunner;
+  /** Manage this CLI session's processes without calling the model. */
+  runProcessCommand?: (line: string) => Promise<ProcessCommandResult>;
   /** Model/effort control backed by the router and AgentLoop. */
   model?: TuiModelController;
   /** Permission profile listing/switching backed by the CLI bootstrap. */
   permissions?: TuiPermissionController;
   /** Reset agent-loop state after the rollout is cleared. */
   onClear?: () => void;
+  beforeClear?: () => Promise<void>;
   initialPrompt?: string;
 }
 
@@ -62,10 +69,14 @@ export class TuiSession {
   readonly app: TuiApp;
   readonly runtime: TuiRuntime;
   private readonly session: SessionHandle;
+  private readonly tips: readonly string[];
   private readonly runTurn: (text: string, signal: AbortSignal) => Promise<TurnResult>;
   private readonly runLocalCommand: TuiLocalCommandRunner | undefined;
+  private readonly runProcessCommand: TuiSessionOptions['runProcessCommand'];
+  private processCommand: Promise<void> | undefined;
   private readonly model: TuiModelController | undefined;
   private readonly permissions: TuiPermissionController | undefined;
+  private readonly beforeClear: (() => Promise<void>) | undefined;
   private readonly onClear: (() => void) | undefined;
   private readonly initialPrompt: string | undefined;
   private active: AbortController | undefined;
@@ -92,11 +103,14 @@ export class TuiSession {
   constructor(options: TuiSessionOptions) {
     this.app = options.app;
     this.session = options.session;
+    this.tips = options.tips ?? DEFAULT_TIPS;
     this.runTurn = options.runTurn;
     this.runLocalCommand = options.runLocalCommand;
+    this.runProcessCommand = options.runProcessCommand;
     this.model = options.model;
     this.permissions = options.permissions;
     this.onClear = options.onClear;
+    this.beforeClear = options.beforeClear;
     this.initialPrompt = options.initialPrompt;
     this.grants = new SessionGrants(options.app.state.session.cwd);
     this.runtime = new TuiRuntime({
@@ -379,9 +393,18 @@ export class TuiSession {
       this.render();
       return;
     }
+    if (line === '/tips') {
+      this.app.openTips(this.tips);
+      this.render();
+      return;
+    }
     if (line === '/session') {
       this.app.addNotice('session: ' + this.session.id + '\nfile: ' + this.session.filePath);
       this.render();
+      return;
+    }
+    if (isProcessCommand(line)) {
+      this.handleProcessCommand(line);
       return;
     }
     if (line === '/model' || line.startsWith('/model ')) {
@@ -595,6 +618,25 @@ export class TuiSession {
     }
   }
 
+  private handleProcessCommand(line: string): void {
+    const run = this.runProcessCommand;
+    if (run === undefined || this.processCommand !== undefined || this.clearing) {
+      this.app.addNotice(run === undefined ? 'Process commands are not available in this build.' :
+        'Wait for the current process command or session clear to finish.', 'warning');
+      this.render();
+      return;
+    }
+    this.processCommand = Promise.resolve().then(() => run(line)).then((result) => {
+      this.app.addNotice(result.content, result.isError ? 'error' : 'info');
+    }).catch((error: unknown) => {
+      this.app.addNotice('Process command failed: ' + (error instanceof Error ? error.message : String(error)), 'error');
+    }).finally(() => {
+      this.processCommand = undefined;
+      if (this.exiting) this.finish();
+      else this.render();
+    });
+  }
+
   private async clearSession(): Promise<void> {
     if (this.exiting || this.clearing) return;
     if (this.active !== undefined) {
@@ -606,6 +648,8 @@ export class TuiSession {
     try {
       // Reset persistence first: the UI and agent history must only be dropped
       // once the rollout rewrite succeeded, otherwise replay would disagree.
+      await this.processCommand;
+      await this.beforeClear?.();
       await this.session.clear();
       this.onClear?.();
       this.grants.clear();
@@ -618,7 +662,8 @@ export class TuiSession {
       );
     } finally {
       this.clearing = false;
-      this.render();
+      if (this.exiting) this.finish();
+      else this.render();
     }
   }
 
@@ -798,7 +843,7 @@ export class TuiSession {
   }
 
   private finish(): void {
-    if (this.finished) return;
+    if (this.finished || this.clearing || this.active !== undefined || this.localActive !== undefined || this.processCommand !== undefined) return;
     this.finished = true;
     this.resolveRun?.(this.exitCode);
   }

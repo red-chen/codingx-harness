@@ -132,7 +132,7 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('Use pnpm.');
     expect(prompt).toContain('Tool output');
     expect(prompt).toContain('untrusted data');
-    expect(prompt).toContain('ReadFile before editing');
+    expect(prompt).toContain('Read before editing');
     expect(prompt).toContain('# Project instructions');
   });
 
@@ -221,7 +221,7 @@ describe('buildModelRequest', () => {
   it('assembles a provider request without mutating the history array', () => {
     const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hello' }] }];
     const tools = [
-      { name: 'ReadFile', description: 'read', inputSchema: { type: 'object' } },
+      { name: 'Read', description: 'read', inputSchema: { type: 'object' } },
     ];
     const request = buildModelRequest({
       model: 'model-a',

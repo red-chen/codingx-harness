@@ -79,6 +79,7 @@ export async function runExec(options: ExecCommandOptions): Promise<number> {
     app.systemPrompt += '\n\n# Hook context (session_start)\n' + startHooks.context.trim();
   }
 
+  let activeLoop: ReturnType<typeof createLoop> | undefined;
   let result: TurnResult | undefined;
   try {
     await initializeReasoningEffort(app, session);
@@ -87,10 +88,13 @@ export async function runExec(options: ExecCommandOptions): Promise<number> {
       session: { sessionId: session.id, cwd: app.cwd, model: app.router.selection.model },
     });
 
-    const loop = createLoop(app, session, (event) => renderer.render(event));
+    const loop = activeLoop = createLoop(app, session, (event) => renderer.render(event));
     result = await loop.runTurn(options.prompt, { signal: controller.signal });
   } finally {
     process.removeListener('SIGINT', onSigint);
+    try { await activeLoop?.processes.close(); } catch (error) {
+      stderr.write('warning: process cleanup: ' + (error instanceof Error ? error.message : String(error)) + '\n');
+    }
     try {
       const endHooks = await app.hooks.run(
         'session_end',

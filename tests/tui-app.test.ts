@@ -250,7 +250,7 @@ describe('TuiApp state transitions', () => {
       type: 'tool.finished',
       turnId: 't1',
       callId: 'orphan',
-      name: 'ReadFile',
+      name: 'Read',
       result: { content: 'data', isError: true },
       durationMs: 3,
     });
@@ -258,7 +258,7 @@ describe('TuiApp state transitions', () => {
     expect(app.transcript[0]).toMatchObject({
       type: 'exec',
       callId: 'orphan',
-      command: 'ReadFile',
+      command: 'Read',
       isError: true,
       running: false,
     });

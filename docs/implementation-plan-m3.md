@@ -157,3 +157,14 @@ S1 不依赖 OS 沙箱，可先把策略、配置、非交互 fail-closed 与审
 - [x] README / security / config / tools / TUI 文档与实现一致。
 
 当前 macOS 范围的 M3 仍未完成：S2 审批 UX 收尾、S5（提权重试/exec policy）、S6（网络代理/域名白名单）、S7（auto-review/企业策略，不含 Windows）及相应验证收尾仍需完成。S4（Linux）与 S7.5（Windows）暂缓，不阻塞当前验收。
+
+## Loopback 增量修复（进行中）
+
+本次将本机开发服务支持从 S6 域名代理中单独拆出：
+
+- 网络策略增加 none / loopback / all，兼容原 enabled 字段；修复旧 loopback 配置被整网放行的问题。
+- 新增 `:workspace-loopback`，保留 workspace 文件隔离，按需切换，不改变默认网络拒绝。
+- 实测边界：Seatbelt 的 localhost 匹配本机全部地址，无法严格限制绑定到 127.0.0.1 / ::1；通配监听仍可成功。仅添加 remote 入站条件会导致 listen 本身被拒绝，不能据此实现严格回环隔离。本机网络 profile 的范围待用户确认。
+- Shell / ProcessStart 复用同一策略；提示、配置校验和实际沙箱测试同步更新。
+- 已验证 IPv4/IPv6 本地 HTTP、Python bind 和文件隔离；配置迁移与本机网络的实际边界须以测试为准，不宣称严格回环隔离。
+

@@ -7,6 +7,7 @@ import { ToolError } from '../util/errors.js';
 import { isPathInside, isPathInsideReal } from '../util/paths.js';
 import { resolveWorkspacePath } from './paths.js';
 import type { ToolDef } from './types.js';
+import { createFileDiff, type FileDiff } from './file-diff.js';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$/;
@@ -37,6 +38,7 @@ interface FilePatch {
 }
 
 interface FilePlan {
+  diff: FileDiff;
   root: string;
   absolute: string;
   relative: string;
@@ -526,7 +528,7 @@ function readFailure(relative: string): { content: string; isError: true; meta: 
     content:
       'Refusing to apply the patch to ' +
       relative +
-      ' before it has been read. Call ReadFile on this file first, then retry ApplyPatch.',
+      ' before it has been read. Call Read on this file first, then retry ApplyPatch.',
     isError: true,
     meta: { path: relative, reason: 'read-before-write' },
   };
@@ -539,10 +541,10 @@ export const applyPatchTool: ToolDef<typeof schema> = {
     'and multiple "@@ -oldStart,oldCount +newStart,newCount @@" hunks per file. Paths are unquoted; a/ and b/ ' +
     'header prefixes are stripped and tab-separated timestamps are ignored. Create a new file with "--- /dev/null" ' +
     'and "+++ b/path"; the target must not already exist and parent directories are created. ' +
-    'Every existing target must have been read with ReadFile in this session first. Renames, deletions, quoted ' +
+    'Every existing target must have been read with Read in this session first. Renames, deletions, quoted ' +
     'paths, and "\\ No newline at end of file" markers are rejected. All hunks are parsed, validated and applied in ' +
     'memory before anything is written, so a validation failure leaves every file unchanged. Existing file modes and ' +
-    'final-newline behavior are preserved. Use EditFile for a single targeted replacement and WriteFile for a full rewrite.',
+    'final-newline behavior are preserved. Use Edit for a single targeted replacement and Write for a full rewrite.',
   schema,
   parallelSafe: false,
   approval: 'on-write',
@@ -587,6 +589,7 @@ export const applyPatchTool: ToolDef<typeof schema> = {
           relative: resolved.relative,
           created: true,
           content: joinText(applied.lines, true),
+          diff: createFileDiff(resolved.relative, '', joinText(applied.lines, true)),
           additions: applied.additions,
           deletions: applied.deletions,
         });
@@ -625,6 +628,7 @@ export const applyPatchTool: ToolDef<typeof schema> = {
         relative: resolved.relative,
         created: false,
         content: joinText(applied.lines, trailingNewline),
+        diff: createFileDiff(resolved.relative, text, joinText(applied.lines, trailingNewline)),
         additions: applied.additions,
         deletions: applied.deletions,
       });
@@ -703,6 +707,7 @@ export const applyPatchTool: ToolDef<typeof schema> = {
         details +
         '.',
       meta: {
+        fileDiffs: plans.map((plan) => plan.diff),
         files: plans.map((plan) => ({
           path: plan.relative,
           created: plan.created,

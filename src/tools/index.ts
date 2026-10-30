@@ -7,6 +7,7 @@ import { editFileTool } from './edit-file.js';
 import { updatePlanTool } from './plan.js';
 import { applyPatchTool } from './apply-patch.js';
 import { shellTool } from './shell.js';
+import { processStartTool, processListTool, processReadTool, processStopTool } from './process.js';
 import { askUserQuestionTool } from './ask-user.js';
 import { skillTool } from './skill.js';
 import type { ToolDef } from './types.js';
@@ -54,6 +55,10 @@ export function createBuiltinTools(): ToolDef[] {
     updatePlanTool,
     applyPatchTool,
     shellTool,
+    processStartTool,
+    processListTool,
+    processReadTool,
+    processStopTool,
     skillTool,
     askUserQuestionTool,
   ];

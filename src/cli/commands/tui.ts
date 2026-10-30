@@ -1,5 +1,8 @@
 import { canonicalizePath } from '../../util/paths.js';
+import { runProcessCommand } from '../process-command.js';
+import { LOCAL_NETWORK_NOTICE, networkMode } from '../../policy/network.js';
 import { InputHistory } from '../../ui/input-history.js';
+import { loadTips, selectTip } from '../../ui/tips.js';
 import { buildSystemPrompt, latestModelSelection, rebuildHistory, restoreReadTracker } from '../../agent/index.js';
 import { DEFAULT_CONTEXT_WINDOW, type Message, type ReasoningEffort, type TokenUsage } from '../../providers/types.js';
 import {
@@ -173,6 +176,7 @@ export interface TuiResumeView {
 }
 
 export interface CreateTuiAppOptions {
+  readonly tip?: string;
   readonly sessionId: string;
   readonly cwd: string;
   readonly model: string;
@@ -192,6 +196,7 @@ export interface CreateTuiAppOptions {
 export function createTuiAppForSession(options: CreateTuiAppOptions): TuiApp {
   const resumed = options.resumed;
   return new TuiApp({
+    ...(options.tip ? { tip: options.tip } : {}),
     session: {
       sessionId: options.sessionId,
       cwd: options.cwd,
@@ -231,9 +236,14 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
   });
   for (const warning of app.warnings) stderr.write('warning: ' + warning + '\n');
 
+  const tips = await loadTips(app.codingxHome);
+  const tip = selectTip(tips.config);
+  for (const warning of tips.warnings) stderr.write('warning: ' + warning + '\n');
+
   let historyWarning = false;
   const inputHistory = await InputHistory.open(app.codingxHome, app.cwd, () => { historyWarning = true; });
   const savedInputHistory = await inputHistory.load();
+  let activeLoop: ReturnType<typeof createLoop> | undefined;
   let session: SessionHandle | undefined;
   try {
     const opened = await openSession(app, options);
@@ -257,6 +267,7 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
     }
 
     const tuiApp = createTuiAppForSession({
+      ...(tip ? { tip } : {}),
       sessionId: session.id,
       cwd: app.cwd,
       model: app.router.selection.model,
@@ -274,7 +285,7 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
     for (const warning of hookWarnings(startHooks)) tuiApp.addNotice(warning, 'warning');
 
     let controller: TuiSession | undefined;
-    const loop = createLoop(
+    const loop = activeLoop = createLoop(
       app,
       session,
       (event) => {
@@ -355,6 +366,9 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
           : prompt;
         app.systemPrompt = withHookContext;
         loop.setSystemPrompt(withHookContext);
+        if (!policy.yolo && networkMode(policy.sandboxPolicy.network) === 'local') {
+          tuiApp.addNotice(LOCAL_NETWORK_NOTICE, 'warning');
+        }
         try {
           await (await WorkspacePreferencesStore.open(app.codingxHome, app.cwd)).savePermissionProfile(name);
         } catch {
@@ -365,6 +379,7 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
 
     controller = new TuiSession({
       app: tuiApp,
+      tips: tips.config.tips,
       io: createProcessTerminalIO(),
       session,
       runTurn: (text, signal) => loop.runTurn(text, { signal, takeQueuedPrompts: () => controller?.takeQueuedPrompts() ?? [] }),
@@ -389,12 +404,17 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
         get: () => currentModelSelection(app, loop.reasoningEffort),
         set: (selection) => changeModelSelection(app, activeSession, loop, selection, env),
       },
+      beforeClear: () => loop.processes.clear(),
+      runProcessCommand: (line) => runProcessCommand(line, loop.processes),
       onClear: () => loop.clearHistory(),
       ...(options.initialPrompt ? { initialPrompt: options.initialPrompt } : {}),
     });
     return await controller.run();
   } finally {
     await inputHistory.flush();
+    try { await activeLoop?.processes.close(); } catch (error) {
+      stderr.write('warning: process cleanup: ' + (error instanceof Error ? error.message : String(error)) + '\n');
+    }
     if (historyWarning) stderr.write('warning: could not read or save some input history.\n');
     if (session) {
       try {

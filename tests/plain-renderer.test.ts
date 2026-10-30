@@ -58,12 +58,12 @@ describe('PlainRenderer', () => {
     renderer.render({
       type: 'tool.started',
       turnId: 't1',
-      call: { id: 'c1', name: 'ReadFile', input: { path: 'a.ts' } },
+      call: { id: 'c1', name: 'Read', input: { path: 'a.ts' } },
     });
     renderer.render({ type: 'text.delta', turnId: 't1', text: 'All done.\n' });
     renderer.render({ type: 'turn.finished', turnId: 't1', status: 'done', usage, durationMs: 3 });
     expect(stdout.value).toBe('All done.\n');
-    expect(stderr.value).toContain('• ReadFile: a.ts');
+    expect(stderr.value).toContain('• Read: a.ts');
   });
 
   it('shows file paths for file-tool calls and handles errors', () => {
@@ -73,7 +73,7 @@ describe('PlainRenderer', () => {
     renderer.render({
       type: 'tool.started',
       turnId: 't1',
-      call: { id: 'c1', name: 'ReadFile', input: { path: 'src/a.ts' } },
+      call: { id: 'c1', name: 'Read', input: { path: 'src/a.ts' } },
     });
     renderer.render({ type: 'turn.started', turnId: 't1' });
     renderer.render({
@@ -84,7 +84,7 @@ describe('PlainRenderer', () => {
       durationMs: 9,
       error: { code: 'PROVIDER_ERROR', message: 'upstream failed' },
     });
-    expect(stderr.value).toContain('• ReadFile: src/a.ts');
+    expect(stderr.value).toContain('• Read: src/a.ts');
     expect(stderr.value).toContain('[error] PROVIDER_ERROR: upstream failed');
     expect(stdout.value).toBe('');
   });

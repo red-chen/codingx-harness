@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TurnResult } from '../src/agent/index.js';
+import type { ProcessCommandResult } from '../src/cli/process-command.js';
 import type { LocalCommandOutcome } from '../src/cli/local-command.js';
 import { TuiSession } from '../src/cli/tui-session.js';
 import { EMPTY_USAGE } from '../src/providers/types.js';
@@ -77,6 +78,7 @@ function wait(ms = 30): Promise<void> {
 }
 
 interface HarnessOptions {
+  runProcess?: (line: string) => Promise<ProcessCommandResult>;
   runTurn?: (text: string, signal: AbortSignal) => Promise<TurnResult>;
   runLocal?: (command: string, signal: AbortSignal) => Promise<LocalCommandOutcome>;
   initialPrompt?: string;
@@ -107,6 +109,7 @@ function makeHarness(app: TuiApp, options: HarnessOptions = {}) {
     io: new FakeIO(),
     session: session as unknown as SessionHandle,
     runTurn,
+    runProcessCommand: options.runProcess,
     runLocalCommand: (command, signal) => {
       localCalls.push(command);
       return runLocal(command, signal);
@@ -245,5 +248,41 @@ describe('TuiSession local commands', () => {
     expect(prompts).toEqual(['hello']);
     expect(app.transcript.filter((cell) => cell.type === 'local')).toHaveLength(1);
     controller.exit(0);
+  });
+});
+
+
+describe('TUI /process', () => {
+  it('runs management commands locally and renders results without a model turn', async () => {
+    const app = makeApp();
+    const calls: string[] = [];
+    const { controller, prompts, session } = makeHarness(app, {
+      runProcess: async (line) => { calls.push(line); return { content: 'abc running pid=123', isError: false }; },
+    });
+    expect(controller.runtime.start()).toBe(true);
+    controller.runtime.feed('/process\r');
+    await expect.poll(() => notices(app).join('\n')).toContain('abc running pid=123');
+    expect(calls).toEqual(['/process']);
+    expect(prompts).toEqual([]);
+    expect(session.events).toEqual([]);
+    controller.exit();
+  });
+
+  it('waits for an in-flight stop before allowing session shutdown', async () => {
+    const app = makeApp();
+    let finish!: (result: ProcessCommandResult) => void;
+    const { controller } = makeHarness(app, {
+      runProcess: () => new Promise((resolve) => { finish = resolve; }),
+    });
+    let closed = false;
+    const running = controller.run().then(() => { closed = true; });
+    controller.handleLocalCommand('/process stop abc');
+    await expect.poll(() => typeof finish).toBe('function');
+    controller.exit();
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    finish({ content: 'abc exited', isError: false });
+    await running;
+    expect(closed).toBe(true);
   });
 });

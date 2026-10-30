@@ -220,10 +220,10 @@ describe('codingx exec end-to-end', () => {
     expect(server.bodies).toEqual([]);
   });
 
-  it('completes ReadFile -> EditFile -> shell -> final answer and writes a replayable rollout', async () => {
+  it('completes Read -> Edit -> shell -> final answer and writes a replayable rollout', async () => {
     const server = await startServer([
-      toolResponse('toolu_read', 'ReadFile', { path: 'src/util.ts' }),
-      toolResponse('toolu_edit', 'EditFile', {
+      toolResponse('toolu_read', 'Read', { path: 'src/util.ts' }),
+      toolResponse('toolu_edit', 'Edit', {
         path: 'src/util.ts',
         old_string: 'const foo',
         new_string: 'const bar',
@@ -246,8 +246,8 @@ describe('codingx exec end-to-end', () => {
     expect(code).toBe(0);
     expect(await readFile(path.join(workspace, 'src', 'util.ts'), 'utf8')).toContain('const bar = 1;');
     expect(stdout.value).toBe('Renamed foo to bar and verified.\n');
-    expect(stderr.value).toContain('• ReadFile: src/util.ts');
-    expect(stderr.value).toContain('• EditFile: src/util.ts');
+    expect(stderr.value).toContain('• Read: src/util.ts');
+    expect(stderr.value).toContain('• Edit: src/util.ts');
     expect(stderr.value).toContain('• Shell: grep -q');
     expect(stderr.value).toContain('[tokens:');
     expect(stderr.value).toContain('warning: M3.1 enforces the permission profile');
@@ -258,15 +258,19 @@ describe('codingx exec end-to-end', () => {
     expect(firstBody).toMatchObject({ model: 'test-model', stream: true });
     const tools = firstBody.tools as Array<{ name: string }>;
     expect(tools.map((tool) => tool.name)).toEqual([
-      'ReadFile',
+      'Read',
       'ListDir',
       'Glob',
       'Grep',
-      'WriteFile',
-      'EditFile',
+      'Write',
+      'Edit',
       'UpdatePlan',
       'ApplyPatch',
       'Shell',
+      'ProcessStart',
+      'ProcessList',
+      'ProcessRead',
+      'ProcessStop',
       'Skill',
       'AskUserQuestion',
     ]);
@@ -313,7 +317,7 @@ describe('codingx exec end-to-end', () => {
     await mkdir(shared, { recursive: true });
     const extraFile = path.join(second, 'note.txt');
     responses.push(
-      toolResponse('toolu_add_dir', 'WriteFile', { path: extraFile, content: 'written through add-dir\n' }),
+      toolResponse('toolu_add_dir', 'Write', { path: extraFile, content: 'written through add-dir\n' }),
       textResponse('Wrote the note in the additional directory.'),
     );
 
@@ -339,7 +343,7 @@ describe('codingx exec end-to-end', () => {
     expect(code).toBe(0);
     expect(await readFile(extraFile, 'utf8')).toBe('written through add-dir\n');
     expect(stdout.value).toBe('Wrote the note in the additional directory.\n');
-    expect(stderr.value).toContain('• WriteFile: ' + extraFile);
+    expect(stderr.value).toContain('• Write: ' + extraFile);
     expect(server.bodies).toHaveLength(2);
 
     const canonicalExtra = await realpath(extra);
@@ -375,7 +379,7 @@ describe('codingx exec end-to-end', () => {
     roots.push(outside);
     const outsideFile = path.join(outside, 'note.txt');
     const server = await startServer([
-      toolResponse('toolu_yolo', 'WriteFile', { path: outsideFile, content: 'written outside\n' }),
+      toolResponse('toolu_yolo', 'Write', { path: outsideFile, content: 'written outside\n' }),
       textResponse('Wrote the note outside the workspace.'),
     ]);
     const { home, workspace } = await setupWorkspace(server.url);
@@ -405,7 +409,7 @@ describe('codingx exec end-to-end', () => {
     roots.push(outside);
     const outsideFile = path.join(outside, 'alias.txt');
     const server = await startServer([
-      toolResponse('toolu_alias', 'WriteFile', { path: outsideFile, content: 'alias\n' }),
+      toolResponse('toolu_alias', 'Write', { path: outsideFile, content: 'alias\n' }),
       textResponse('Wrote the alias note.'),
     ]);
     const { home, workspace } = await setupWorkspace(server.url);
@@ -427,7 +431,7 @@ describe('codingx exec end-to-end', () => {
     roots.push(outside);
     const outsideFile = path.join(outside, 'interactive.txt');
     const server = await startServer([
-      toolResponse('toolu_interactive_yolo', 'WriteFile', { path: outsideFile, content: 'interactive\n' }),
+      toolResponse('toolu_interactive_yolo', 'Write', { path: outsideFile, content: 'interactive\n' }),
       textResponse('Wrote the interactive note.'),
     ]);
     const { home, workspace } = await setupWorkspace(server.url);
@@ -459,7 +463,7 @@ describe('codingx exec end-to-end', () => {
     await mkdir(outside, { recursive: true });
     const target = path.join(outside, 'note.txt');
     responses.push(
-      toolResponse('toolu_policy_denied', 'WriteFile', { path: target, content: 'outside\n' }),
+      toolResponse('toolu_policy_denied', 'Write', { path: target, content: 'outside\n' }),
       textResponse('I could not write outside the workspace.'),
     );
 
@@ -484,7 +488,7 @@ describe('codingx exec end-to-end', () => {
     const events = await store.replaySession(sessionId);
     const decision = events.find((event) => event.type === 'permission.decision');
     expect(decision).toMatchObject({
-      name: 'WriteFile',
+      name: 'Write',
       verdict: 'deny',
       code: 'APPROVAL_REQUIRED',
       profile: ':workspace',
@@ -505,7 +509,7 @@ describe('codingx exec end-to-end', () => {
     await mkdir(outside, { recursive: true });
     const target = path.join(outside, 'note.txt');
     responses.push(
-      toolResponse('toolu_never', 'WriteFile', { path: target, content: 'outside\n' }),
+      toolResponse('toolu_never', 'Write', { path: target, content: 'outside\n' }),
       textResponse('Denied by the never policy.'),
     );
 
@@ -535,7 +539,7 @@ describe('codingx exec end-to-end', () => {
 
   it('honors --sandbox read-only for in-workspace writes', async () => {
     const server = await startServer([
-      toolResponse('toolu_read_only', 'WriteFile', { path: 'blocked.txt', content: 'blocked\n' }),
+      toolResponse('toolu_read_only', 'Write', { path: 'blocked.txt', content: 'blocked\n' }),
       textResponse('The write was blocked.'),
     ]);
     const { home, workspace } = await setupWorkspace(server.url);
@@ -577,7 +581,7 @@ describe('codingx exec end-to-end', () => {
       'utf8',
     );
     responses.push(
-      toolResponse('toolu_named_profile', 'WriteFile', { path: target, content: 'custom root\n' }),
+      toolResponse('toolu_named_profile', 'Write', { path: target, content: 'custom root\n' }),
       textResponse('Wrote through the custom profile.'),
     );
 
@@ -847,4 +851,81 @@ describe('CLI parsing', () => {
     expect(await runCli(['--cd', '/definitely/not/here', 'exec', 'hi'], { stdout, stderr: bad })).toBe(2);
     expect(bad.value).toMatch(/Working directory does not exist/);
   });
+});
+
+
+describe('managed process CLI lifecycle', () => {
+  it('cleans processes before ending a non-interactive session', async () => {
+    const server = await startServer([
+      toolResponse('start', 'ProcessStart', { command: 'sleep 60' }),
+      textResponse('Started.'),
+    ]);
+    const { home, workspace } = await setupWorkspace(server.url);
+    expect(await runExec({ prompt: 'start a service', cwd: workspace, yolo: true,
+      env: envFor(home, workspace), stdout: new MemorySink(), stderr: new MemorySink() })).toBe(0);
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const sessions = await store.listSessions();
+    const events = await store.replaySession(sessions[0]!.id);
+    const states = events.filter((event) => event.type === 'process.state');
+    expect(states.map((event) => (event.process as { state: string }).state)).toEqual(['starting', 'running', 'stopping', 'exited']);
+    const last = states.at(-1)!;
+    expect(last.process).toMatchObject({ stopReason: 'session_closed' });
+    expect(last.seq).toBeLessThan(events.find((event) => event.type === 'session.end')!.seq);
+    const pid = (last.process as { pid: number }).pid;
+    expect(() => process.kill(pid, 0)).toThrow();
+  });
+
+  it('keeps processes across plain turns and invalidates handles on clear', async () => {
+    const server = await startServer([
+      toolResponse('start', 'ProcessStart', { command: 'sleep 60' }), textResponse('Started.'),
+      toolResponse('before-clear', 'ProcessList', {}), textResponse('Listed.'),
+      toolResponse('after-clear', 'ProcessList', {}), textResponse('Empty.'),
+    ]);
+    const { home, workspace } = await setupWorkspace(server.url);
+    const stdin = new PassThrough();
+    stdin.end('start service\nlist services\n/clear\nlist services\n/quit\n');
+    expect(await runCli(['--cd', workspace, '--yolo'], {
+      stdin, env: envFor(home, workspace), stdout: new MemorySink(), stderr: new MemorySink(),
+    })).toBe(0);
+    const toolResult = (bodyIndex: number, id: string): unknown => {
+      const messages = server.bodies[bodyIndex]!.messages as Array<{ content: Array<{ tool_use_id?: string; content?: string }> }>;
+      const result = messages.flatMap((message) => Array.isArray(message.content) ? message.content : [])
+        .find((block) => block.tool_use_id === id)!;
+      return JSON.parse(result.content!);
+    };
+    expect(toolResult(3, 'before-clear')).toEqual([expect.objectContaining({ state: 'running' })]);
+    expect(toolResult(5, 'after-clear')).toEqual([]);
+  });
+});
+
+
+it('manages a model-started process with local slash commands without more model requests', async () => {
+  const server = await startServer([
+    toolResponse('start', 'ProcessStart', { command: 'echo process-ready; sleep 60' }),
+    textResponse('Started.'),
+  ]);
+  const { home, workspace } = await setupWorkspace(server.url);
+  const stdin = new PassThrough();
+  let output = '';
+  let processId: string | undefined;
+  const stdout: TextSink = { write(text) {
+    output += text;
+    const match = /^([a-f0-9-]{36})  running  pid=/m.exec(text);
+    if (match && processId === undefined) {
+      processId = match[1]!;
+      const prefix = processId.slice(0, 8);
+      stdin.end('/process logs ' + prefix + '\n/process stop ' + prefix + '\n/process\n/quit\n');
+    }
+    return true;
+  } };
+  stdin.write('start a process\n/process\n');
+  const code = await runCli(['--cd', workspace, '--yolo'], {
+    stdin, env: envFor(home, workspace), stdout, stderr: new MemorySink(),
+  });
+  expect(code).toBe(0);
+  expect(processId).toBeDefined();
+  expect(output).toContain('Next: /process logs ' + processId);
+  expect(output).toContain('exited');
+  expect(output).toContain('requested');
+  expect(server.bodies).toHaveLength(2);
 });

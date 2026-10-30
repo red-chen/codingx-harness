@@ -63,7 +63,7 @@ export const globTool: ToolDef<typeof schema> = {
     const resolved = await resolveWorkspacePath(ctx, requested, { mustExist: true, access: 'read' });
     const info = await stat(resolved.absolute);
     if (!info.isDirectory()) {
-      throw new ToolError('Not a directory: ' + requested + '. Glob only searches directories; use ReadFile for a file.');
+      throw new ToolError('Not a directory: ' + requested + '. Glob only searches directories; use Read for a file.');
     }
 
     const entries = await fg(input.pattern, {
@@ -106,7 +106,7 @@ export const globTool: ToolDef<typeof schema> = {
       }
       candidates.push({
         // Reported paths stay relative to the primary workspace so the model
-        // can pass them straight back into ReadFile/EditFile.
+        // can pass them straight back into Read/Edit.
         path: path.relative(resolved.workspaceRoot, canonical).split(path.sep).join('/'),
         mtimeMs,
       });

@@ -1,4 +1,5 @@
 import { isExploration } from '../state/exploration.js';
+import { buildEditedLines, isEdited } from './edited.js';
 import type { CellBuffer, Style } from '../terminal/buffer.js';
 import { ATTR_BOLD, ATTR_DIM } from '../terminal/buffer.js';
 import type { Rect } from '../layout/index.js';
@@ -117,7 +118,7 @@ export function buildAssistantCellLines(cell: AssistantCell, width: number): Sty
 /**
  * Consecutive calls of the same tool on the same target share one header:
  *
- *   • Ran ReadFile src/a.ts ×2 · 1s
+ *   • Ran Read src/a.ts ×2 · 1s
  *     │ first preview
  *     │ second preview
  *
@@ -127,6 +128,7 @@ export function buildAssistantCellLines(cell: AssistantCell, width: number): Sty
 export function buildExecGroupLines(cells: readonly ExecCell[], width: number): StyledTextLine[] {
   const first = cells[0];
   if (first === undefined) return [];
+  if (cells.every(isEdited)) return buildEditedLines(cells, width);
   if (isExploration(first.name)) return buildExploredLines(cells, width);
   const countLabel = cells.length > 1 ? ' ×' + cells.length : '';
   const totalMs = cells.reduce((sum, cell) => sum + (cell.durationMs ?? 0), 0);
@@ -179,8 +181,8 @@ export function buildExploredLines(cells: readonly ExecCell[], width: number): S
   const hidden = cells.length - shown.length;
   const failures = cells.filter((cell) => cell.isError).length;
   shown.forEach((cell, index) => {
-    const label = cell.exploration ?? cell.command.replace(/^(ReadFile|Grep|Glob|ListDir)\b/u,
-      cell.name === 'ReadFile' ? 'Read' : cell.name === 'ListDir' ? 'List' : 'Search');
+    const label = cell.exploration ?? cell.command.replace(/^(ReadFile|Read|Grep|Glob|ListDir)\b/u,
+      cell.name === 'Read' || cell.name === 'ReadFile' ? 'Read' : cell.name === 'ListDir' ? 'List' : 'Search');
     const verb = label.split(' ')[0] ?? '';
     lines.push({ segments: [
       { text: index === 0 ? '  └ ' : '    ', style: MUTED },
@@ -425,15 +427,12 @@ function activeLines(options: TranscriptViewportOptions, width: number): readonl
   return cachedLines(active, width, () => buildAssistantTextLines(active.text, width));
 }
 
-/** Adjacent exec cells merge into one block when tool and rendered target match. */
+/** Successful edits and exploration each share a block; other tools require matching targets. */
 function sameExecGroup(previous: TranscriptCell | undefined, cell: TranscriptCell): boolean {
-  return (
-    previous !== undefined &&
-    previous.type === 'exec' &&
-    cell.type === 'exec' &&
-    ((isExploration(previous.name) && isExploration(cell.name)) ||
-      (previous.name === cell.name && previous.command === cell.command))
-  );
+  if (previous?.type !== 'exec' || cell.type !== 'exec') return false;
+  if (isEdited(previous) || isEdited(cell)) return isEdited(previous) && isEdited(cell);
+  return (isExploration(previous.name) && isExploration(cell.name)) ||
+    (previous.name === cell.name && previous.command === cell.command);
 }
 
 function groupStart(cells: readonly TranscriptCell[], end: number): number {

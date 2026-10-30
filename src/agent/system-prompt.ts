@@ -178,7 +178,7 @@ export interface BuildSystemPromptOptions {
   sandbox?: {
     kind: string;
     active: boolean;
-    network: 'deny' | 'allow' | 'none';
+    network: 'deny' | 'allow' | 'none' | 'local';
     required: boolean;
     reason?: string;
   };
@@ -254,7 +254,7 @@ function stableRuleLines(): string[] {
     '- Never reveal credentials or copy secrets into commands, files, or summaries.',
     '',
     '# How to work',
-    '- Inspect the repository before changing it. Call ReadFile before editing a file with EditFile.',
+    '- Inspect the repository before changing it. Call Read before editing a file with Edit.',
     '- Write code that matches its surroundings: the same naming, comment density and idioms as the file you ' +
       'are editing. Do not reformat or restructure unrelated lines.',
     '- Keep changes focused on the user\'s request. Do not rewrite unrelated code or files.',
@@ -290,6 +290,16 @@ function dynamicLines(snapshot: ContextSnapshot, options: BuildSystemPromptOptio
         '- Shell sandbox: ' + options.sandbox.kind + ' (filesystem writes limited to the profile roots; network ' +
           options.sandbox.network + ').',
       );
+      if (options.sandbox.network === 'local') {
+        lines.push('- Shell and ProcessStart may use this machine’s network addresses. Always bind dev servers explicitly to ' +
+          '127.0.0.1 or ::1. Seatbelt does not prevent wildcard listeners or access to this host’s LAN addresses.');
+      }
+      if (options.sandbox.network === 'deny') {
+        lines.push('- Local server bind/listen is also denied. If requested, explain that the user can select ' +
+          '/permissions :workspace-local (TUI), or restart with --permission-profile :workspace-local, then launch a new process. ' +
+          'This keeps filesystem isolation; the local profile allows host-interface addresses and requires explicit loopback binding. ' +
+          'Ordinary command approval does not modify the sandbox.');
+      }
     } else {
       lines.push(
         '- Shell sandbox: unavailable (' + (options.sandbox.reason ?? 'no backend') + '). ' +

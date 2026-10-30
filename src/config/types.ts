@@ -4,7 +4,7 @@ import type { HookConfig } from '../hooks/types.js';
 
 export type ApprovalMode = 'on-request' | 'never' | 'always-ask';
 export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
-export type NetworkMode = 'none' | 'loopback' | 'all';
+export type NetworkMode = 'none' | 'loopback' | 'local' | 'all';
 export type RouteStrategy = 'failover' | 'weighted' | 'round-robin';
 export type Affinity = 'session' | 'turn' | 'none';
 

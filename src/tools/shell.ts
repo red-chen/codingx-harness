@@ -33,10 +33,11 @@ export const shellTool: ToolDef<typeof schema> = {
     'Run a shell command inside the workspace (or an --add-dir root) and return stdout, stderr and the exit code. ' +
     'Commands run through bash -lc in their own process group; the working directory must stay inside an allowed root. ' +
     'On macOS they also run inside the Seatbelt sandbox, so writes outside the permission profile and network access ' +
-    'are rejected by the kernel. ' +
+    'follow the selected permission profile. ' +
     'Use this to run tests, builds, linters and git commands. Long output is truncated with an explicit marker. ' +
+    'Use ProcessStart for long-running services or watchers; do not background them with & or nohup. ' +
     'A non-zero exit code is reported as an error result; read the output before deciding what to do next. ' +
-    'Do not use Shell to read, search or edit files when ReadFile, Grep, Glob or EditFile fits. ' +
+    'Do not use Shell to read, search or edit files when Read, Grep, Glob or Edit fits. ' +
     'Do not run commands that wait for input (editors, pagers, prompts); they block until the timeout. ' +
     'When a command fails, read the error and change the command instead of repeating it unchanged.',
   schema,
@@ -68,7 +69,7 @@ export const shellTool: ToolDef<typeof schema> = {
       };
     }
 
-    const { result, sandboxKind, sandboxActive, sandboxDenied, networkDenied } = outcome.execution;
+    const { result, sandboxKind, sandboxActive, sandboxDenied, networkDenied, hint } = outcome.execution;
     if (result.aborted) throw abortError('Shell command aborted.');
 
     const failed = result.timedOut || result.exitCode !== 0 || result.signal !== null;
@@ -94,6 +95,7 @@ export const shellTool: ToolDef<typeof schema> = {
     if (result.timedOut) {
       parts.push('Command timed out after ' + timeoutMs + 'ms and was terminated.');
     }
+    if (hint !== undefined) parts.push(hint);
     parts.push('exit_code: ' + (result.exitCode === null ? 'none' : result.exitCode));
     parts.push('duration_ms: ' + result.durationMs);
     if (input.description) parts.push('description: ' + input.description);

@@ -44,7 +44,7 @@ async function put(relative: string, content: string | Buffer): Promise<string> 
 }
 
 async function read(relative: string): Promise<void> {
-  const result = await registry.execute('ReadFile', { path: relative }, ctx);
+  const result = await registry.execute('Read', { path: relative }, ctx);
   expect(result.isError).toBeUndefined();
 }
 
@@ -99,7 +99,7 @@ describe('ApplyPatch', () => {
 
     const result = await registry.execute('ApplyPatch', { patch }, ctx);
     expect(result.isError).toBeUndefined();
-    expect(result.meta).toEqual({
+    expect(result.meta).toMatchObject({
       files: [
         { path: 'src/a.ts', created: false, additions: 5, deletions: 2 },
         { path: 'src/b.txt', created: false, additions: 2, deletions: 1 },
@@ -107,6 +107,10 @@ describe('ApplyPatch', () => {
       filesChanged: 2,
     });
     expect(result.content).toContain('Applied patch to 2 files');
+    expect(result.meta?.fileDiffs).toMatchObject([
+      { path: 'src/a.ts', additions: 5, deletions: 2, truncated: false },
+      { path: 'src/b.txt', additions: 2, deletions: 1, truncated: false },
+    ]);
     expect(result.content).toContain('updated src/a.ts (+5/-2)');
     expect(result.content).toContain('updated src/b.txt (+2/-1)');
 
@@ -147,7 +151,7 @@ describe('ApplyPatch', () => {
 
     const result = await registry.execute('ApplyPatch', { patch }, ctx);
     expect(result.isError).toBeUndefined();
-    expect(result.meta).toEqual({
+    expect(result.meta).toMatchObject({
       files: [{ path: 'src/generated/new.ts', created: true, additions: 3, deletions: 0 }],
       filesChanged: 1,
     });

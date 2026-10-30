@@ -95,7 +95,7 @@ describe('hooks config', () => {
 event = "pre_tool_use"
 command = "echo check"
 timeout_ms = 5000
-matcher = "Shell|WriteFile"
+matcher = "Shell|Write"
 `,
     );
     await writeProject(`
@@ -109,7 +109,7 @@ command = "echo project-hook"
         event: 'pre_tool_use',
         command: 'echo check',
         timeoutMs: 5000,
-        matcher: 'Shell|WriteFile',
+        matcher: 'Shell|Write',
       },
     ]);
     expect(loaded.warnings.join('\n')).toMatch(/Project config cannot override hooks/);
@@ -461,4 +461,26 @@ endpoint = "ftp://example.com"
   it('getRoute explains how to configure a missing route', () => {
     expect(() => getRoute({ routes: {} } as never, 'default')).toThrow(/No routes are configured/);
   });
+});
+
+describe('loopback network configuration', () => {
+  it('preserves loopback isolation when migrating legacy sandbox.network', async () => {
+    await writeGlobal(providerToml + '\n[sandbox]\nnetwork = "loopback"\n');
+    const loaded = await load();
+    expect(loaded.config.permissions.profiles[':workspace']?.network).toEqual({ enabled: true, mode: 'local', domains: {} });
+  });
+
+  it('loads an explicit named loopback profile and the builtin profile', async () => {
+    await writeGlobal('default_permissions = "dev"\n' + providerToml + '\n[permissions.dev]\nextends = ":workspace"\n[permissions.dev.network]\nmode = "local"\n');
+    const loaded = await load();
+    expect(loaded.config.permissions.profiles.dev?.network).toEqual({ enabled: true, mode: 'local', domains: {} });
+    expect(loaded.config.permissions.profiles[':workspace-local']?.network.mode).toBe('local');
+  });
+
+  it.each(['mode = "invalid"', 'mode = "local"\nenabled = false', 'mode = "none"\nenabled = true'])(
+    'rejects invalid or conflicting network configuration: %s', async (network) => {
+      await writeGlobal(providerToml + '\n[permissions.dev]\nextends = ":workspace"\n[permissions.dev.network]\n' + network + '\n');
+      await expect(load()).rejects.toThrow(/mode/);
+    },
+  );
 });

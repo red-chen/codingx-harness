@@ -1,4 +1,5 @@
 import { explorationLabel } from './exploration.js';
+import { readFileDiffs } from '../../tools/file-diff.js';
 import type { TokenUsage } from '../../providers/types.js';
 import type { RolloutEvent } from '../../session/types.js';
 import type { PlanStep } from '../../tools/types.js';
@@ -95,6 +96,7 @@ export function restoreTranscript(events: readonly RolloutEvent[]): TranscriptCe
         break;
       }
       case 'tool.result': {
+        const fileDiffs = readFileDiffs(event.meta);
         const callId = text(event.callId);
         const index = execs.get(callId);
         const base: ExecCell = index === undefined
@@ -112,6 +114,7 @@ export function restoreTranscript(events: readonly RolloutEvent[]): TranscriptCe
         const updated: ExecCell = {
           ...base,
           output: text(event.content),
+          ...(fileDiffs === undefined ? {} : { fileDiffs }),
           isError: event.isError === true,
           durationMs: numberValue(event.durationMs),
           running: false,

@@ -35,14 +35,18 @@ describe('markdown renderer', () => {
     const text = plain(lines);
     expect(text.join('\n')).toContain('const x = 1;');
     expect(text.join('\n')).toContain('streaming');
+    expect(text[2]).toBe('  ts  ');
+    expect(text[3]).toBe('  const x = 1;  ');
+    expect(text[4]).toBe('');
+    expect(lines.slice(2, 5).every((line) => line.background === TUI_COLORS.planBg)).toBe(true);
     const codeLine = lines.find((line) => line.segments.some((segment) => segment.text === 'const x = 1;'));
     expect(codeLine?.background).toBeDefined();
     const add = lines.find((line) => line.segments.some((segment) => segment.text === '+add'));
     const remove = lines.find((line) => line.segments.some((segment) => segment.text === '-remove'));
     const meta = lines.find((line) => line.segments.some((segment) => segment.text === '@@ hunk'));
-    expect(add?.segments[0]?.style.fg).toBe(TUI_COLORS.success);
-    expect(remove?.segments[0]?.style.fg).toBe(TUI_COLORS.error);
-    expect(meta?.segments[0]?.style.fg).toBe(TUI_COLORS.accent);
+    expect(add?.segments.find((segment) => segment.text === '+add')?.style.fg).toBe(TUI_COLORS.success);
+    expect(remove?.segments.find((segment) => segment.text === '-remove')?.style.fg).toBe(TUI_COLORS.error);
+    expect(meta?.segments.find((segment) => segment.text === '@@ hunk')?.style.fg).toBe(TUI_COLORS.accent);
   });
 
   it('renders tables as aligned grids with readable styled content', () => {

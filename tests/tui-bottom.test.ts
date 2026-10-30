@@ -3,6 +3,7 @@ import { colorsEqual, computeFrameLayout, TuiApp, TUI_COLORS } from '../src/tui/
 import type { CellBuffer } from '../src/tui/index.js';
 import { displayWidth } from '../src/tui/text/index.js';
 import { metaText } from '../src/tui/widgets/meta.js';
+import { tipText } from '../src/tui/widgets/tip.js';
 
 function key(code: string, text?: string) {
   return {
@@ -29,8 +30,9 @@ function screenText(frame: CellBuffer): string {
   return rows.join('\n');
 }
 
-function makeApp(title?: string): TuiApp {
+function makeApp(title?: string, tip?: string): TuiApp {
   return new TuiApp({
+    ...(tip ? { tip } : {}),
     session: { sessionId: 's1', cwd: '/tmp/work', model: 'glm-5.3', ...(title ? { title } : {}) },
     version: '0.1.0',
     width: 80,
@@ -47,6 +49,47 @@ function expectRowBackground(frame: CellBuffer, y: number, color: typeof TUI_COL
 }
 
 describe('TUI bottom surfaces', () => {
+  it('keeps the tip directly below the status while idle, working and scrolling', () => {
+    const app = makeApp(undefined, 'Use /help for shortcuts.');
+    const check = (): void => {
+      const layout = computeFrameLayout(app.state, 80, 24);
+      const frame = app.renderFrame();
+      expect(layout.tip.height).toBe(1);
+      expect(layout.tip.y).toBe(layout.status.y + 1);
+      expect(layout.tip.y).toBeLessThan(layout.composer.y);
+      expect(rowText(frame, layout.tip.y)).toBe('  └ Tip: Use /help for shortcuts.');
+      expect(frame.get(2, layout.tip.y)?.fg).toEqual(TUI_COLORS.muted);
+      expect(screenText(frame).split('└ Tip:')).toHaveLength(2);
+    };
+    check();
+    app.submitText('hello');
+    app.handleEvent({ type: 'turn.started', turnId: 't1' });
+    app.handleEvent({ type: 'text.delta', turnId: 't1', text: 'Streaming answer' });
+    expect(app.state.status.state).toBe('working');
+    check();
+    for (let i = 0; i < 40; i++) app.addNotice('history ' + i);
+    app.handleKey(key('pageup'));
+    check();
+    app.resetSession();
+    check();
+  });
+
+  it('clips long tips to one row and hides them when disabled or the terminal is tiny', () => {
+    const app = makeApp(undefined, '使用 /help 查看快捷键。'.repeat(20));
+    app.setSize(40, 24);
+    const layout = computeFrameLayout(app.state, 40, 24);
+    const line = rowText(app.renderFrame(), layout.tip.y);
+    expect(displayWidth(line)).toBeLessThanOrEqual(40);
+    expect(line).toMatch(/^  └ Tip: .*…$/u);
+    expect(layout.tip.height).toBe(1);
+    expect(tipText('\u001b[31mHello\u001b[0m\nworld', 80)).toBe('  └ Tip: Hello world');
+    expect(computeFrameLayout(app.state, 10, 24).tip.height).toBe(0);
+    expect(computeFrameLayout(app.state, 40, 7).tip.height).toBe(0);
+    const disabled = makeApp();
+    expect(computeFrameLayout(disabled.state, 80, 24).tip.height).toBe(0);
+    expect(screenText(disabled.renderFrame())).not.toContain('Tip:');
+  });
+
   it('gives the composer its own full-width background', () => {
     const app = makeApp();
     const layout = computeFrameLayout(app.state, 80, 24);

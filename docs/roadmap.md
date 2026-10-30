@@ -23,14 +23,14 @@
 - [x] `Provider` 接口 + Anthropic Messages 实现（流式、tool use、prompt caching）
 - [x] `ProviderRouter` 单目标实现，为后续多 Provider 路由留接口
 - [x] Agent 循环（单 turn、串行工具、无压缩）
-- [x] 工具：`ReadFile`、`ListDir`、`EditFile`、`Shell`
+- [x] 工具：`Read`、`ListDir`、`Edit`、`Shell`
 - [x] 纯文本输出（`--plain`），无 TUI
 - [x] `SessionStore` 接口 + 进程内实现，rollout 写入 JSONL（单写者）
 - [x] 额外交付：逐行交互模式、`--json` 事件流、`codingx log` 离线回放
 
 **验收**：`codingx exec "把 src/util.ts 里的 foo 重命名为 bar 并跑测试"` 能端到端完成，rollout 可回放。
 
-自动化验收已通过：本地假 Anthropic SSE 服务驱动 ReadFile → EditFile → Shell → 最终回答，验证文件修改、退出码、JSON 事件流与 rollout 回放。真实 Provider 需要配置 API Key 后手工冒烟，未纳入 CI。
+自动化验收已通过：本地假 Anthropic SSE 服务驱动 Read → Edit → Shell → 最终回答，验证文件修改、退出码、JSON 事件流与 rollout 回放。真实 Provider 需要配置 API Key 后手工冒烟，未纳入 CI。
 
 **M1 实现偏差**（接口已留出，后续里程碑补齐）：
 
@@ -58,7 +58,7 @@
 - [x] 会话 resume / fork（sessiond 启用时通过 IPC/租约）
 - [x] sessiond 常驻进程：Unix socket + JSON-RPC、写租约、会话索引、client、自动拉起、空闲退出
 - [x] 跨 CLI 查询：`codingx sessions list/show/watch/prune`
-- [x] 工具：`Glob`、`Grep`、`WriteFile`、`ApplyPatch`、`UpdatePlan`、`Skill`、`AskUserQuestion`
+- [x] 工具：`Glob`、`Grep`、`Write`、`ApplyPatch`、`UpdatePlan`、`Skill`、`AskUserQuestion`
 - [x] CLI 中断与取消（`Ctrl+C` 首次中断；双击退出；`--continue` 续接）
 - [x] TUI 中断键位（`Esc` / `Ctrl+C`）
 
@@ -103,7 +103,8 @@
 ## M5 · 进阶能力
 
 - 子 Agent（`Task` 工具，独立上下文）
-- `ShellInteractive` 长驻进程管理
+- [x] 长驻进程基础管理提前落地：`ProcessStart / ProcessList / ProcessRead / ProcessStop`，会话内跨 turn 存活、日志游标、进程组回收（见 [Process](processes.md)）
+- 长驻进程增强：PTY / stdin 交互、跨 CLI 托管（原 `ShellInteractive` 的剩余范围）
 - 并行只读工具执行
 - prompt cache 命中率优化（稳定前缀、工具定义顺序）
 - 用量与成本统计

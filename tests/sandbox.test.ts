@@ -6,13 +6,14 @@ import type { Server } from 'node:http';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
-import { buildChildEnv, runShellCommand } from '../src/exec/index.js';
+import { buildChildEnv, runShellCommand, ProcessManager } from '../src/exec/index.js';
 import { createPolicyRuntime, parsePermissions } from '../src/policy/index.js';
 import type { PolicyRuntime } from '../src/policy/types.js';
 import {
   buildSeatbeltProfile,
   createSandboxBackend,
   createSeatbeltBackend,
+  sandboxSummary,
 } from '../src/sandbox/index.js';
 import type { SandboxBackend } from '../src/sandbox/types.js';
 import { ReadFileTracker, ToolRegistry, createBuiltinTools, type ToolContext } from '../src/tools/index.js';
@@ -377,5 +378,89 @@ describe.skipIf(process.platform !== 'darwin')('Seatbelt execution', () => {
       code: 'SANDBOX_DENIED',
       sandbox: { kind: 'seatbelt', active: true, denied: true },
     });
+  });
+});
+
+
+describe.skipIf(process.platform !== 'darwin')('Seatbelt loopback isolation', () => {
+  async function seatbelt(): Promise<SandboxBackend> {
+    const backend = createSeatbeltBackend();
+    expect(await backend.available(), backend.status.reason).toBe(true);
+    return backend;
+  }
+
+  it.each(['127.0.0.1', '::1'])('runs a managed HTTP server on %s and allows sandboxed clients', async (host) => {
+    const backend = await seatbelt();
+    if (!backend) return;
+    const runtime = await policy(':workspace-local');
+    expect(sandboxSummary(backend.status, runtime.sandboxPolicy).network).toBe('local');
+    const manager = new ProcessManager({ killGraceMs: 50 });
+    const ctx = { ...ctxFor(runtime, backend), processes: manager };
+    const registry = new ToolRegistry(createBuiltinTools());
+    try {
+      const script = "const s=require('node:http').createServer((q,r)=>r.end('loopback-ok')); s.listen(0," + JSON.stringify(host) + ",()=>console.log('PORT:'+s.address().port));";
+      const start = await registry.execute('ProcessStart', { command: 'node -e ' + JSON.stringify(script) }, ctx);
+      expect(start.isError, start.content).toBeUndefined();
+      const id = JSON.parse(start.content).processId;
+      let output = '';
+      await expect.poll(async () => { output = (await manager.read(id)).output; return output; }, { timeout: 5000 }).toMatch(/PORT:\d+/);
+      const port = /PORT:(\d+)/.exec(output)![1];
+      const url = 'http://' + (host.includes(':') ? '[' + host + ']' : host) + ':' + port;
+      expect(await (await fetch(url)).text()).toBe('loopback-ok');
+      const client = await registry.execute('Shell', { command: 'curl --noproxy "*" -fsS ' + url }, ctx);
+      expect(client.isError, client.content).toBeUndefined();
+      expect(client.content).toContain('loopback-ok');
+    } finally { await manager.close(); }
+  });
+
+  it('allows Python HTTPServer bind and preserves filesystem isolation', async () => {
+    const backend = await seatbelt();
+    if (!backend) return;
+    const runtime = await policy(':workspace-local');
+    const script = "from http.server import HTTPServer, SimpleHTTPRequestHandler; s=HTTPServer(('127.0.0.1',0),SimpleHTTPRequestHandler); print('python-bound'); s.server_close()";
+    const result = await runSandboxed('/usr/bin/python3 -c ' + JSON.stringify(script), backend, runtime);
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toContain('python-bound');
+    const outside = path.join(root, 'outside-loopback.txt');
+    const write = await runSandboxed('echo forbidden > ' + JSON.stringify(outside), backend, runtime);
+    expect(write.exitCode).not.toBe(0);
+    await expect(readFile(outside)).rejects.toThrow();
+    const config = buildSeatbeltProfile(runtime.sandboxPolicy);
+    expect(config).not.toContain('(allow network*)');
+    expect(config).not.toContain('(allow network-bind (local ip "*:*"))');
+  });
+
+  it.each(['0.0.0.0', '::'])('documents the native wildcard-listener limitation on %s', async (host) => {
+    const backend = await seatbelt();
+    if (!backend) return;
+    const script = "const s=require('node:net').createServer(); s.on('error',e=>{console.log(e.code);process.exit(7)}); s.listen(0," + JSON.stringify(host) + ",()=>s.close());";
+    const result = await runSandboxed('node -e ' + JSON.stringify(script), backend, await policy(':workspace-local'));
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
+  });
+
+  it('permits direct host-interface connections at the kernel without sending external traffic', async () => {
+    const backend = await seatbelt();
+    if (!backend) return;
+    // The destination is this same machine, never a public/external service.
+    const address = Object.values(os.networkInterfaces()).flat().find((entry) => entry?.family === 'IPv4' && !entry.internal)?.address ?? '0.0.0.0';
+    const server = createServer((_req, res) => res.end('must-not-reach'));
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, address, resolve));
+    const port = (server.address() as { port: number }).port;
+    const script = "const s=require('node:net').connect({host:" + JSON.stringify(address) + ",port:" + port + "}); s.on('error',e=>{console.log(e.code);process.exit(7)}); s.on('connect',()=>{s.destroy();process.exit(0)}); setTimeout(()=>process.exit(9),2000);";
+    const result = await runSandboxed('node -e ' + JSON.stringify(script), backend, await policy(':workspace-local'));
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
+  });
+
+  it('blocks a non-host destination before connect without contacting an external service', async () => {
+    const backend = await seatbelt();
+    // TCP cannot connect to the broadcast destination even without a sandbox.
+    // Unlike a public IP probe, a failed test cannot contact an external service.
+    const script = "const s=require('node:net').connect({host:'255.255.255.255',port:9}); s.on('error',e=>{console.log(e.code);process.exit(7)}); setTimeout(()=>process.exit(9),1000);";
+    const result = await runSandboxed('node -e ' + JSON.stringify(script), backend, await policy(':workspace-local'));
+    expect(result.exitCode, result.stdout + result.stderr).toBe(7);
+    expect(result.stdout).toContain('EPERM');
+    const unrestricted = await runSandboxed('node -e ' + JSON.stringify(script), backend, await policy('net', 'on-request', { net: { extends: ':workspace', network: { enabled: true } } }));
+    expect(unrestricted.stdout).not.toContain('EPERM');
   });
 });

@@ -93,7 +93,7 @@ describe('permission profiles', () => {
         network: { enabled: true, domains: { 'example.com': 'allow' } },
       },
     });
-    const decision = await policy.evaluate('WriteFile', { path: path.join(extra, 'note.txt'), content: 'x' });
+    const decision = await policy.evaluate('Write', { path: path.join(extra, 'note.txt'), content: 'x' });
     expect(decision.verdict).toBe('allow');
     expect(policy.writeRoots).toContain(await realpath(extra));
   });
@@ -107,18 +107,18 @@ describe('policy evaluation', () => {
     const configPath = path.join(cwd, '.git', 'config');
 
     const defaults = await runtime(':workspace', 'never');
-    expect((await defaults.evaluate('WriteFile', { path: hookPath, content: 'x' })).verdict).toBe('deny');
-    expect((await defaults.evaluate('WriteFile', { path: configPath, content: 'x' })).verdict).toBe('deny');
+    expect((await defaults.evaluate('Write', { path: hookPath, content: 'x' })).verdict).toBe('deny');
+    expect((await defaults.evaluate('Write', { path: configPath, content: 'x' })).verdict).toBe('deny');
 
     const hooks = await runtime(':workspace-git-hooks', 'never');
-    expect((await hooks.evaluate('WriteFile', { path: hookPath, content: 'x' })).verdict).toBe('allow');
-    expect((await hooks.evaluate('WriteFile', { path: configPath, content: 'x' })).verdict).toBe('allow');
+    expect((await hooks.evaluate('Write', { path: hookPath, content: 'x' })).verdict).toBe('allow');
+    expect((await hooks.evaluate('Write', { path: configPath, content: 'x' })).verdict).toBe('allow');
 
     const custom = await runtime('hooks-only', 'never', {
       'hooks-only': { extends: ':workspace', filesystem: { ':git_hooks': 'write' } },
     });
-    expect((await custom.evaluate('WriteFile', { path: hookPath, content: 'x' })).verdict).toBe('allow');
-    expect((await custom.evaluate('WriteFile', { path: configPath, content: 'x' })).verdict).toBe('deny');
+    expect((await custom.evaluate('Write', { path: hookPath, content: 'x' })).verdict).toBe('allow');
+    expect((await custom.evaluate('Write', { path: configPath, content: 'x' })).verdict).toBe('deny');
 
     await expect(
       runtime('bad-git-scope', 'never', {
@@ -129,42 +129,42 @@ describe('policy evaluation', () => {
 
   it('allows workspace reads/writes and asks for outside paths', async () => {
     const policy = await runtime();
-    const inside = await policy.evaluate('ReadFile', { path: 'src/a.ts' });
+    const inside = await policy.evaluate('Read', { path: 'src/a.ts' });
     expect(inside.verdict).toBe('allow');
 
-    const outside = await policy.evaluate('WriteFile', { path: path.join(root, 'outside', 'a.txt') });
+    const outside = await policy.evaluate('Write', { path: path.join(root, 'outside', 'a.txt') });
     expect(outside.verdict).toBe('ask');
     expect(outside.reason).toMatch(/outside/);
 
     const never = await runtime(':workspace', 'never');
-    const denied = await never.evaluate('WriteFile', { path: path.join(root, 'outside', 'a.txt') });
+    const denied = await never.evaluate('Write', { path: path.join(root, 'outside', 'a.txt') });
     expect(denied.verdict).toBe('deny');
     expect(denied.code).toBe('PERMISSION_DENIED');
   });
 
   it('denies secret files even when they sit inside the workspace', async () => {
     const policy = await runtime();
-    const envFile = await policy.evaluate('ReadFile', { path: 'config/.env' });
+    const envFile = await policy.evaluate('Read', { path: 'config/.env' });
     expect(envFile.verdict).toBe('deny');
-    const keyFile = await policy.evaluate('WriteFile', { path: 'certs/server.pem', content: 'x' });
+    const keyFile = await policy.evaluate('Write', { path: 'certs/server.pem', content: 'x' });
     expect(keyFile.verdict).toBe('deny');
-    const normal = await policy.evaluate('ReadFile', { path: 'src/app.ts' });
+    const normal = await policy.evaluate('Read', { path: 'src/app.ts' });
     expect(normal.verdict).toBe('allow');
   });
 
   it('denies credential paths and grants full access only for danger-full-access', async () => {
     const policy = await runtime();
-    const secret = await policy.evaluate('ReadFile', { path: path.join(home, '.ssh', 'id_rsa') });
+    const secret = await policy.evaluate('Read', { path: path.join(home, '.ssh', 'id_rsa') });
     expect(secret.verdict).toBe('deny');
 
     const danger = await runtime(':danger-full-access', 'never');
-    const allowed = await danger.evaluate('ReadFile', { path: path.join(home, '.ssh', 'id_rsa') });
+    const allowed = await danger.evaluate('Read', { path: path.join(home, '.ssh', 'id_rsa') });
     expect(allowed.verdict).toBe('allow');
   });
 
   it('asks for writes under read-only and still permits read-only commands', async () => {
     const policy = await runtime(':read-only');
-    const write = await policy.evaluate('WriteFile', { path: 'note.txt', content: 'x' });
+    const write = await policy.evaluate('Write', { path: 'note.txt', content: 'x' });
     expect(write.verdict).toBe('ask');
 
     const pwd = await policy.evaluate('Shell', { command: 'pwd' });
@@ -216,7 +216,7 @@ describe('policy evaluation', () => {
     expect(devNull.verdict).toBe('allow');
 
     for (const file of ['.git/config', '.git/hooks/pre-commit']) {
-      const decision = await workspace.evaluate('WriteFile', { path: file, content: 'x' });
+      const decision = await workspace.evaluate('Write', { path: file, content: 'x' });
       expect(decision.verdict, file).toBe('deny');
     }
   });
@@ -258,7 +258,7 @@ describe('ToolRegistry policy enforcement', () => {
     const policy = await runtime();
     const registry = new ToolRegistry(createBuiltinTools());
     const target = path.join(root, 'outside', 'denied.txt');
-    const result = await registry.execute('WriteFile', { path: target, content: 'x' }, ctxWith(policy));
+    const result = await registry.execute('Write', { path: target, content: 'x' }, ctxWith(policy));
     expect(result.isError).toBe(true);
     expect(result.meta?.code).toBe('APPROVAL_REQUIRED');
     await expect(readFile(target)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -269,7 +269,7 @@ describe('ToolRegistry policy enforcement', () => {
     const registry = new ToolRegistry(createBuiltinTools());
     const target = path.join(root, 'outside', 'approved.txt');
     const ctx = ctxWith(policy, async () => ({ decision: 'allow', scope: 'once' }));
-    const result = await registry.execute('WriteFile', { path: target, content: 'approved\n' }, ctx);
+    const result = await registry.execute('Write', { path: target, content: 'approved\n' }, ctx);
     expect(result.isError).toBeUndefined();
     expect(await readFile(target, 'utf8')).toBe('approved\n');
     expect(result.meta?.policy).toMatchObject({ verdict: 'allow', profile: ':workspace' });
@@ -304,9 +304,36 @@ describe('ToolRegistry policy enforcement', () => {
     const registry = new ToolRegistry(createBuiltinTools());
     const target = path.join(root, 'outside', 'denied-by-user.txt');
     const ctx = ctxWith(policy, async () => ({ decision: 'deny', reason: 'not now' }));
-    const result = await registry.execute('WriteFile', { path: target, content: 'x' }, ctx);
+    const result = await registry.execute('Write', { path: target, content: 'x' }, ctx);
     expect(result.isError).toBe(true);
     expect(result.meta?.code).toBe('PERMISSION_DENIED');
     expect(result.content).toContain('not now');
+  });
+});
+
+describe('loopback permission profile', () => {
+  it('permits literal local clients and rejects non-loopback and unknown destinations', async () => {
+    const policy = await runtime(':workspace-local', 'never');
+    expect(policy.yolo).toBe(false);
+    expect(policy.writeRoots).toContain(await realpath(cwd));
+    for (const url of ['http://localhost:8000', 'http://127.0.0.1:8000', 'http://[::1]:8000']) {
+      expect((await policy.evaluate('Shell', { command: 'curl ' + url })).verdict).toBe('allow');
+    }
+    for (const url of ['http://example.com', 'http://192.168.1.2', 'http://localhost.evil.test', 'http://[::ffff:127.0.0.1]']) {
+      expect(await policy.evaluate('Shell', { command: 'curl ' + url })).toMatchObject({ verdict: 'deny', rule: 'network.local' });
+    }
+    expect((await policy.evaluate('Shell', { command: 'npm install' })).verdict).toBe('deny');
+    expect((await policy.evaluate('ProcessStart', { command: 'python3 -m http.server 8000 --bind 127.0.0.1' })).verdict).toBe('allow');
+  });
+
+  it('inherits loopback mode without enabling external access through domain entries', async () => {
+    const policy = await runtime('dev', 'never', {
+      dev: { extends: ':workspace-local' },
+    });
+    expect(policy.sandboxPolicy.network.mode).toBe('local');
+    const withDomains = await runtime('dev', 'never', {
+      dev: { extends: ':workspace', network: { mode: 'local', domains: { 'example.com': 'allow' } } },
+    });
+    expect((await withDomains.evaluate('Shell', { command: 'curl http://example.com' })).verdict).toBe('deny');
   });
 });

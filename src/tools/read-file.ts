@@ -23,13 +23,13 @@ const schema = z.object({
 });
 
 export const readFileTool: ToolDef<typeof schema> = {
-  name: 'ReadFile',
+  name: 'Read',
   description:
     'Read a UTF-8 text file inside the workspace or an --add-dir root by line, with line numbers. ' +
     'Use offset and limit to page through large files. The response states the total line count and whether more lines remain. ' +
-    'You must call ReadFile on a file before editing it with EditFile. ' +
+    'You must call Read on a file before editing it with Edit. ' +
     'Binary files are rejected; use Grep for content search and ListDir for directories. ' +
-    'Prefer ReadFile over Shell commands such as cat, head or sed; if the file is large, read only the range you need.',
+    'Prefer Read over Shell commands such as cat, head or sed; if the file is large, read only the range you need.',
   schema,
   parallelSafe: true,
   approval: 'none',

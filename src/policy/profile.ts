@@ -12,6 +12,7 @@ import type {
 } from './types.js';
 
 export const WORKSPACE_PROFILE = ':workspace';
+export const LOCAL_PROFILE = ':workspace-local';
 export const READ_ONLY_PROFILE = ':read-only';
 export const DANGER_PROFILE = ':danger-full-access';
 export const GIT_HOOKS_PROFILE = ':workspace-git-hooks';
@@ -101,6 +102,17 @@ export const BUILTIN_PROFILES: Record<string, PermissionProfile> = {
     network: { enabled: true, domains: {} },
     source: 'builtin',
   },
+  [LOCAL_PROFILE]: {
+    name: LOCAL_PROFILE,
+    filesystem: [
+      { scope: ':workspace_roots', access: 'write' },
+      { scope: ':tmpdir', access: 'write' },
+      { scope: ':slash_tmp', access: 'write' },
+      { scope: ':minimal', access: 'read' },
+    ],
+    network: { enabled: true, mode: 'local', domains: {} },
+    source: 'builtin',
+  },
 };
 
 export function isReadOnlyProgram(program: string, args: readonly string[]): boolean {
@@ -161,6 +173,13 @@ function parseNetwork(raw: unknown, name: string): NetworkPolicy | undefined {
   if (enabled !== undefined && typeof enabled !== 'boolean') {
     throw new ConfigError('[permissions.' + name + '.network] enabled must be a boolean.');
   }
+  const mode = raw.mode;
+  if (mode !== undefined && mode !== 'none' && mode !== 'local' && mode !== 'all') {
+    throw new ConfigError('[permissions.' + name + '.network] mode must be "none", "local" or "all".');
+  }
+  if (mode !== undefined && enabled !== undefined && enabled !== (mode !== 'none')) {
+    throw new ConfigError('[permissions.' + name + '.network] enabled conflicts with mode.');
+  }
   const domains: Record<string, 'allow' | 'deny'> = {};
   if (raw.domains !== undefined) {
     if (!isPlainObject(raw.domains)) {
@@ -175,7 +194,7 @@ function parseNetwork(raw: unknown, name: string): NetworkPolicy | undefined {
       domains[domain] = decision;
     }
   }
-  return { enabled: enabled === true, domains };
+  return { enabled: mode === undefined ? enabled === true : mode !== 'none', ...(mode === undefined ? {} : { mode }), domains };
 }
 
 interface ParsedProfile {

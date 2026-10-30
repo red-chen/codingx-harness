@@ -5,6 +5,8 @@ import { TUI_COLORS, type TuiAppState } from './state/types.js';
 import { composerCursorPosition, composerHeight, queuePreviewHeight, renderComposer, renderQueuePreview } from './widgets/composer.js';
 import { metaHeight, renderMetaBar } from './widgets/meta.js';
 import { renderStatusRow } from './widgets/status.js';
+import { renderTipRow, tipText } from './widgets/tip.js';
+import { renderTipsPanel } from './widgets/tips.js';
 import { renderTranscript } from './widgets/transcript.js';
 import { renderHelpOverlay } from './widgets/overlay.js';
 import { TRANSCRIPT_COPY_HINT } from './hints.js';
@@ -25,6 +27,7 @@ export interface FrameLayout {
   readonly transcript: Rect;
   readonly statusGapTop: Rect;
   readonly status: Rect;
+  readonly tip: Rect;
   readonly statusGapBottom: Rect;
   readonly queue: Rect;
   readonly slash: Rect;
@@ -59,6 +62,7 @@ export function computeFrameLayout(state: TuiAppState, width: number, height: nu
   const desiredSlash = state.mode === 'main' ? slashMenuHeight(state.composer.text, state.slashDismissed) : 0;
   const desiredMeta = metaHeight(w);
   const desiredStatusGap = h >= 8 ? 1 : 0;
+  const desiredTip = h >= 8 && tipText(state.tip, w) ? 1 : 0;
 
   let available = h;
   const statusHeight = Math.min(desiredStatus, available);
@@ -75,14 +79,17 @@ export function computeFrameLayout(state: TuiAppState, width: number, height: nu
   available -= queueApplied;
   const slashApplied = Math.min(desiredSlash, available);
   available -= slashApplied;
+  const tipApplied = Math.min(desiredTip, available);
+  available -= tipApplied;
   const bottomHeight =
-    gapTopApplied + statusHeight + gapBottomApplied + queueApplied + slashApplied + composerApplied + metaApplied;
+    gapTopApplied + statusHeight + tipApplied + gapBottomApplied + queueApplied + slashApplied + composerApplied + metaApplied;
 
   const [transcriptArea, bottomArea] = splitVertical(screen, [min(0), length(bottomHeight)]);
   const bottom = bottomArea ?? rect(0, h, w, 0);
-  const [gapTopArea, statusArea, gapBottomArea, queueArea, slashArea, composerArea, metaArea] = splitVertical(bottom, [
+  const [gapTopArea, statusArea, tipArea, gapBottomArea, queueArea, slashArea, composerArea, metaArea] = splitVertical(bottom, [
     length(gapTopApplied),
     length(statusHeight),
+    length(tipApplied),
     length(gapBottomApplied),
     length(queueApplied),
     length(slashApplied),
@@ -96,6 +103,7 @@ export function computeFrameLayout(state: TuiAppState, width: number, height: nu
     transcript: transcriptArea ?? rect(0, 0, w, 0),
     statusGapTop: gapTopArea ?? rect(0, 0, w, 0),
     status: statusArea ?? rect(0, 0, w, 0),
+    tip: tipArea ?? rect(0, 0, w, 0),
     statusGapBottom: gapBottomArea ?? rect(0, 0, w, 0),
     queue: queueArea ?? rect(0, 0, w, 0),
     slash: slashArea ?? rect(0, 0, w, 0),
@@ -119,6 +127,11 @@ export function composeFrameWithCursor(state: TuiAppState, options: ComposeFrame
   const now = options.now ?? Date.now();
   const layout = computeFrameLayout(state, width, height);
   const frame = new CellBuffer(width, height);
+
+  if (state.mode === 'tips' && state.tips) {
+    renderTipsPanel(frame, width, height, state.tips);
+    return { frame, cursor: null };
+  }
 
   if (state.mode === 'transcript') {
     const content = { x: 0, y: 1, width, height: Math.max(0, height - 2) };
@@ -164,6 +177,7 @@ export function composeFrameWithCursor(state: TuiAppState, options: ComposeFrame
     awaitingKind: state.mode === 'approval' ? 'approval' : 'answer',
     now,
   });
+  renderTipRow(layout.tip, frame, state.tip);
   renderQueuePreview(layout.queue, frame, state.queue);
   if (state.mode === 'main' && !state.slashDismissed) {
     renderSlashMenu(layout.slash, frame, slashMatches(state.composer.text), state.slashIndex);

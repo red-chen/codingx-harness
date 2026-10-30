@@ -7,6 +7,7 @@ import { ToolError } from '../util/errors.js';
 import { isPathInside, isPathInsideReal } from '../util/paths.js';
 import { resolveWorkspacePath } from './paths.js';
 import type { ToolDef } from './types.js';
+import { createFileDiff } from './file-diff.js';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
@@ -31,13 +32,13 @@ async function readLstat(target: string): Promise<Stats | undefined> {
 }
 
 export const writeFileTool: ToolDef<typeof schema> = {
-  name: 'WriteFile',
+  name: 'Write',
   description:
     'Create or completely overwrite a UTF-8 text file inside the workspace or an --add-dir root. Parent directories are created automatically. ' +
-    'Overwriting an existing file requires that file to have been read with ReadFile in this session first; otherwise the write is refused. ' +
+    'Overwriting an existing file requires that file to have been read with Read in this session first; otherwise the write is refused. ' +
     'Directories, binary/non-UTF-8 files and files larger than 10 MiB are rejected. ' +
-    'Use WriteFile for new files or full rewrites, and EditFile for targeted replacements in an existing file. ' +
-    'If an existing file only needs a few changes, use EditFile instead: a full overwrite destroys content you have not seen.',
+    'Use Write for new files or full rewrites, and Edit for targeted replacements in an existing file. ' +
+    'If an existing file only needs a few changes, use Edit instead: a full overwrite destroys content you have not seen.',
   schema,
   parallelSafe: false,
   approval: 'on-write',
@@ -45,6 +46,7 @@ export const writeFileTool: ToolDef<typeof schema> = {
     const resolved = await resolveWorkspacePath(ctx, input.path, { access: 'write' });
     const relative = resolved.relative;
     const existing = await readLstat(resolved.absolute);
+    let before = '';
 
     if (existing) {
       if (existing.isSymbolicLink()) {
@@ -67,7 +69,7 @@ export const writeFileTool: ToolDef<typeof schema> = {
         throw new ToolError('File appears to be binary and cannot be overwritten: ' + relative + '.');
       }
       try {
-        new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+        before = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
       } catch {
         throw new ToolError('File is not valid UTF-8 and cannot be overwritten: ' + relative + '.');
       }
@@ -75,7 +77,7 @@ export const writeFileTool: ToolDef<typeof schema> = {
       if (!ctx.readTracker.hasRead(resolved.absolute)) {
         return {
           content:
-            'Refusing to overwrite ' + relative + ' before it has been read. Call ReadFile on this file first, then retry WriteFile.',
+            'Refusing to overwrite ' + relative + ' before it has been read. Call Read on this file first, then retry Write.',
           isError: true,
           meta: { path: relative, reason: 'read-before-write' },
         };
@@ -110,7 +112,7 @@ export const writeFileTool: ToolDef<typeof schema> = {
     const created = existing === undefined;
     return {
       content: (created ? 'Created ' : 'Overwrote ') + relative + ' (' + bytes + ' bytes).',
-      meta: { path: relative, created, bytes },
+      meta: { path: relative, created, bytes, fileDiffs: [createFileDiff(relative, before, input.content)] },
     };
   },
 };

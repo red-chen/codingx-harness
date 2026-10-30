@@ -10,6 +10,7 @@ import {
   type AgentModelClient,
   type UiEvent,
 } from '../src/agent/index.js';
+import { createPolicyRuntime, parsePermissions } from '../src/policy/index.js';
 import type { PolicyRuntime } from '../src/policy/types.js';
 import type { Message, ModelEvent, ModelRequest, StopReason } from '../src/providers/types.js';
 import type { AppendEventInput, RolloutEvent, SessionHandle } from '../src/session/types.js';
@@ -972,4 +973,22 @@ describe('AgentLoop failures and cancellation', () => {
     });
     await expect(loop.runTurn('ok')).resolves.toMatchObject({ status: 'done' });
   });
+});
+
+
+it('restores sandbox enforcement when switching from full access to loopback', async () => {
+  const observed: Array<boolean | undefined> = [];
+  const shell: ToolDef = {
+    name: 'Shell', description: 'test context propagation', schema: z.object({ command: z.string() }),
+    parallelSafe: false, approval: 'always',
+    execute: async (_input, ctx) => { observed.push(ctx.yolo); return { content: 'ok' }; },
+  };
+  const client = new ScriptedClient([toolStep([{ id: 'call', name: 'Shell', input: { command: 'echo hello' } }]), textStep('done')]);
+  const loop = createLoop(client, new RecordingSession(), [], { tools: new ToolRegistry([shell]), yolo: true });
+  loop.setPolicy(await createPolicyRuntime({
+    cwd, additionalDirs: [], env: { HOME: cwd, TMPDIR: cwd },
+    config: parsePermissions({}, ':workspace-local'), approvalPolicy: 'never', reviewer: 'user',
+  }));
+  expect((await loop.runTurn('check')).status).toBe('done');
+  expect(observed).toEqual([false]);
 });

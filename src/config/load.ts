@@ -86,6 +86,7 @@ const permissionProfileSchema = z.object({
   network: z
     .object({
       enabled: z.boolean().optional(),
+      mode: z.enum(['none', 'local', 'all']).optional(),
       domains: z.record(z.enum(['allow', 'deny'])).optional(),
     })
     .optional(),
@@ -133,7 +134,7 @@ const rawConfigSchema = z.object({
   sandbox: z
     .object({
       mode: z.enum(['read-only', 'workspace-write', 'danger-full-access']).default('workspace-write'),
-      network: z.enum(['none', 'loopback', 'all']).default('none'),
+      network: z.enum(['none', 'loopback', 'local', 'all']).default('none'),
       writable_roots: z.array(z.string()).default([]),
       readable_roots: z.array(z.string()).default([]),
       env_passthrough: z.array(z.string()).default(DEFAULT_ENV_PASSTHROUGH),
@@ -466,15 +467,16 @@ function resolvePolicySettings(
           : []),
         ...config.sandbox.readableRoots.map((root) => ({ scope: root, access: 'read' as const })),
       ];
-      const network =
+      const network = legacySandbox.network === undefined ? profile.network :
         config.sandbox.network === 'all'
           ? { enabled: true, domains: {} }
-          : config.sandbox.network === 'loopback'
+          : (config.sandbox.network === 'loopback' || config.sandbox.network === 'local')
             ? {
                 enabled: true,
-                domains: { localhost: 'allow' as const, '127.0.0.1': 'allow' as const, '::1': 'allow' as const },
+                mode: 'local' as const,
+                domains: {},
               }
-            : profile.network;
+            : { enabled: false, domains: {} };
       config.permissions.profiles[profileName] = {
         ...profile,
         filesystem: [...profile.filesystem, ...extraRules],

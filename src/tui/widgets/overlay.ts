@@ -15,8 +15,11 @@ const BG = { bg: TUI_COLORS.planBg };
 const HELP_ROWS: ReadonlyArray<readonly [string, string]> = [
   ['Enter', 'submit'],
   ['Shift+Enter', 'newline'],
-  ['Tab', 'queue while working'],
+  ['Tab (empty input)', 'fill current tip'],
+  ['Tab (with input)', 'complete command / queue while working'],
   ['!<command>', 'run shell locally'],
+  ['/process', 'list processes; logs <id> / stop <id>'],
+  ['/tips', 'select a tip to fill the input'],
   ['Esc / Ctrl+C', 'interrupt'],
   ['↑ / ↓', 'input history (200 entries per cwd)'],
   ['Ctrl+R', 'search input history; Enter accept, Esc cancel'],

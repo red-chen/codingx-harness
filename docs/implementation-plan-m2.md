@@ -41,7 +41,7 @@ M2 结束时：
 | --- | --- | --- | --- |
 | C1 | `Glob` | 按 mtime 排序；忽略 .gitignore/依赖目录；500 条上限 | DONE |
 | C2 | `Grep` | 优先 rg；缺失时内置回退；100 条上限与截断提示 | DONE |
-| C3 | `WriteFile` | 新建/覆盖；覆盖前要求本会话读过；二进制/越界拒绝 | DONE |
+| C3 | `Write` | 新建/覆盖；覆盖前要求本会话读过；二进制/越界拒绝 | DONE |
 | C4 | `UpdatePlan` | 模型维护步骤，UiEvent 实时更新 | DONE |
 | C5 | `ApplyPatch` | unified diff 多文件补丁；失败不半写 | DONE |
 | C6 | `Skill` + SKILL.md 加载 | 全局/项目目录、frontmatter 校验、目录注入系统提示、按需加载正文 | DONE |
@@ -149,7 +149,7 @@ Wave F（sessiond）依赖 A 的续接语义，可与 D/E 并行
 
 - 测试：52 个文件、564 项全部通过（typecheck 通过）。
 - **`--add-dir <DIR>`**：全局、可重复；bootstrap 校验目录存在且为目录，解析 `~` 与相对路径（相对 `--cd`/workspace），去重后规范化为绝对路径，写入 `CliApp.additionalDirs` 与系统提示。
-- **工具边界**：`resolveWorkspacePath` 接受主 workspace 与所有 additional roots；相对路径仍从主 workspace 解析，绝对路径匹配任一允许根；符号链接按真实路径校验，逃逸到所有根之外仍拒绝。`ReadFile`/`ListDir`/`Glob`/`Grep`/`WriteFile`/`EditFile`/`ApplyPatch`/`Shell` 全部生效。
+- **工具边界**：`resolveWorkspacePath` 接受主 workspace 与所有 additional roots；相对路径仍从主 workspace 解析，绝对路径匹配任一允许根；符号链接按真实路径校验，逃逸到所有根之外仍拒绝。`Read`/`ListDir`/`Glob`/`Grep`/`Write`/`Edit`/`ApplyPatch`/`Shell` 全部生效。
 - **CLI**：interactive（TUI 与 plain）和 `exec` 均支持；帮助文本、`--add-dir` 缺失目录错误、系统提示目录列表均有测试；无 OS 级沙箱的边界保持不变。
 
 ## 本轮结果（`/model`）
@@ -187,6 +187,22 @@ Wave F（sessiond）依赖 A 的续接语义，可与 D/E 并行
 - **持久化与 resume**：每次变更写入 `model.changed`（含 model/provider/route，可选 reasoningEffort）；`latestModelSelection` 在 TUI/plain 的 resume 前恢复模型、Provider、route 与 effort；`codingx log` 可读该事件。
 - 新增测试：`/model` 解析、TUI/plain 命令与运行中拒绝、provider 请求体、router/AgentLoop 切换、resume 后请求恢复、模型/effort 状态与历史解析。
 
+
+## 编辑 Diff 与工具命名（2026-10-31）
+
+- [x] 模型可见文件工具命名为 `Read`、`Write`、`Edit`，同步策略分类、系统提示、工具描述与测试；旧 `ReadFile` 会话继续恢复已读状态和探索摘要。
+- [x] `Write` / `Edit` / `ApplyPatch` 基于操作前后内容生成结构化 Diff，随 `tool.result.meta` 写入现有 SessionStore，不进入模型工具结果正文。
+- [x] 连续成功编辑显示 `Edited N files (+新增 -删除)`，按路径聚合并累计各次操作计数；失败/运行中工具保持独立结果。
+- [x] 文件行号、红绿整行背景、代码词法着色、保留缩进的宽字符换行；每文件默认 3 行预览，Ctrl+O 展开所有保留的变更，resume 还原。
+- [x] 每文件最多保留 400 条变更行 / 64,000 字符；差异计算设工作量上限，大规模重写回退为替换区间并提示，计数对应该替换表示。无末尾换行变更可见。
+
+## 可配置 Tips（2026-10-31）
+
+- [x] `/tips` 本地选择面板：浏览配置列表、换行预览与翻页、确认后填入输入框并切换本次运行的提示；选择不自动发送、不写入会话或修改全局配置，用户可编辑后提交。
+- [x] 输入框为空时 Tab 填入当前 Tip，支持空闲和任务运行中；已有输入时保留命令补全与排队行为。
+- [x] TUI 启动读取 `$CODINGX_HOME/tips.json`，缺失时生成默认提示；支持自定义列表、关闭和空列表，格式错误时告警并保留原文件。
+- [x] 每次启动选取一条提示，在 StatusBar 正下方以 `  └ Tip: ...` 固定显示；空闲和任务运行中均可见，长提示按宽字符边界截断，小窗口隐藏，保持输入框和菜单可用。
+- [x] 覆盖首次生成、重启读取、关闭、损坏回退、终端控制字符过滤，以及任务运行/滚动/清空后的固定位置；默认/恢复历史下提示只显示一次且不进入原生历史，不写 rollout 或模型上下文。
 
 ## cwd 隔离（2026-10-30）
 

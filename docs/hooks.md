@@ -18,7 +18,7 @@
 ```toml
 [[hooks]]
 event = "pre_tool_use"
-matcher = "Shell|WriteFile"
+matcher = "Shell|Write"
 command = "python3 ~/.codingx/hooks/guard.py"
 timeout_ms = 5000
 ```
@@ -43,7 +43,7 @@ timeout_ms = 10000
 
 [[hooks]]
 event = "post_tool_use"
-matcher = "EditFile|WriteFile|ApplyPatch"
+matcher = "Edit|Write|ApplyPatch"
 command = "npm run lint --silent"
 
 [[hooks]]
