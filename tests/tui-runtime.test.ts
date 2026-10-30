@@ -268,6 +268,56 @@ describe('TuiRuntime', () => {
     terminal.dispose();
   });
 
+  it.each([false, true])('preserves complete tables after /clear with coalesced output: %s', async (coalesced) => {
+    const terminal = new xterm.Terminal({ cols: 80, rows: 24, scrollback: 10000, allowProposedApi: true });
+    const io = new FakeIO();
+    const app = makeApp();
+    for (let index = 0; index < 40; index++) app.addNotice('OLD_HISTORY_' + index);
+    const runtime = makeRuntime(app, io, [], []);
+    const drain = async (): Promise<void> => {
+      await new Promise<void>((resolve) => terminal.write(io.writes.splice(0).join(''), resolve));
+    };
+    const tools = ['ReadFile', 'WriteFile', 'EditFile', 'ApplyPatch', 'ListDir', 'Glob', 'Grep'];
+    const markdown = [
+      '工具列表', '', '## 文件与搜索', '| 工具 | 用途 |', '|---|---|',
+      ...tools.map((tool) => '| `' + tool + '` | 文件操作 |'),
+      '', '## 执行', '| 工具 | 用途 |', '|---|---|', '| `Shell` | 执行命令 |',
+      '', ...Array.from({ length: 20 }, (_, i) => '说明 ' + i),
+    ].join('\n');
+    try {
+      runtime.start();
+      await drain();
+      // /clear adds its notice before rendering, so the runtime never sees an
+      // empty transcript. A fast response can also arrive in that same frame.
+      app.resetSession();
+      app.addNotice('Session cleared');
+      if (!coalesced) {
+        runtime.render(true);
+        await drain();
+      }
+      app.submitText('你有哪些Tools');
+      app.handleEvent({ type: 'turn.started', turnId: 'table' });
+      app.handleEvent({ type: 'text.delta', turnId: 'table', text: markdown });
+      app.handleEvent({ type: 'turn.finished', turnId: 'table', status: 'done', usage: EMPTY_USAGE, durationMs: 1 });
+      runtime.render(true);
+      await drain();
+      const text = Array.from({ length: terminal.buffer.active.length }, (_, i) =>
+        terminal.buffer.active.getLine(i)?.translateToString(true) ?? '').join('\n');
+      for (const label of ['工具列表', '文件与搜索', ...tools, 'Shell']) {
+        expect(text.split(label), label).toHaveLength(2);
+      }
+      expect(text).toMatch(/│ 工具\s+│ 用途/u);
+      expect(text).not.toContain('OLD_HISTORY_');
+      io.writes.length = 0;
+      runtime.render(true);
+      expect(io.writes.join('')).not.toContain('\x1b[3J');
+      expect(io.writes.join('')).not.toContain('ReadFile');
+    } finally {
+      runtime.stop();
+      terminal.dispose();
+    }
+  });
+
   it('invokes the copy hook for Ctrl+Y', () => {
     const io = new FakeIO();
     const app = makeApp();

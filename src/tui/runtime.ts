@@ -43,7 +43,7 @@ export class TuiRuntime {
   private archivedRows = 0;
   private archiveWidth = 0;
   private archiveSession = '';
-  private archiveCells: readonly unknown[] = [];
+  private archiveGeneration = 0;
 
   constructor(options: TuiRuntimeOptions) {
     this.options = options;
@@ -275,8 +275,17 @@ export class TuiRuntime {
     const visible = computeFrameLayout(state, width, height).transcript.height;
     const hidden = Math.max(0, total - visible);
     const reset = this.archiveSession !== state.session.sessionId
-      || (this.archiveCells.length > 0 && state.transcript.length === 0);
-    if (reset) this.archivedRows = 0;
+      || this.archiveGeneration !== state.transcriptGeneration;
+    if (reset) {
+      this.archivedRows = 0;
+      if (this.archiveSession !== '') {
+        // /clear adds a notice before the next frame, and frames may coalesce
+        // with new output. Track the reset explicitly instead of looking for
+        // an empty transcript. Discard old native history and repaint blanks.
+        this.session.write('\x1b[H\x1b[3J');
+        this.front = new CellBuffer(0, 0);
+      }
+    }
     // Previously archived rows are terminal-owned and reflow there on resize.
     // Rebase the current viewport rather than writing duplicate old history.
     if (!reset && this.archiveWidth !== 0 && this.archiveWidth !== width) {
@@ -284,7 +293,7 @@ export class TuiRuntime {
     }
     this.archiveSession = state.session.sessionId;
     this.archiveWidth = width;
-    this.archiveCells = state.transcript;
+    this.archiveGeneration = state.transcriptGeneration;
     if (hidden <= this.archivedRows) return;
     const count = hidden - this.archivedRows;
     const lines = layoutTranscript({ ...options, scrollOffset: visible }, width, count).lines;

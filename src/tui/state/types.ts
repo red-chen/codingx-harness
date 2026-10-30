@@ -236,6 +236,8 @@ export interface TuiAppState {
   readonly height: number;
   /** Immutable scrollback. Append by replacing the array, never by mutating cells. */
   readonly transcript: readonly TranscriptCell[];
+  /** Changes on /clear even when the session ID is retained. */
+  readonly transcriptGeneration: number;
   readonly activeAssistant: ActiveAssistantCell | null;
   readonly plan: readonly PlanStep[];
   /** Present while the ask overlay is open (mode === 'ask'). */
