@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/main.ts'],
+  entry: { main: 'src/main.ts', 'mock-llm': 'src/mock-llm/cli.ts' },
   format: ['esm'],
   target: 'node20',
   platform: 'node',

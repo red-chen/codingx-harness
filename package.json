@@ -29,6 +29,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "mock:llm": "npm run build && node dist/mock-llm.js",
+    "test:mock": "vitest run tests/mock-llm.test.ts tests/mock-llm-cli.test.ts",
+    "smoke:mock": "npm run build && node scripts/smoke-mock-llm.mjs",
+    "verify:mock": "npm run typecheck && npm run build && npm test && node scripts/smoke-mock-llm.mjs",
     "prepublishOnly": "npm run build",
     "check": "npm run typecheck && npm test",
     "postinstall": "node scripts/fix-node-pty.mjs"

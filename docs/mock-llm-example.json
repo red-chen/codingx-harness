@@ -1,0 +1,23 @@
+{
+  "id": "custom-smoke",
+  "description": "List workspace, check the result, then return a deterministic answer",
+  "usage": {
+    "input_tokens": 100,
+    "output_tokens": 20,
+    "cache_read_input_tokens": 50,
+    "cache_creation_input_tokens": 10
+  },
+  "steps": [
+    {
+      "text": "Inspecting the mock workspace.",
+      "tools": [
+        {
+          "name": "ListDir",
+          "input": { "path": "." },
+          "expect": { "isError": false, "contains": "AGENTS.md" }
+        }
+      ]
+    },
+    { "text": "MOCK PASS: custom-smoke" }
+  ]
+}

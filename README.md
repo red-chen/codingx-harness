@@ -179,6 +179,19 @@ Read(src/util.ts) → Edit(foo → bar) → Shell(grep 校验) → 最终回答
 
 测试同时断言 rollout 可回放、`--json` stdout 无人类文本、会话结束后写 `session.end`、续接/分叉历史、悬空工具调用修复与 30 轮压缩。当前 **81 个测试文件、964 项测试**全部通过；还覆盖真实 Ctrl+C 后 `--continue`、两个 CLI 的写租约互斥、TUI 帧/按键预算、slash 补全、`!` 本地命令（策略/审批/沙箱/排队/恢复）、Agent Harness hooks（六事件、exit 2 阻止、JSON stdin、session 生命周期、审计）、`/clear` 重写 JSONL、`/model` 模型与推理强度切换、`--add-dir` 额外可写目录、`--yolo` 绕过 workspace 限制（含别名与告警）、Permission profile / `--sandbox` / `--ask-for-approval` / 非交互 fail closed / `permission.decision` 审计、TUI/plain 审批与拒绝理由 / 会话与前缀授权 / `/permissions` 切换 / `approval.*` 审计、macOS Seatbelt 的越界写入/凭证读取/网络 deny/Node 工具链/git status/git hooks/`sandbox.denied`、`sessions prune`、旧 daemon 方法握手与自动替换、composer/用户消息背景与底部 meta，以及“CLI → 自动拉起 sessiond → rollout → sessions list/show → status/stop”和 80x24/120x40 TUI PTY 冒烟。真实 Provider 的冒烟需要配置 `API_KEY` 后手工执行；CI 不访问外网。
 
+## 本地 Mock LLM 验证
+
+无需真实 API Key 或外网，可启动独立 Anthropic Messages/SSE Mock 服务，并生成隔离的测试配置与工作区：
+
+```bash
+npm run mock:llm -- --init /tmp/codingx-mock-demo
+# 按服务打印的命令，在另一终端运行 [mock:files] 或打开 TUI
+npm run test:mock     # Mock Provider / CLI 集成验证
+npm run verify:mock   # 类型检查、构建、全部现有专项测试
+```
+
+内置 24 个场景，触发全部 17 个工具入口，以及流式分块、重试、故障、权限拒绝、PTY、图片与压缩夹具。支持自定义 JSON 场景与工具结果断言。使用方法、预期结果和完整能力覆盖矩阵见 [Mock LLM Server](docs/mock-llm.md)。
+
 ## 当前实现边界
 
 | 能力 | M1 状态 | 计划 |
