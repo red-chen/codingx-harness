@@ -59,6 +59,19 @@ function shown(request = shellRequest()): TuiApp {
 }
 
 describe('TuiApp approval overlay', () => {
+  it('offers only one-execution approval for local networking and explains its scope', () => {
+    const app = shown(shellRequest({ onceOnly: true, allowPrefix: false,
+      action: { kind: 'exec', tool: 'ProcessStart', command: 'python3 -m http.server', networkScope: 'local' },
+    }));
+    const screen = screenText(app.frame());
+    expect(screen).toContain('Allow once');
+    expect(screen).not.toContain('Allow for this session');
+    expect(screen).not.toContain('Allow this command prefix');
+    expect(screen).toContain('127.0.0.1');
+    app.handleKey(key('down'));
+    expect(app.handleKey(key('enter'))).toMatchObject({ type: 'approval', decision: { decision: 'deny' } });
+  });
+
   it('returns an idle approval to idle without inventing an active turn', () => {
     const app = makeApp();
     app.showApproval(shellRequest());

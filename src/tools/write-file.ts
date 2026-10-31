@@ -1,3 +1,5 @@
+import { expandHome } from '../util/paths.js';
+import { prepareWrite } from './file-mutation.js';
 import { lstat, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import type { Stats } from 'node:fs';
 import path from 'node:path';
@@ -105,14 +107,13 @@ export const writeFileTool: ToolDef<typeof schema> = {
       }
     }
 
-    await writeFile(resolved.absolute, input.content, 'utf8');
-    ctx.readTracker.markRead(resolved.absolute);
+    const version = await (await prepareWrite(ctx, resolved.absolute, input.content, path.resolve(ctx.cwd, expandHome(input.path))))();
 
     const bytes = Buffer.byteLength(input.content, 'utf8');
     const created = existing === undefined;
     return {
       content: (created ? 'Created ' : 'Overwrote ') + relative + ' (' + bytes + ' bytes).',
-      meta: { path: relative, created, bytes, fileDiffs: [createFileDiff(relative, before, input.content)] },
+      meta: { version, path: relative, created, bytes, fileDiffs: [createFileDiff(relative, before, input.content)] },
     };
   },
 };

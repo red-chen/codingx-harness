@@ -204,6 +204,8 @@ describe('ToolRegistry', () => {
       'ProcessStop',
       'Skill',
       'AskUserQuestion',
+      'WebFetch',
+      'ProcessWrite',
     ]);
     const schemas = registry.toJsonSchemas();
     expect(schemas.map((schema) => schema.name)).toEqual([
@@ -222,6 +224,8 @@ describe('ToolRegistry', () => {
       'ProcessStop',
       'Skill',
       'AskUserQuestion',
+      'WebFetch',
+      'ProcessWrite',
     ]);
     expect(schemas[0]?.inputSchema).toMatchObject({ type: 'object' });
     expect(JSON.stringify(schemas[0]?.inputSchema)).toContain('"path"');

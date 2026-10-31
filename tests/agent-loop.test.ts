@@ -417,6 +417,7 @@ describe('AgentLoop happy path', () => {
       'turn.start',
       'user.message',
       'turn.status',
+      'usage.recorded',
       'assistant.message',
       'turn.end',
     ]);
@@ -436,6 +437,7 @@ describe('AgentLoop happy path', () => {
       'context.updated',
       'text.delta',
       'text.delta',
+      'usage.recorded',
       'llm.finished',
       'usage.updated',
       'turn.finished',
@@ -702,6 +704,8 @@ describe('AgentLoop tool execution', () => {
     });
     expect(client.attempts).toBe(2);
     expect(client.requests[0]?.tools).toEqual([]);
+    expect(eventsOf(session, 'usage.recorded').map((event) => (event.record as { purpose: string }).purpose))
+      .toEqual(['compaction', 'turn']);
     expect(client.requests[0]?.system).toMatch(/You compress conversation history/);
     expect(client.requests[1]?.system).toContain('## Completed');
     expect(client.requests[1]?.system).toContain('## Key files');
@@ -799,7 +803,7 @@ describe('AgentLoop tool execution', () => {
   it('clearHistory drops messages, plan and read-before-write state', async () => {
     const session = new RecordingSession();
     const readTracker = new ReadFileTracker();
-    readTracker.markRead('/tmp/already-read.ts');
+    readTracker.markRead('/tmp/already-read.ts', { path: '/tmp/already-read.ts', sha256: '0'.repeat(64), dev: 0, ino: 1, mode: 420 });
     const client = new ScriptedClient([textStep('answer')]);
     const loop = createLoop(client, session, [], {
       readTracker,
@@ -991,4 +995,58 @@ it('restores sandbox enforcement when switching from full access to loopback', a
   }));
   expect((await loop.runTurn('check')).status).toBe('done');
   expect(observed).toEqual([false]);
+});
+
+describe('read-only scheduling', () => {
+  it.each([1, 2, 4])('caps concurrency at %i, honors write barriers and preserves result order', async limit => {
+    const session = new RecordingSession(), ui: UiEvent[] = [];
+    let active=0,peak=0; const log:string[]=[];
+    const schema=z.object({n:z.number()});
+    const read:ToolDef<typeof schema>={name:'Read',description:'fake read',schema,approval:'none',parallelSafe:true,execute:async input=>{
+      active++;peak=Math.max(peak,active);log.push('start'+input.n);
+      await new Promise(resolve=>setTimeout(resolve,input.n===0?30:5));
+      active--;log.push('end'+input.n);return {content:String(input.n),isError:input.n===1};
+    }};
+    const write:ToolDef<typeof schema>={...read,name:'Write',parallelSafe:false,execute:async()=>{expect(active).toBe(0);log.push('write');return {content:'written'};}};
+    const calls=[0,1,2,3,4].map(n=>({id:'c'+n,name:n===3?'Write':'Read',input:{n}}));
+    const client=new ScriptedClient([toolStep(calls),textStep('done')]);
+    const loop=createLoop(client,session,ui,{maxParallelTools:limit,tools:new ToolRegistry([read,write])});
+    expect((await loop.runTurn('go')).status).toBe('done');expect(peak).toBe(Math.min(limit,3));
+    expect(log.indexOf('write')).toBeGreaterThan(log.indexOf('end2'));expect(log.indexOf('start4')).toBeGreaterThan(log.indexOf('write'));
+    const resultMessage=client.requests[1]!.messages.at(-1)!;
+    expect(resultMessage.content.map(b=>b.type==='tool_result'?b.tool_use_id:'')).toEqual(calls.map(c=>c.id));
+    expect(eventsOf(session,'tool.call').map(e=>e.callId)).toEqual(calls.map(c=>c.id));
+  });
+  it('stops scheduling on interruption and settles in-flight reads before ending the turn', async()=>{
+    const abort=new AbortController(), session=new RecordingSession();let started=0,settled=0;
+    const read:ToolDef={name:'Read',description:'fake',schema:z.object({}),approval:'none',parallelSafe:true,execute:async(_input,ctx)=>{
+      started++; await new Promise<void>((resolve,reject)=>ctx.signal.addEventListener('abort',()=>{settled++;reject(abortError());},{once:true}));return {content:'never'};
+    }};
+    const client=new ScriptedClient([toolStep(Array.from({length:6},(_,n)=>({id:'c'+n,name:'Read',input:{}})))]);
+    const loop=createLoop(client,session,[],{tools:new ToolRegistry([read]),maxParallelTools:2});
+    const pending=loop.runTurn('go',{signal:abort.signal});
+    await expect.poll(()=>started).toBe(2);abort.abort();expect((await pending).status).toBe('aborted');expect(started).toBe(2);expect(settled).toBe(2);
+  });
+  it('serializes permission requests discovered in preflight',async()=>{
+    const session=new RecordingSession();let approvals=0,active=0;
+    const policy=await createPolicyRuntime({cwd,additionalDirs:[],env:{},config:parsePermissions({},':workspace'),approvalPolicy:'on-request',reviewer:'user',alwaysAsk:true});
+    const tools=new ToolRegistry([{name:'Read',description:'fake',schema:z.object({path:z.string()}),approval:'none',parallelSafe:true,execute:async()=>({content:'ok'})}]);
+    const client=new ScriptedClient([toolStep([1,2].map(n=>({id:'c'+n,name:'Read',input:{path:'a'+n}}))),textStep('done')]);
+    const loop=createLoop(client,session,[],{tools,policy,approve:async()=>{expect(active++).toBe(0);await new Promise(r=>setTimeout(r,5));active--;approvals++;return {decision:'allow',scope:'once'};}});
+    expect((await loop.runTurn('go')).status).toBe('done');expect(approvals).toBe(2);
+  });
+});
+
+it('keeps Read calls serial when pre/post tool hooks are configured',async()=>{
+  const session=new RecordingSession(),log:string[]=[];let active=0;
+  const read:ToolDef={name:'Read',description:'fake',schema:z.object({n:z.number()}),parallelSafe:true,approval:'none',execute:async input=>{
+    expect(active++).toBe(0);log.push('read'+input.n);await new Promise(resolve=>setTimeout(resolve,5));active--;return {content:'ok'};
+  }};
+  const hooks={has:(event:string)=>['pre_tool_use','post_tool_use'].includes(event),run:async(event:import('../src/hooks/types.js').HookEvent,context:import('../src/hooks/types.js').HookPayloadContext)=>{
+    log.push(event+String((context.toolInput as {n:number}).n));return {event,outcomes:[],blocked:false,context:''};
+  }} as unknown as import('../src/hooks/runner.js').HookRunner;
+  const client=new ScriptedClient([toolStep([1,2].map(n=>({id:'r'+n,name:'Read',input:{n}}))),textStep('done')]);
+  const loop=createLoop(client,session,[],{tools:new ToolRegistry([read]),hooks});
+  expect((await loop.runTurn('go')).status).toBe('done');
+  expect(log).toEqual(['pre_tool_use1','read1','post_tool_use1','pre_tool_use2','read2','post_tool_use2']);
 });

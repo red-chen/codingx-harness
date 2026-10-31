@@ -141,7 +141,10 @@ describe('Seatbelt profile generation', () => {
         network: { enabled: true, domains: { 'example.com': 'allow' } },
       },
     });
-    expect(buildSeatbeltProfile(runtime.sandboxPolicy)).toContain('(allow network*)');
+    expect(() => buildSeatbeltProfile(runtime.sandboxPolicy)).toThrow(/requires the managed network proxy/);
+    const restricted = buildSeatbeltProfile({ ...runtime.sandboxPolicy, proxyPort: 12345 });
+    expect(restricted).toContain('(allow network-outbound (remote tcp "localhost:12345"))');
+    expect(restricted).not.toContain('(allow network*)');
   });
 
   it('returns explicit degraded backends for other platforms', async () => {
@@ -462,5 +465,55 @@ describe.skipIf(process.platform !== 'darwin')('Seatbelt loopback isolation', ()
     expect(result.stdout).toContain('EPERM');
     const unrestricted = await runSandboxed('node -e ' + JSON.stringify(script), backend, await policy('net', 'on-request', { net: { extends: ':workspace', network: { enabled: true } } }));
     expect(unrestricted.stdout).not.toContain('EPERM');
+  });
+});
+
+describe.skipIf(process.platform !== 'darwin')('managed Python server permissions', () => {
+  it('serves HTTP after one-execution approval without changing the default profile or file isolation', async () => {
+    const backend = createSeatbeltBackend();
+    expect(await backend.available(), backend.status.reason).toBe(true);
+    const manager = new ProcessManager({ killGraceMs: 50 });
+    const ctx: ToolContext = { ...ctxFor(await policy(), backend), processes: manager };
+    const originalPolicy = ctx.policy!.sandboxPolicy;
+    const registry = new ToolRegistry(createBuiltinTools());
+    const command = '/usr/bin/python3 -u -m http.server 0 --bind 127.0.0.1';
+    try {
+      const deniedStart = await registry.execute('ProcessStart', { command, network: 'inherit' }, ctx);
+      expect(deniedStart.isError, deniedStart.content).toBeUndefined();
+      const deniedId = JSON.parse(deniedStart.content).processId;
+      await manager.read(deniedId, 0, 10_000, 3000);
+      const denied = await registry.execute('ProcessRead', { process_id: deniedId }, ctx);
+      expect(denied).toMatchObject({ isError: true, meta: { code: 'SANDBOX_DENIED', sandbox: { network: 'none', denied: true } } });
+      expect(JSON.parse(denied.content).hint).toContain('network: "local"');
+      let approvals = 0;
+      ctx.approve = async (request) => {
+        expect(request.action.networkScope).toBe('local');
+        approvals++;
+        return { decision: 'allow', scope: 'once' };
+      };
+      const started = await registry.execute('ProcessStart', { command }, ctx);
+      expect(started.isError, started.content).toBeUndefined();
+      const id = JSON.parse(started.content).processId;
+      let output = '';
+      await expect.poll(async () => { output = (await manager.read(id)).output; return output; }, { timeout: 5000 }).toMatch(/port \d+/);
+      const port = /port (\d+)/.exec(output)![1];
+      expect((await fetch('http://127.0.0.1:' + port)).status).toBe(200);
+      expect(manager.list().find((entry) => entry.processId === id)?.sandbox).toEqual({ kind: 'seatbelt', network: 'local' });
+      expect(approvals).toBe(1);
+      expect(ctx.policy!.profileName).toBe(':workspace');
+      expect(ctx.policy!.sandboxPolicy).toBe(originalPolicy);
+      expect(originalPolicy.network.enabled).toBe(false);
+      // A later command still inherits network deny, even while the server lives.
+      const inherited = await registry.execute('Shell', { command: 'curl --max-time 2 http://127.0.0.1:' + port, network: 'inherit' }, {
+        ...ctx, approve: async () => ({ decision: 'allow', scope: 'once' }),
+      });
+      expect(inherited.isError).toBe(true);
+      // The approved server's file permissions remain those of :workspace.
+      await writeFile(path.join(workspace, 'file-probe.py'), 'from pathlib import Path\nPath("' + path.join(home, 'blocked') + '").write_text("x")\n');
+      const fileProbe = await registry.execute('Shell', { command: '/usr/bin/python3 file-probe.py', network: 'local' }, ctx);
+      expect(fileProbe.isError).toBe(true);
+      expect(fileProbe.content).toContain('Operation not permitted');
+      await expect(readFile(path.join(home, 'blocked'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await manager.close(); }
   });
 });

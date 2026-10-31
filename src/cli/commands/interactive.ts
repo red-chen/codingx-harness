@@ -1,3 +1,4 @@
+import { acquireResumable, startSessionContext, restoreSessionHistory } from '../session-switch.js';
 import { canonicalizePath } from '../../util/paths.js';
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
@@ -227,7 +228,7 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
     if (!session) throw new SessionError('Failed to open a session.');
     if (!app) throw new SessionError('Failed to initialize the CLI.');
 
-    const currentSession = session;
+    let currentSession = session;
     const currentApp = app;
     const readTracker = new ReadFileTracker();
     let initialMessages: readonly Message[] | undefined;
@@ -235,26 +236,7 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
     let resumedModel: string | undefined;
     let resumedEffort: ReasoningEffort | undefined;
     if (resumed) {
-      const events = await session.replay();
-      const rebuilt = rebuildHistory(events);
-      if (rebuilt.syntheticResults.length > 0) {
-        await session.append(
-          rebuilt.syntheticResults.map((synthetic) => ({
-            type: 'tool.result',
-            turnId: synthetic.turnId,
-            callId: synthetic.callId,
-            name: synthetic.name,
-            content: synthetic.content,
-            isError: true,
-            synthetic: true,
-          })),
-        );
-        stderr.write(
-          'warning: repaired ' +
-            rebuilt.syntheticResults.length +
-            ' dangling tool call(s) with synthetic tool_result events.\n',
-        );
-      }
+      const { events, rebuilt } = await restoreSessionHistory(session);
       await restoreReadTracker(rebuilt, app.cwd, readTracker, app.additionalDirs);
       const modelSelection = latestModelSelection(events);
       resumedModel = modelSelection.model;
@@ -276,16 +258,9 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
       reasoningEffort: resumedEffort,
     });
 
-    const startHooks = await app.hooks.run(
-      'session_start',
-      { sessionId: session.id, cwd: app.cwd },
-      { session },
-    );
+    const startHooks = await startSessionContext(app, session);
     for (const warning of hookWarnings(startHooks)) stderr.write('warning: ' + warning + '\n');
-    if (startHooks.context.trim().length > 0) {
-      app.sessionHookContext = startHooks.context.trim();
-      app.systemPrompt += '\n\n# Hook context (session_start)\n' + startHooks.context.trim();
-    }
+
 
     const grants = new SessionGrants(currentApp.cwd);
     const readApprovalLine = (signal: AbortSignal | undefined): Promise<string | null> => {
@@ -336,7 +311,10 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
         '\n[approval] ' + request.tool + ': ' + target + '\n' +
           '  risk: ' + request.risk + '\n' +
           (request.reason === undefined ? '' : '  reason: ' + request.reason + '\n') +
-          '  [a]llow once  [s]ession  [p]refix  [d]eny  [r]eason > ',
+          (request.action.prefixRule === undefined ? '' : '  proposed prefix: ' + JSON.stringify(request.action.prefixRule) + '\n') +
+          (request.action.networkScope === 'local' || request.action.additionalPermissions !== undefined
+            ? '  [a]llow once  [d]eny  [r]eason > '
+            : '  [a]llow once  [s]ession  [p]refix  [d]eny  [r]eason > '),
       );
       let raw: string | null;
       try {
@@ -358,7 +336,7 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
         approvalPrefixFor(request.action, request.action.cwd ?? currentApp.cwd) !== undefined;
       if (choice === 'a' || choice === 'y' || choice === 'yes') {
         decision = { decision: 'allow', scope: 'once' };
-      } else if (choice === 's') {
+      } else if (choice === 's' && request.action.networkScope === undefined && request.action.additionalPermissions === undefined) {
         decision = { decision: 'allow', scope: 'session' };
       } else if (choice === 'p' && canPrefix) {
         decision = { decision: 'allow', scope: 'prefix' };
@@ -402,7 +380,7 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
       return decision;
     };
 
-    const loop = activeLoop = createLoop(app, session, (event) => renderer.render(event), {
+    let loop = activeLoop = createLoop(app, session, (event) => renderer.render(event), {
       readTracker,
       ...(initialMessages ? { initialMessages } : {}),
       ...(rebuiltPlan ? { initialPlan: rebuiltPlan } : {}),
@@ -414,11 +392,17 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
       session: { sessionId: session.id, cwd: app.cwd, model: app.router.selection.model },
     });
 
+    let draft = '';
     const runLine = async (line: string): Promise<TurnResult> => {
       const controller = new AbortController();
       activeController = controller;
       try {
-        return await loop.runTurn(line, { signal: controller.signal });
+        try { return await loop.runTurn(line, { signal: controller.signal }); }
+        catch (error) {
+          commandOut.write(String(error) + '\nDraft retained: ' + line + '\n');
+          draft = line;
+          return { turnId: '', status: 'error', usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }, steps: 0, durationMs: 0 };
+        }
       } finally {
         activeController = undefined;
       }
@@ -497,8 +481,49 @@ export async function runInteractive(options: InteractiveCommandOptions): Promis
       if (EXIT_COMMANDS.has(line)) break;
       if (line === '/help') {
         commandOut.write(
-          'Commands: /help, /session, /model, /process [list|logs <id> [cursor]|stop <id>], /clear, /quit. Ctrl+C interrupts a running turn; press it twice to exit.\n',
+          'Commands: /help, /session, /model, /attach <path> [start:end], /retry, /resume <id>, /changes, /undo <turn-id> [path], /process (list/logs/stop/send/eof/interrupt/resize), /clear, /quit. Ctrl+C interrupts a running turn; press it twice to exit.\n',
         );
+        continue;
+      }
+      if (line === '/resume' || line.startsWith('/resume ')) {
+        if (line === '/resume') { commandOut.write('Usage: /resume <id>\n'); continue; }
+        let target: SessionHandle | undefined;
+        const oldRouter = app.router;
+        const oldPrompt = app.systemPrompt, oldHookContext = app.sessionHookContext;
+        try {
+          target = await acquireResumable(app.store, app.cwd, line.slice(8).trim());
+          const { events, rebuilt } = await restoreSessionHistory(target);
+          const nextTracker = new ReadFileTracker();
+          await restoreReadTracker(rebuilt, app.cwd, nextTracker, app.additionalDirs);
+          const stored = latestModelSelection(events);
+          await restoreModelSelection(app, stored, env);
+          const effort = await initializeReasoningEffort(app, target, stored);
+          const hooks = await startSessionContext(app, target);
+          for (const warning of hookWarnings(hooks)) stderr.write('warning: ' + warning + '\n');
+          const nextLoop = createLoop(app, target, event => renderer.render(event), { readTracker: nextTracker, initialMessages: rebuilt.messages, initialPlan: rebuilt.plan, reasoningEffort: effort, ...(json ? {} : { approve }) });
+          await app.hooks.run('session_end', { sessionId: currentSession.id, cwd: app.cwd }, { session: currentSession }).catch(() => undefined);
+          await loop.processes.close().catch(error => stderr.write('warning: process cleanup: ' + String(error) + '\n'));
+          await currentSession.close().catch(error => stderr.write('warning: session cleanup: ' + String(error) + '\n'));
+          currentSession = session = target;
+          target = undefined;
+          loop = activeLoop = nextLoop;
+          grants.clear(); draft = '';
+          commandOut.write('Resumed ' + session.id + '. Previous draft and attachments discarded; managed processes stopped.\n');
+        } catch (error) {
+          app.router = oldRouter; app.systemPrompt = oldPrompt; app.sessionHookContext = oldHookContext;
+          await target?.close();
+          commandOut.write('Resume failed; current session retained: ' + String(error) + '\n');
+        }
+        continue;
+      }
+      if (line === '/retry') { await runLine(draft); continue; }
+      if (line.startsWith('/attach ')) {
+        try { commandOut.write(loop.attachments.add(line.slice(8)) + '\n'); } catch (error) { commandOut.write(String(error) + '\n'); }
+        continue;
+      }
+      if (line === '/changes' || line.startsWith('/undo ')) {
+        try { commandOut.write(await loop.changeCommand(line) + '\n'); }
+        catch (error) { commandOut.write(String(error) + '\n'); }
         continue;
       }
       if (line === '/session') {

@@ -9,6 +9,9 @@ export const PROCESS_COMMAND_USAGE = [
   '/process [list]                 List this session’s managed processes',
   '/process logs <id> [cursor]      Show recent output, or read from a cursor',
   '/process stop <id>               Stop the process group',
+  '/process send <id> <text>         Send text (literal text, no credentials)',
+  '/process eof|interrupt <id>      Send EOF or interrupt',
+  '/process resize <id> <cols> <rows> Resize PTY',
   'Use a full processId or a unique prefix; OS PIDs are not accepted.',
 ].join('\n');
 
@@ -17,7 +20,7 @@ export interface ProcessCommandResult {
   isError: boolean;
 }
 
-export type ProcessCommandManager = Pick<ProcessManager, 'list' | 'read' | 'stop' | 'flush'>;
+export type ProcessCommandManager = Pick<ProcessManager, 'list' | 'read' | 'stop' | 'flush'> & Partial<Pick<ProcessManager, 'write'>>;
 
 export function isProcessCommand(line: string): boolean {
   return /^\/process(?:\s|$)/u.test(line.trim());
@@ -48,6 +51,14 @@ function resolveId(manager: ProcessCommandManager, prefix: string): string {
 /** User-issued management commands: no model request or model-history entry. */
 export async function runProcessCommand(line: string, manager: ProcessCommandManager): Promise<ProcessCommandResult> {
   try {
+    const interactive = /^\/process\s+(send|eof|interrupt|resize)\s+(\S+)(?:\s+([\s\S]*))?$/.exec(line.trim());
+    if (interactive) {
+      if (!manager.write) throw new CodingxError('PROCESS_UNAVAILABLE', 'Process input unavailable.');
+      const [, operation, id, payload] = interactive;
+      const input = operation === 'send' ? { text: (payload ?? '') + '\n' } : operation === 'eof' ? { eof: true } : operation === 'interrupt' ? { interrupt: true } : (() => { const parts = (payload ?? '').split(/\s+/); return { cols: Number(parts[0]), rows: Number(parts[1]) }; })();
+      const info = await manager.write(resolveId(manager, id!), input);
+      return { content: safeText(info.processId + '  ' + operation + ' sent'), isError: false };
+    }
     const [name, action = 'list', id, cursorText, ...extra] = line.trim().split(/\s+/u);
     if (name !== '/process') return { content: PROCESS_COMMAND_USAGE, isError: true };
     if (action === 'help' && id === undefined) return { content: PROCESS_COMMAND_USAGE, isError: false };

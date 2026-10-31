@@ -1,3 +1,6 @@
+import path from 'node:path';
+import { expandHome } from '../util/paths.js';
+import { prepareWrite } from './file-mutation.js';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { ToolError } from '../util/errors.js';
@@ -82,13 +85,13 @@ export const editFileTool: ToolDef<typeof schema> = {
     }
 
     const next = text.split(input.old_string).join(input.new_string);
-    await writeFile(resolved.absolute, next, 'utf8');
-    ctx.readTracker.markRead(resolved.absolute);
+    const version = await (await prepareWrite(ctx, resolved.absolute, next, path.resolve(ctx.cwd, expandHome(input.path))))();
 
     const replacements = input.replace_all ? occurrences : 1;
     return {
       content: 'Edited ' + rel + ': replaced ' + replacements + ' occurrence(s).',
       meta: {
+        version,
         path: rel,
         replacements,
         bytesBefore: buffer.byteLength,

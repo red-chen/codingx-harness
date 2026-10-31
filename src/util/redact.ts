@@ -75,3 +75,10 @@ export function redactDeep<T>(input: T): RedactionResult<T> {
   }
   return { value: input, redacted: false };
 }
+
+/** Redact a whole retained process buffer before paging without changing cursor offsets. */
+export function redactProcessOutput(input: string): string {
+  let text = input;
+  for (const [pattern] of SIMPLE_PATTERNS) text = text.replace(pattern, match => '*'.repeat(match.length));
+  return text.replace(ENV_ASSIGNMENT, match => '*'.repeat(match.length));
+}

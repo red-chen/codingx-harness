@@ -67,7 +67,9 @@ export function restoreTranscript(events: readonly RolloutEvent[]): TranscriptCe
   for (const event of events) {
     switch (event.type) {
       case 'user.message': {
-        const value = text(event.text);
+        const attachments = Array.isArray(event.attachments) ? event.attachments as Array<{ type: string; name?: string; path?: string; object?: { size: number } }> : [];
+        const suffix = attachments.map(a => a.type === 'image' ? '[Image: ' + a.name + ' (' + a.object?.size + ' bytes)]' : '[File: ' + a.path + ']').join('\n');
+        const value = text(event.text) + (suffix ? '\n' + suffix : '');
         if (value.length > 0) cells.push({ type: 'user', id: id('user'), text: value });
         break;
       }
@@ -190,6 +192,7 @@ export function restoreTranscript(events: readonly RolloutEvent[]): TranscriptCe
           cells.push(notice);
         }
         const summary: TurnSummaryCell = {
+          ...(text(event.turnId) ? { turnId: text(event.turnId) } : {}),
           type: 'turn',
           id: id('turn'),
           outcome,

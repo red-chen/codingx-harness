@@ -90,9 +90,14 @@ export interface ModelConfig {
 
 export interface AgentConfig {
   maxSteps: number;
+  maxParallelTools?: number;
 }
 
 export interface Config {
+  /** Explicitly enabled user plugin; never loaded from project config. */
+  statusBar?: { plugin: string; timeoutMs: number; refreshMs: number };
+  /** Global, data-only command rules. Project config cannot supply these. */
+  execRules?: import('../policy/types.js').ExecRule[];
   model: ModelConfig;
   agent: AgentConfig;
   /** New-style approval policy (Codex-aligned); legacy [approval].mode is kept for compatibility. */

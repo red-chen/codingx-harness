@@ -1,5 +1,11 @@
 /** Stable error codes surfaced to the CLI, UI and tests. */
 export type ErrorCode =
+  | 'FILE_CHANGED'
+  | 'UNDO_CONFLICT'
+  | 'OBJECT_ERROR'
+  | 'WEB_FETCH_ERROR'
+  | 'ATTACHMENT_ERROR'
+  | 'PLUGIN_ERROR'
   | 'CONFIG_ERROR'
   | 'AUTH_ERROR'
   | 'PROVIDER_ERROR'
@@ -18,6 +24,7 @@ export type ErrorCode =
   | 'POLICY_FORBIDDEN'
   | 'SANDBOX_UNAVAILABLE'
   | 'SANDBOX_DENIED'
+  | 'ESCALATION_LIMIT'
   | 'HOOK_BLOCKED'
   | 'PERMISSION_PROFILE_UNKNOWN'
   | 'PERMISSION_CONFIG_CONFLICT'
@@ -30,6 +37,12 @@ export interface CodingxErrorOptions {
 }
 
 const DEFAULT_EXIT_CODES: Record<ErrorCode, number> = {
+  FILE_CHANGED: 1,
+  UNDO_CONFLICT: 1,
+  OBJECT_ERROR: 1,
+  WEB_FETCH_ERROR: 1,
+  ATTACHMENT_ERROR: 1,
+  PLUGIN_ERROR: 1,
   CONFIG_ERROR: 2,
   AUTH_ERROR: 2,
   PROVIDER_ERROR: 1,
@@ -48,6 +61,7 @@ const DEFAULT_EXIT_CODES: Record<ErrorCode, number> = {
   POLICY_FORBIDDEN: 1,
   SANDBOX_UNAVAILABLE: 1,
   SANDBOX_DENIED: 1,
+  ESCALATION_LIMIT: 1,
   HOOK_BLOCKED: 1,
   PERMISSION_PROFILE_UNKNOWN: 2,
   PERMISSION_CONFIG_CONFLICT: 2,

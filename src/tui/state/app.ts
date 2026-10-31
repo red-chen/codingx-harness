@@ -1,3 +1,4 @@
+import type { PickerEntry } from './types.js';
 import { INPUT_HISTORY_LIMIT } from '../../ui/input-history.js';
 import { stripControlSequences } from '../text/index.js';
 import { tipsPreview } from '../widgets/tips.js';
@@ -108,6 +109,8 @@ export interface TuiAppOptions {
   /** Total turn number already present in resumed history. */
   readonly initialTurnNumber?: number;
   readonly initialUsage?: TokenUsage;
+  readonly initialRequestUsage?: readonly import('../../providers/usage.js').RequestUsage[];
+  readonly usageIncomplete?: boolean;
   readonly initialTranscript?: readonly TranscriptCell[];
   readonly inputHistory?: readonly string[];
   readonly onInputHistory?: (text: string) => void;
@@ -197,6 +200,7 @@ function isNewlineKey(key: KeyEvent): boolean {
 }
 
 export class TuiApp {
+  private turnSummaryPluginEnabled = false;
   private readonly now: () => number;
   private current: TuiAppState;
   private nextCellNumber = 0;
@@ -208,6 +212,8 @@ export class TuiApp {
     const width = dimension(options.width, 80);
     const height = dimension(options.height, 24);
     this.current = {
+      requestUsage: options.initialRequestUsage ?? [],
+      usageIncomplete: options.usageIncomplete ?? false,
       mode: 'main',
       session: {
         sessionId: options.session.sessionId,
@@ -327,6 +333,11 @@ export class TuiApp {
   }
 
   handleEvent(event: UiEvent): void {
+    if (event.type === 'usage.recorded') {
+      const records = this.current.requestUsage.filter((record) => record.requestId !== event.record.requestId);
+      this.patch({ requestUsage: [...records, event.record], statusBarSegments: undefined });
+      return;
+    }
     switch (event.type) {
       case 'session.info': {
         this.patch({
@@ -350,6 +361,10 @@ export class TuiApp {
         return;
       }
 
+      case 'attachments.prepared': {
+        this.addNotice(event.items.map(item => item.kind + ': ' + item.name + ' (' + item.bytes + ' bytes)').join('\n'));
+        return;
+      }
       case 'turn.started': {
         this.finalizeActiveAssistant();
         this.patch({
@@ -508,6 +523,8 @@ export class TuiApp {
           ...(error === undefined ? {} : { error: copyError(error) as TuiErrorInfo }),
         };
         const summary: TurnSummaryCell = {
+          turnId: event.turnId,
+          pluginPending: this.turnSummaryPluginEnabled,
           type: 'turn',
           id: this.nextId('turn'),
           outcome: event.status,
@@ -576,6 +593,7 @@ export class TuiApp {
   resetSession(): void {
     const session = this.current.session;
     this.patch({
+      requestUsage: [], usageIncomplete: false, statusBarSegments: undefined,
       mode: 'main',
       session: {
         sessionId: session.sessionId,
@@ -612,6 +630,7 @@ export class TuiApp {
 
   /** Update the model/effort session state after /model. */
   setModel(model: string, reasoningEffort?: ReasoningEffort): void {
+    this.patch({ statusBarSegments: undefined });
     const session = this.current.session;
     this.patch({
       session: {
@@ -1001,6 +1020,29 @@ export class TuiApp {
     return this.current.mode === 'help' && text === '?';
   }
 
+  openPicker(purpose: 'file' | 'session', entries: readonly PickerEntry[]): void {
+    this.patch({ mode: 'picker', picker: { purpose, title: purpose === 'file' ? 'Attach file · search; optional :start:end' : 'Resume session · search title or ID', query: '', index: 0, entries } });
+  }
+  private handlePickerKey(key: KeyEvent): UiCommand | undefined {
+    const picker = this.current.picker;
+    if (!picker) return;
+    if (isEscape(key)) { this.patch({ mode: 'main', picker: undefined }); return; }
+    const range = picker.purpose === 'file' ? /:(\d+):(\d+)$/.exec(picker.query) : null;
+    const query = (range ? picker.query.slice(0, range.index) : picker.query).toLowerCase();
+    const entries = picker.entries.filter(e => (e.label + ' ' + e.value).toLowerCase().includes(query));
+    if (key.code === 'up' || key.code === 'down') this.patch({ picker: { ...picker, index: Math.max(0, Math.min(entries.length - 1, picker.index + (key.code === 'up' ? -1 : 1))) } });
+    else if (key.code === 'enter') {
+      const entry = entries[picker.index];
+      if (!entry || entry.disabled) return;
+      this.patch({ mode: 'main', picker: undefined });
+      return { type: 'pick', purpose: picker.purpose, value: entry.value, ...(range ? { range: range[1] + ':' + range[2] } : {}) };
+    } else if (key.code === 'backspace') this.patch({ picker: { ...picker, query: picker.query.slice(0,-1), index: 0 } });
+    else if (key.text && isPlainText(key)) this.patch({ picker: { ...picker, query: picker.query + key.text, index: 0 } });
+    return;
+  }
+
+  restoreDraft(text: string): void { this.setComposer(createComposerState(text, this.current.composer.history)); }
+
   private setComposer(composer: ComposerState): void {
     this.patch({ composer, slashIndex: 0, slashDismissed: false });
   }
@@ -1109,6 +1151,7 @@ export class TuiApp {
   handleKey(key: KeyEvent): UiCommand | undefined {
     const mode = this.current.mode;
 
+    if (mode === 'picker') return this.handlePickerKey(key);
     if (mode === 'ask') return this.handleAskKey(key);
     if (mode === 'approval') return this.handleApprovalKey(key);
     if (mode === 'tips') return this.handleTipsKey(key);
@@ -1151,6 +1194,7 @@ export class TuiApp {
 
     if (this.applyScrollKey(key)) return undefined;
 
+    if (key.text === '@' && isPlainText(key) && this.current.status.state === 'idle') return { type: 'files' };
     if (key.text === '?' && isPlainText(key) && this.current.composer.text.length === 0) {
       this.patch({ mode: 'help' });
       return undefined;
@@ -1296,6 +1340,22 @@ export class TuiApp {
     this.patch({ contextPercent: clampPercent(percentLeft) });
   }
 
+  setStatusBarSegments(segments: readonly import('../../plugins/types.js').StatusBarSegment[]): void {
+    this.patch({ statusBarSegments: segments });
+  }
+
+  enableTurnSummaryPlugin(): void {
+    this.turnSummaryPluginEnabled = true;
+    this.patch({ transcript: this.current.transcript.map((cell) => cell.type === 'turn'
+      ? { ...cell, pluginPending: true, pluginView: undefined } : cell) });
+  }
+
+  resolveTurnSummaryPlugin(cellId: string, generation: number, view: import('../../plugins/types.js').TurnSummaryView): void {
+    if (generation !== this.current.transcriptGeneration) return;
+    this.patch({ transcript: this.current.transcript.map((cell) => cell.type === 'turn' && cell.id === cellId && cell.pluginPending
+      ? { ...cell, pluginPending: false, pluginView: view } : cell) });
+  }
+
   /** Plain text suitable for clipboard export; UI-only cells are omitted. */
   transcriptText(): string {
     const blocks: string[] = [];
@@ -1383,7 +1443,9 @@ function copyTextForCell(cell: TranscriptCell): string {
         '✓ turn ' + cell.outcome +
         ' · total ' + Math.max(0, Math.round(cell.durationMs / 1000)) + 's' +
         ' · in ' + cell.usage.inputTokens +
-        ' · out ' + cell.usage.outputTokens
+        ' · out ' + cell.usage.outputTokens +
+        (cell.pluginView?.segments.map((segment) => segment.text).join('') ?? '') +
+        (cell.pluginView?.details?.map((line) => '\n' + line.segments.map((segment) => segment.text).join('')).join('') ?? '')
       );
   }
 }

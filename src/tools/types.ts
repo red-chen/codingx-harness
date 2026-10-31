@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import type { ProcessManager } from '../exec/process-manager.js';
-import type { ApprovalHandler, PolicyRuntime } from '../policy/types.js';
+import type { AdditionalPermissions, ApprovalHandler, PolicyRuntime } from '../policy/types.js';
 import type { SandboxBackend } from '../sandbox/types.js';
 import type { ReadFileTracker } from './read-tracker.js';
 
@@ -69,6 +69,7 @@ export interface SkillToolContext {
 
 export interface ToolContext {
   /** Primary workspace root; relative file paths resolve against this directory. */
+  web?: import('../config/types.js').WebConfig;
   cwd: string;
   /** Extra writable roots from --add-dir (canonical absolute paths). */
   additionalDirs?: readonly string[];
@@ -80,8 +81,14 @@ export interface ToolContext {
   sandbox?: SandboxBackend;
   /** Present only when the caller can collect approval decisions (S2 TUI). */
   approve?: ApprovalHandler;
+  /** Set by the registry only after one-execution network approval. Not model input. */
+  approvedNetwork?: 'local';
+  approvedPermissions?: AdditionalPermissions;
+  /** Shared only within one agent turn. */
+  escalationBudget?: { remaining: number };
   signal: AbortSignal;
   readTracker: ReadFileTracker;
+  fileChanges?: import('./file-mutation.js').FileChangeRecorder;
   maxOutputChars: number;
   shell: ShellToolContext;
   /** CLI/session-owned processes, retained across turns. */

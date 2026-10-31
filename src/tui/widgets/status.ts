@@ -1,4 +1,5 @@
-import { ATTR_DIM } from '../terminal/buffer.js';
+import { ATTR_DIM, ATTR_BOLD, ATTR_ITALIC, ATTR_UNDERLINE, rgbColor } from '../terminal/buffer.js';
+import type { StatusBarSegment } from '../../plugins/types.js';
 import type { CellBuffer, Style } from '../terminal/buffer.js';
 import type { Rect } from '../layout/index.js';
 import { displayWidth, truncateToWidth } from '../text/index.js';
@@ -9,6 +10,7 @@ import { TUI_COLORS } from '../state/types.js';
 /** Status row: turn spinner/elapsed/interrupt hint on the left, usage on the right. */
 
 export interface StatusRowOptions {
+  readonly segments?: readonly StatusBarSegment[];
   readonly status: TuiStatus;
   readonly usage: TokenUsage;
   readonly contextUsedTokens?: number;
@@ -165,7 +167,13 @@ export function renderStatusRow(area: Rect, frame: CellBuffer, options: StatusRo
     ? statusRightLabel(options.usage, options.contextPercent, area.width)
     : contextUsageLabel(options.contextUsedTokens, options.contextWindowTokens, area.width);
   const total = options.contextWindowTokens === undefined ? undefined : totalUsageLabel(options.totalUsage);
-  const right = [context, total].filter((part): part is string => part !== undefined).join(' · ') || undefined;
+  const baseRight = [context, total].filter((part): part is string => part !== undefined).join(' · ') || undefined;
+  // Custom decorations are lower priority than the real state and built-in counters.
+  const candidate = total === undefined ? [] : options.segments ?? [];
+  const suffix = candidate.map((segment) => segment.text).join('');
+  const minimumLeft = displayWidth(statusLabel(options.status, now, area.width, options.awaitingKind ?? 'answer'));
+  const segments = baseRight && displayWidth(baseRight + suffix) + minimumLeft + 2 <= area.width ? candidate : [];
+  const right = baseRight === undefined ? undefined : baseRight + segments.map((segment) => segment.text).join('');
   const rightWidth = right === undefined ? 0 : displayWidth(right);
   const leftLimit = right === undefined ? area.width : Math.max(1, area.width - rightWidth - 2);
   let left = truncateToWidth(
@@ -185,6 +193,16 @@ export function renderStatusRow(area: Rect, frame: CellBuffer, options: StatusRo
     const fits = displayWidth(left) + 2 + rightWidth <= area.width;
     if (fits) {
       frame.setString(area.x + area.width - rightWidth, area.y, right, MUTED_STYLE);
+      let x = area.x + area.width - rightWidth + displayWidth(baseRight ?? '');
+      for (const segment of segments) {
+        const color = (hex: string) => rgbColor(parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16));
+        const attrs = (segment.bold ? ATTR_BOLD : 0) | (segment.dim ? ATTR_DIM : 0)
+          | (segment.italic ? ATTR_ITALIC : 0) | (segment.underline ? ATTR_UNDERLINE : 0);
+        frame.setString(x, area.y, segment.text, {
+          attrs, ...(segment.fg ? { fg: color(segment.fg) } : {}), ...(segment.bg ? { bg: color(segment.bg) } : {}),
+        });
+        x += displayWidth(segment.text);
+      }
     }
   }
 

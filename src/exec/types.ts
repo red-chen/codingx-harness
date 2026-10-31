@@ -6,6 +6,8 @@ export interface ExecInvocation {
 }
 
 export interface ExecRequest {
+  /** Reap plugin descendants when the entry process exits. */
+  cleanupProcessGroup?: boolean;
   command: string;
   /** Optional fully resolved argv (for example a sandbox wrapper). */
   invocation?: ExecInvocation;
@@ -40,6 +42,8 @@ export type ProcessStopReason = 'requested' | 'session_closed' | 'session_cleare
 
 /** Serializable state only: never includes environment or ChildProcess handles. */
 export interface ManagedProcess {
+  pty?: boolean;
+  stdin?: boolean;
   processId: string;
   command: string;
   cwd: string;
@@ -55,7 +59,23 @@ export interface ManagedProcess {
   sandbox?: ExecutionSandbox;
 }
 
+export interface ProcessWriteRequest {
+  text?: string;
+  eof?: boolean;
+  interrupt?: boolean;
+  cols?: number;
+  rows?: number;
+}
+
 export interface ProcessStartRequest {
+  pty?: boolean;
+  stdin?: boolean | string;
+  cols?: number;
+  rows?: number;
+  /** Owned resource cleanup, invoked after the process group terminates. */
+  cleanup?: () => Promise<void>;
+  /** Live bounded proxy diagnostics, never credentials or request URLs. */
+  networkDenials?: readonly string[];
   command: string;
   cwd: string;
   invocation?: ExecInvocation;
@@ -67,6 +87,7 @@ export interface ProcessStartRequest {
 }
 
 export interface ProcessOutput {
+  networkDenials?: string[];
   process: ManagedProcess;
   /** Combined stdout/stderr in arrival order. */
   output: string;
@@ -80,5 +101,6 @@ export interface ProcessManagerOptions {
   maxRecords?: number;
   maxOutputChars?: number;
   killGraceMs?: number;
+  onInput?: (event: { processId: string; operation: string; bytes: number }) => Promise<void>;
   onState?: (process: ManagedProcess) => Promise<void>;
 }

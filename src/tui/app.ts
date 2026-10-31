@@ -1,3 +1,4 @@
+import { renderPickerOverlay } from './widgets/overlay.js';
 import { ATTR_BOLD, CellBuffer } from './terminal/buffer.js';
 import { length, min, rect, splitVertical } from './layout/index.js';
 import type { Rect } from './layout/index.js';
@@ -166,6 +167,7 @@ export function composeFrameWithCursor(state: TuiAppState, options: ComposeFrame
   });
 
   renderStatusRow(layout.status, frame, {
+    segments: state.statusBarSegments,
     status: state.status,
     usage: state.usage,
     contextUsedTokens: state.contextUsedTokens,
@@ -190,6 +192,7 @@ export function composeFrameWithCursor(state: TuiAppState, options: ComposeFrame
     ...(state.session.home ? { home: state.session.home } : {}),
     ...(state.session.title ? { title: state.session.title } : {}),
   });
+  if (state.mode === 'picker' && state.picker) renderPickerOverlay(frame, width, height, state.picker);
   if (state.mode === 'help') renderHelpOverlay(frame, width, height);
   if (state.mode === 'approval' && state.approval !== undefined) {
     const panel = renderApprovalPanel(frame, width, height, state.approval);

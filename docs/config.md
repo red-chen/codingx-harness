@@ -1,5 +1,9 @@
 # 配置
 
+StatusBar Plugin 使用全局 `[status_bar]` 选择插件，支持 DeepSeek token 费用显示。安装、manifest 与协议见 [Plugin 文档](plugins.md)。
+
+`codingx plugin install deepseek-cost --enable` 安装内置插件并写入全局选择；本地目录用 `codingx plugin install ./my-plugin --enable`。重复安装不会覆盖已有文件；已安装插件可用 `codingx plugin enable <id>` 切换。
+
 ## 文件位置与优先级
 
 优先级从高到低，后者被前者覆盖：
@@ -117,7 +121,7 @@ write = [".git/config", "**/*.pem"]
 
 [sandbox]
 mode = "workspace-write"     # read-only | workspace-write | danger-full-access
-network = "none"             # none | loopback | all
+network = "none"             # none | local | all（loopback 为历史别名）
 writable_roots = ["$TMPDIR"]
 readable_roots = []
 env_passthrough = ["PATH", "HOME", "LANG", "TERM"]
@@ -152,9 +156,115 @@ servers = []
 # env = {}
 ```
 
+## 按次权限与受控联网
+
+`Shell` / `ProcessStart` 的模型工具调用可显式申请额外权限，例如：
+
+```json
+{
+  "command": "npm install --cache /tmp/codingx-npm-cache",
+  "sandbox_permissions": "require_escalated",
+  "justification": "安装项目依赖，仅访问 npm registry。",
+  "additional_permissions": {
+    "network": { "domains": ["registry.npmjs.org"] }
+  }
+}
+```
+
+额外文件访问使用 `additional_permissions.filesystem.read` / `write` 路径数组。相对路径以主工作区为基准，审批前规范化符号链接；写权限同时允许读取该目录，read 不授予写入。必须提供理由和非空权限。审批仅支持允许一次/拒绝；不继承 session/prefix 授权，不保存到 profile，结束后不影响下一次调用。ProcessStart 保留启动时权限直至其进程组结束。
+
+模型收到 `SANDBOX_DENIED` 后应先检查是否已有部分副作用，再带最小权限重试；Harness 不自动重放命令。每 turn 最多 3 次申请，之后返回 `ESCALATION_LIMIT`。审批拒绝/取消、`never` 或非交互无审批器时不执行。`require_escalated` **不关闭沙箱**，不能解除敏感路径与明确的域名 deny；未实现无沙箱提权字段或 `with_additional_permissions` 枚举。
+
+也可在全局配置中持续允许项目所需域名：
+
+```toml
+default_permissions = "dependencies"
+
+[permissions.dependencies]
+extends = ":workspace"
+
+[permissions.dependencies.network]
+enabled = true
+
+[permissions.dependencies.network.domains]
+"registry.npmjs.org" = "allow"
+"github.com" = "allow"
+"blocked.example.com" = "deny"
+```
+
+- 域名精确匹配；`*.example.com` 只匹配一层子域，`**.example.com` 匹配域本身及任意深度子域；deny 优先。跳转、包下载及 CDN 的每个目标都要允许。域名不包含协议、路径或端口。
+- 有域名规则时，Shell、ProcessStart 和本地 `!` 命令通过独立 HTTP/CONNECT 代理执行；代理只监听 `127.0.0.1`。代理变量覆盖子进程中的旧值并清空 NO_PROXY，不改变父环境、不注入凭证。客户端忽略代理变量时会被沙箱拒绝直连。
+- DNS 每次解析检查全部地址，再固定数字 IP 建立连接，不二次解析。私网/回环/链路本地/映射 IPv6 默认拒绝；需同时精确允许对应 IP（`localhost` 精确授权可使用 127.0.0.1 / ::1）。仅允许一个公网域名不会允许它重绑定到私网。
+- Seatbelt 使用 `localhost:代理端口`，会覆盖本机网卡地址，无法表达严格的 127.0.0.1 地址过滤。正常代理只监听回环；同端口其他本机接口服务属于原生边界。其他端口直连、UDP 和监听不放行。CONNECT 按目标主机/IP 控制，不解密 TLS、不提供 URL 路径或 TLS SNI 过滤。
+- Shell 完成、超时或中断时销毁代理及连接；ProcessStart 的代理随进程退出、停止、clear 或 CLI 退出回收。运行中的进程保留启动权限，切换 profile 不会改变它。
+- `enabled = true` 且无任何域名规则仍保留原先整网放行语义；默认 profile 仍拒绝网络。受控域名访问要求可用的 macOS 沙箱，否则 fail closed。开发服务器使用下节独立的 `network: "local"` 授权。
+
+## Exec policy 规则
+
+自动加载全局 `$CODINGX_HOME/rules/*.rules`（默认 `~/.codingx/rules/`），按文件名排序。也可从全局配置追加文件，路径相对 CODINGX_HOME：
+
+```toml
+[exec_policy]
+rule_files = ["team.rules"]
+```
+
+```python
+# ~/.codingx/rules/default.rules
+prefix_rule(
+    pattern = ["npm", "test"],
+    decision = "allow",
+    match = ["npm test -- --run"],
+    not_match = ["npm install"],
+)
+prefix_rule(pattern = ["git", "push"], decision = "prompt")
+prefix_rule(pattern = ["git", "push", "--force"], decision = "forbidden")
+prefix_rule(pattern = ["git", ["status", "diff"]], decision = "allow")
+```
+
+支持 `pattern`、`decision`（默认 allow）、`justification`、`match` / `not_match`，字符串/列表字面量、注释及尾逗号；不执行 Python 或完整 Starlark。示例为命令字符串或 argv 数组，加载时验证；缺失的显式文件、未知语法、失败示例均报配置错误。项目配置不能加载/覆盖规则，项目内 rules 目录不会自动加载。旧 `[approval.rules]`、`[approval].allow/deny` 不是有效规则来源。
+
+规则按 argv token 前缀匹配，`forbidden > prompt > allow`，不是命令文本子串。复合命令的每个片段都要匹配 allow；重定向、赋值、展开或无法安全解析的命令不能从前缀获得 allow。allow 只免除该规则层的询问，不能突破 profile、敏感路径或沙箱。forbidden 在 `--yolo` 下仍检查，但命令启发式不能分析任意解释器脚本，不能取代 OS 隔离。
+
+```bash
+codingx execpolicy check --command 'git status && git push'
+codingx execpolicy check --rules ./candidate.rules -- git push --force
+```
+
+诊断不执行命令、不需要 Provider 凭证，输出规则判定与命中来源；forbidden 退出码 1、配置错误 2，其余 0。`none` 表示没有决定性匹配，不表示沙箱允许。`--command` 与 literal argv 二选一。普通审批可由工具 `prefix_rule` 建议单条简单命令的 token 前缀，经用户批准后仅在会话内有效；不能与按次追加权限一起使用。跨启动复用请编辑全局 `.rules`。
+
+## 本机开发服务器
+
+默认配置无需额外参数：启动 Python HTTP server 等常见服务时，harness 会请求本机网络审批；
+用户同意后，为这次执行及其进程组开放本机网络，文件隔离和当前 profile 保持不变。
+Shell / ProcessStart 可用 `network: "local"` 显式申请，`network: "inherit"` 禁用自动识别。
+审批只支持 allow once，不保存会话或前缀授权；无审批入口、拒绝或 `approval_policy = "never"` 时不执行。
+
+如需持续允许本机网络，可选择可选 profile：
+
+```sh
+codingx --permission-profile :workspace-local
+```
+
+已有 TUI 会话可执行 `/permissions :workspace-local`，之后启动一个新进程。
+自定义 profile 使用：
+
+```toml
+[permissions.dev]
+extends = ":workspace"
+
+[permissions.dev.network]
+mode = "local" # none | local | all
+```
+
+`local` 使用 Seatbelt 的本机地址匹配，出站目标限本机；本机网卡地址也包含在内，且通配监听仍可能暴露到局域网。
+请显式使用 `--bind 127.0.0.1` 或 `::1`。这不等于严格的回环接口隔离。
+`mode` 与 `enabled` 同时配置时必须一致（none 对应 false，local/all 对应 true）；原先只设 enabled 的配置行为保持不变。
+旧 `[sandbox] network = "loopback"` 作为历史别名映射为 local，启动提示说明其实际边界；新配置请使用 local。
+新增 profile 的配置需重启加载，已有进程不会因为切换 profile 改变沙箱。
+
 ## Permission profiles（S1 已解析）
 
-> 设计见 [permissions.md](permissions.md)。新模型用 Permission profile（边界）× Approval policy（何时问）× Approvals reviewer（谁答）；S1/S3 已接入文件工具与 Shell，macOS Seatbelt 已落地，旧/新配置冲突会报错。网络代理与自动审查尚未实现；项目配置不能覆盖这些权限键。
+> 设计见 [permissions.md](permissions.md)。新模型用 Permission profile（边界）× Approval policy（何时问）× Approvals reviewer（谁答）；S1/S3 已接入文件工具与 Shell，macOS Seatbelt 已落地，旧/新配置冲突会报错。网络代理与声明式 exec policy 已接入，自动审查尚未实现；项目配置不能覆盖这些权限键。
 
 ```toml
 # 顶层：批准策略与默认 profile
@@ -194,10 +304,10 @@ enabled = true               # 示例：默认 false，仅按需为单个 profil
 | `[approval].mode = "on-request"` | `approval_policy = "on-request"` |
 | `[approval].mode = "never"` | `approval_policy = "never"` |
 | `[approval].mode = "always-ask"` | 弃用：`on-request` + 对所有写/执行规则 `prompt` |
-| `[approval].allow` / `deny` | S5 的 `[approval.rules]`；之后再兼容 Codex `.rules` |
+| `[approval].allow` / `deny` | 使用全局 `rules/*.rules` 或 `[exec_policy].rule_files`；旧 allow/deny 不作为执行规则 |
 | `[sandbox].writable_roots` / `network` | 并入命名 profile；与 `default_permissions` 冲突时报错 |
 
-`--add-dir` 只追加可写根；profile 不允许扩展时启动报错，不静默忽略。`network.enabled` / `domains` 已解析：macOS Seatbelt 在 `enabled = false` 时由内核拒绝网络，`enabled = true` 时整网放行；`domains` 仍只参与策略层启发式，域名白名单代理属于 S6。
+`--add-dir` 只追加可写根；profile 不允许扩展时启动报错，不静默忽略。`network.enabled` / `domains` 已解析：macOS Seatbelt 在 `enabled = false` 时由内核拒绝网络，`enabled = true` 且未设 mode 时整网放行；`mode = "local"` 限本机通信；存在 `domains` 时通过每次执行独立的 HTTP/CONNECT 代理校验域名并禁止直接外连；`mode = "local"` 与域名规则同时配置时仍只允许本机目标。
 
 受信任项目记录在全局配置中（路径必须是绝对路径；项目配置不能自证可信）：
 
@@ -216,7 +326,7 @@ S1 同时解析旧配置与新键：`[approval]` / `[sandbox]` 仍兼容，新�
 
 当前构建已接入应用层策略与 macOS Seatbelt：`--yolo` / `--allow-dangerously-skip-permissions` 映射到 `:danger-full-access` + `never`，同时关闭文件工具策略、审批与 OS 沙箱并输出告警；在必须有沙箱的平台（macOS 探测失败、Windows）会拒绝启动。Linux 的 Landlock 尚未接入，Shell 仍以当前用户权限运行。M3 目标语义、预设与提权流程见 [permissions.md](permissions.md)，任务拆分见 [implementation-plan-m3.md](implementation-plan-m3.md)。
 
-`WebFetch` 仅在 `web.enabled = true` 时注册；请求只允许 https，域名必须命中 `allowed_domains`，重定向目标同样校验，解析到私网 / 回环地址的域名一律拒绝。
+`WebFetch` 已注册，默认拒绝执行；仅在 `web.enabled = true` 时允许请求；请求只允许 https，域名必须命中 `allowed_domains`，重定向目标同样校验，解析到私网 / 回环地址的域名一律拒绝。
 
 `provider.<id>.protocol` 默认 `anthropic-messages`，后续支持 `openai-responses`；协议只决定 wire 格式，`endpoint` 与 `api_key_env` 保持通用配置。
 
@@ -437,3 +547,17 @@ codingx log --session <id>  回放会话的审计事件
 ```
 
 `--json` 与 `exec` 组合时，stdout 只输出机器可读事件，人类可读信息走 stderr——保证可以安全地接入管道。`sessions list/show/watch` 与 `sessiond status` 同样支持 `--json`；前者在 daemon 未运行且 `sessiond.enabled = true` 时会先尝试自动拉起。`sessions list --offline` 只读扫描 JSONL，`codingx log` 始终直接读 JSONL，两者都不依赖 daemon 且没有实时状态。`sessiond stop` 默认拒绝在有活动租约时退出，`--force` 会把进行中的 turn 标记为 `interrupted`。
+
+
+## P0–P2 执行与网页读取
+
+```toml
+[agent]
+max_parallel_tools = 4 # 1–32，设为 1 恢复串行
+
+[web]
+enabled = false
+allowed_domains = ["example.com", "*.example.com"]
+```
+
+只并行连续的 Read/ListDir/Glob/Grep；写入、Shell、Process、交互与 WebFetch 都是顺序屏障。pre/post_tool_use hooks 启用时串行；需要审批的读取也串行。WebFetch 最多 5 次重定向、总超时 30 秒、解压后 2 MiB，支持 HTML/纯文本/Markdown/JSON。网页作为不可信数据进入工具结果，不携带 cookies 或认证。

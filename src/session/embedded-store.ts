@@ -1,3 +1,4 @@
+import { SessionObjects, referencedObjects, type ObjectRef } from './objects.js';
 import { chmod, mkdir, open, readFile, readdir, rm, stat, truncate, unlink } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
@@ -306,6 +307,20 @@ class EmbeddedSessionHandle implements SessionHandle {
           ...(meta.requestId ? { requestId: meta.requestId } : {}),
           ...(meta.forkedFrom ? { forkedFrom: meta.forkedFrom } : {}),
         };
+  }
+
+  async putObject(bytes: Uint8Array): Promise<ObjectRef> {
+    const run = this.queue.then(async () => {
+      if (!this.writable || this.closed || this.ended) throw new SessionError('Object write requires an active writer.');
+      return new SessionObjects(this.filePath + '.objects').put(bytes);
+    });
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  async getObject(ref: ObjectRef): Promise<Buffer> {
+    if (this.closed) throw new SessionError('Session is closed.');
+    return new SessionObjects(this.filePath + '.objects').get(ref);
   }
 
   append(events: AppendEventInput | AppendEventInput[]): Promise<RolloutEvent[]> {
@@ -635,6 +650,8 @@ export class EmbeddedSessionStore {
         copies.push({ type: 'turn.aborted', turnId: lastTurnId, reason: 'forked from an unfinished turn' });
       }
 
+      const objects = new SessionObjects(sourcePath + '.objects');
+      for (const ref of new Map(referencedObjects(copies).map(ref => [ref.sha256, ref])).values()) await created.putObject!(await objects.get(ref));
       if (copies.length > 0) await created.append(copies);
       const result = created;
       created = undefined;
@@ -662,6 +679,7 @@ export class EmbeddedSessionStore {
     const lock = await acquireLock(filePath);
     try {
       await unlink(filePath);
+      await rm(filePath + '.objects', { recursive: true, force: true });
       this.summaryCache.delete(filePath);
     } finally {
       await lock.release().catch(() => undefined);

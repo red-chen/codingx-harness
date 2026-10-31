@@ -32,7 +32,15 @@ export interface ToolResultBlock {
   is_error?: boolean;
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock;
+export interface ImageBlock {
+  type: 'image';
+  mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
+  name: string;
+  object: import('../session/objects.js').ObjectRef;
+  /** Only populated for an outgoing provider request, never persisted. */
+  data?: string;
+}
+export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ImageBlock;
 
 export interface Message {
   role: Role;
@@ -84,6 +92,8 @@ export type ModelEvent =
       outputTokens: number;
       cacheReadTokens?: number;
       cacheCreationTokens?: number;
+      /** False when authoritative input/output counters were missing. */
+      complete?: boolean;
     }
   | { type: 'stop'; reason: StopReason };
 

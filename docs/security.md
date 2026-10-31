@@ -44,7 +44,7 @@
 
 文件工具与 Shell 已接入 Permission profile / approval policy：默认 `:workspace` + `on-request`，workspace 外读写、敏感路径与 `:read-only` 写入会被拒绝或要求审批；非交互没有 approver 时返回 `APPROVAL_REQUIRED`。TUI 底部弹层与 plain 交互提示都支持允许一次 / 本会话 / 命令前缀 / 拒绝并说明原因，授权只存在当前进程内存。`--yolo` 映射到 `:danger-full-access` + `never`（文件工具、审批与沙箱均关闭）并告警。
 
-macOS 上 Shell 还会进入 Seatbelt：默认 deny、写入限定 profile 根、网络默认 deny、凭证路径与 `.env*`/私钥文件名由内核拒绝。Linux 尚无 Landlock，Shell 只做保守命令解析与硬拒绝；**任意程序仍可绕过**，不能把 Linux 当前构建当成 OS 隔离。网络代理、exec policy 规则与自动审查仍未实现。实现状态见 [implementation-plan-m3.md](implementation-plan-m3.md)。
+macOS 上 Shell 还会进入 Seatbelt：默认 deny、写入限定 profile 根、网络默认 deny、凭证路径与 `.env*`/私钥文件名由内核拒绝。Linux 尚无 Landlock，Shell 只做保守命令解析与硬拒绝；**任意程序仍可绕过**，不能把 Linux 当前构建当成 OS 隔离。HTTP/CONNECT 网络代理、声明式 exec policy 与按次追加权限已实现；自动审查仍未实现。实现状态见 [implementation-plan-m3.md](implementation-plan-m3.md)。
 
 ## 沙箱
 
@@ -60,7 +60,7 @@ macOS 上 Shell 还会进入 Seatbelt：默认 deny、写入限定 profile 根�
 - 可读：系统/运行时路径、workspace 根、工具链目录与 profile 额外授予的读根
 - 默认 deny：`~/.ssh`、`~/.aws`、`~/.config/gh`、`~/.gnupg`、`~/.azure`、`~/.config/gcloud`、`~/.docker`、`~/.kube`、`~/.terraform.d`、`~/.codingx`、session 目录、`.env*`、私钥、`.npmrc`/`.netrc`/`.git-credentials` 等
 - Git hooks：执行默认可用；`.git/hooks` / `.git/config` 写入默认 deny。`:workspace-git-hooks`（或 `:git_hooks` / `:git_config` 作用域）显式放开，启动告警，建议只在受信任仓库使用
-- 网络：默认 `none`；profile 显式启用时 Seatbelt 整网放行，域名 allow/deny 仍需 S6 本地代理执行
+- 网络：默认 `none`；profile 启用且无域名规则时整网放行；有域名规则时走本机 HTTP/CONNECT 代理，域名 deny 优先，DNS 检查后固定 IP；私网需要精确 IP 授权
 
 当前构建已在 macOS 接入 Seatbelt；Git hooks 的执行走 git 本身，默认允许，写入 hooks/config 需要显式 profile。`--add-dir` 只在 profile 的 `:workspace_roots` 允许时扩展（`:read-only` 会直接报错）。文件工具受 profile 约束，但 `--yolo` 会同时取消文件工具策略与 OS 沙箱。Linux 尚未接入 OS 沙箱，Shell 以当前用户权限运行；不要在没有外部隔离的 Linux 环境里处理不可信仓库。
 

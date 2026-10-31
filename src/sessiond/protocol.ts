@@ -98,6 +98,8 @@ export const METHOD = {
   sessionDetach: 'session.detach',
   sessionHeartbeat: 'session.heartbeat',
   sessionAppend: 'session.append',
+  objectPut: 'session.object.put',
+  objectGet: 'session.object.get',
   sessionClear: 'session.clear',
   sessionReplay: 'session.replay',
   sessionSubscribe: 'session.subscribe',

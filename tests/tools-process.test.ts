@@ -22,6 +22,26 @@ async function context(profile = ':workspace'): Promise<ToolContext> {
 afterEach(async () => { await Promise.allSettled(managers.splice(0).map((pm) => pm.close())); });
 
 describe('Process tools', () => {
+  it.each(['missing', 'deny', 'session', 'prefix', 'never', 'abort'] as const)('does not spawn a local server when approval is %s', async (answer) => {
+    const ctx = await context();
+    const abort = new AbortController();
+    ctx.signal = abort.signal;
+    if (answer === 'never') ctx.policy = await createPolicyRuntime({
+      cwd: process.cwd(), additionalDirs: [], env: process.env,
+      config: parsePermissions({}, ':workspace'), approvalPolicy: 'never', reviewer: 'user',
+    });
+    if (answer !== 'missing') ctx.approve = async () => {
+      if (answer === 'deny') return { decision: 'deny' };
+      if (answer === 'never') throw new Error('Must not ask');
+      if (answer === 'abort') abort.abort();
+      return { decision: 'allow', scope: answer === 'session' || answer === 'prefix' ? answer : 'once' };
+    };
+    const execution = registry.execute('ProcessStart', { command: 'python3 -m http.server 0 --bind 127.0.0.1' }, ctx);
+    if (answer === 'abort') await expect(execution).rejects.toMatchObject({ code: 'ABORTED' });
+    else expect((await execution).isError).toBe(true);
+    expect(ctx.processes!.list()).toEqual([]);
+  });
+
   it('uses Shell policy, presents the actual tool name, and does not spawn when approval is unavailable', async () => {
     const ctx = await context(':read-only');
     const input = { command: 'python3 -m http.server 8000 --bind 127.0.0.1' };

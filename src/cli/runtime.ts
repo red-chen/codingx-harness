@@ -51,15 +51,21 @@ export function createLoop(
   return new AgentLoop({
     session,
     router: app.router,
+    providerOrigin: () => {
+      const endpoint = app.config.providers[app.router.selection.providerId]?.endpoint;
+      return endpoint ? new URL(endpoint).origin : undefined;
+    },
     tools: app.tools,
     systemPrompt: app.systemPrompt,
     model: app.router.selection.model,
     maxSteps: app.config.agent.maxSteps,
+    maxParallelTools: app.config.agent.maxParallelTools,
     maxOutputTokens: app.config.model.maxOutputTokens,
     temperature: app.config.model.temperature,
     contextWindow: app.config.model.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     sessionId: session.id,
     cwd: app.cwd,
+    web: app.config.web,
     maxOutputChars: app.config.tools.maxOutputChars,
     shell: { env: app.shellEnv, timeoutMs: DEFAULT_SHELL_TIMEOUT_MS },
     skills: app.skills,

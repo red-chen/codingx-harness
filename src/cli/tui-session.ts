@@ -50,6 +50,11 @@ export interface TuiSessionOptions {
   /** Run '!command' through policy/approval/sandbox; absent disables the feature. */
   runLocalCommand?: TuiLocalCommandRunner;
   /** Manage this CLI session's processes without calling the model. */
+  listFiles?: () => Promise<readonly import('../tui/state/types.js').PickerEntry[]>;
+  listSessions?: () => Promise<readonly import('../tui/state/types.js').PickerEntry[]>;
+  resume?: (id: string) => Promise<void>;
+  attach?: (input: string) => string;
+  runChangeCommand?: (line: string) => Promise<string>;
   runProcessCommand?: (line: string) => Promise<ProcessCommandResult>;
   /** Model/effort control backed by the router and AgentLoop. */
   model?: TuiModelController;
@@ -73,6 +78,9 @@ export class TuiSession {
   private readonly runTurn: (text: string, signal: AbortSignal) => Promise<TurnResult>;
   private readonly runLocalCommand: TuiLocalCommandRunner | undefined;
   private readonly runProcessCommand: TuiSessionOptions['runProcessCommand'];
+  private readonly extra: Pick<TuiSessionOptions, 'listFiles' | 'listSessions' | 'resume'>;
+  private readonly attach: TuiSessionOptions['attach'];
+  private readonly runChangeCommand: TuiSessionOptions['runChangeCommand'];
   private processCommand: Promise<void> | undefined;
   private readonly model: TuiModelController | undefined;
   private readonly permissions: TuiPermissionController | undefined;
@@ -102,11 +110,14 @@ export class TuiSession {
 
   constructor(options: TuiSessionOptions) {
     this.app = options.app;
+    this.extra = options;
     this.session = options.session;
     this.tips = options.tips ?? DEFAULT_TIPS;
     this.runTurn = options.runTurn;
     this.runLocalCommand = options.runLocalCommand;
     this.runProcessCommand = options.runProcessCommand;
+    this.runChangeCommand = options.runChangeCommand;
+    this.attach = options.attach;
     this.model = options.model;
     this.permissions = options.permissions;
     this.onClear = options.onClear;
@@ -234,10 +245,14 @@ export class TuiSession {
         ...(request.action.command === undefined ? {} : { command: request.action.command }),
         ...(request.action.cwd === undefined ? {} : { cwd: request.action.cwd }),
         ...(request.action.network === undefined ? {} : { network: request.action.network }),
+        ...(request.action.networkScope === undefined ? {} : { networkScope: request.action.networkScope }),
+        ...(request.action.additionalPermissions === undefined ? {} : { additionalPermissions: request.action.additionalPermissions }),
+        ...(request.action.prefixRule === undefined ? {} : { prefixRule: request.action.prefixRule }),
       },
       ...(request.reason === undefined ? {} : { reason: request.reason }),
       risk: request.risk,
       allowPrefix,
+      onceOnly: request.action.networkScope !== undefined || request.action.additionalPermissions !== undefined,
     };
 
     await this.session.append({
@@ -341,9 +356,15 @@ export class TuiSession {
   handleCommand(command: UiCommand): void {
     if (this.exiting) return;
     switch (command.type) {
+      case 'files':
+        void this.openPicker('file'); return;
+      case 'pick':
+        if (command.purpose === 'session') void this.resumeSession(command.value);
+        else { this.app.addNotice(this.attach?.(JSON.stringify(command.value) + (command.range ? ' ' + command.range : '')) ?? 'Attachments unavailable.'); this.render(); }
+        return;
       case 'submit':
         // TuiApp already appended the user cell before returning this command.
-        if (this.active !== undefined || this.localActive !== undefined || this.changingModel) {
+        if (this.active !== undefined || this.localActive !== undefined || this.changingModel || this.processCommand !== undefined || this.clearing) {
           this.app.enqueue(command.text, true);
           this.render();
           return;
@@ -364,6 +385,7 @@ export class TuiSession {
         this.resolveApproval(command.decision);
         return;
       case 'resume':
+        void this.resumeSession(command.sessionId); return;
       case 'fork':
         this.app.addNotice('This overlay is not available in this build.', 'warning');
         this.render();
@@ -396,6 +418,18 @@ export class TuiSession {
     if (line === '/tips') {
       this.app.openTips(this.tips);
       this.render();
+      return;
+    }
+    if (line === '/resume') { void this.openPicker('session'); return; }
+    if (line.startsWith('/resume ')) { void this.resumeSession(line.slice(8).trim()); return; }
+    if (line.startsWith('/attach ')) {
+      if (this.active || this.localActive) { this.app.addNotice('Attach files while idle.', 'warning'); this.render(); return; }
+      try { this.app.addNotice(this.attach?.(line.slice(8)) ?? 'Attachments unavailable.'); } catch (error) { this.app.addNotice(String(error), 'error'); }
+      this.render(); return;
+    }
+    if (line === '/changes' || line.startsWith('/undo ')) {
+      if (this.active || this.localActive || this.processCommand || this.clearing) { this.app.addNotice('Wait until the session is idle.', 'warning'); this.render(); return; }
+      this.processCommand = Promise.resolve().then(() => this.runChangeCommand?.(line) ?? 'Changes unavailable.').then(text => { this.app.addNotice(text); }).catch(error => { this.app.addNotice(String(error), 'error'); }).finally(() => { this.processCommand = undefined; this.render(); if (this.exiting) this.finish(); else this.drainQueue(); });
       return;
     }
     if (line === '/session') {
@@ -721,6 +755,22 @@ export class TuiSession {
     await this.runPrompt(text);
   }
 
+  private async openPicker(purpose: 'file' | 'session'): Promise<void> {
+    if (this.active || this.localActive || this.processCommand || this.clearing) { this.app.addNotice('Wait until idle.', 'warning'); this.render(); return; }
+    try {
+      const entries = await (purpose === 'file' ? this.extra.listFiles?.() : this.extra.listSessions?.());
+      if (entries) this.app.openPicker(purpose, entries);
+    } catch (error) { this.app.addNotice(String(error), 'error'); }
+    this.render();
+  }
+  private async resumeSession(id: string): Promise<void> {
+    if (this.active || this.localActive || this.processCommand || this.clearing || this.changingModel) { this.app.addNotice('Wait until idle.', 'warning'); this.render(); return; }
+    this.changingModel = true;
+    try { await this.extra.resume?.(id); }
+    catch (error) { this.app.addNotice(String(error), 'error'); }
+    finally { this.changingModel = false; this.render(); }
+  }
+
   private async runPrompt(text: string): Promise<void> {
     if (this.exiting) return;
     const controller = new AbortController();
@@ -728,6 +778,7 @@ export class TuiSession {
     try {
       await this.runTurn(text, controller.signal);
     } catch (error) {
+      this.app.restoreDraft(text);
       if (this.app.status.state === 'working' || this.app.status.state === 'awaiting') {
         this.app.failTurn(error instanceof Error ? error.message : String(error));
       } else {
@@ -756,7 +807,7 @@ export class TuiSession {
 
   /** Run the next queued prompt once the turn/local command has settled. */
   private drainQueue(): void {
-    if (this.exiting || this.active !== undefined || this.localActive !== undefined || this.changingModel) return;
+    if (this.exiting || this.active !== undefined || this.localActive !== undefined || this.changingModel || this.processCommand !== undefined || this.clearing) return;
     const queued = this.app.dequeue();
     if (queued === undefined) return;
     this.render();

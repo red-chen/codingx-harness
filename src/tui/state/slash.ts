@@ -14,6 +14,10 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: '/queue', description: 'show queued prompts' },
   { name: '/quit', description: 'exit codingx' },
   { name: '/tips', description: 'select a tip to fill the input' },
+  { name: '/attach', description: 'attach file lines or a PNG/JPEG/WebP image' },
+  { name: '/resume', description: 'select an idle session in this workspace' },
+  { name: '/changes', description: 'list file-tool checkpoints' },
+  { name: '/undo', description: 'preview and confirm undo by turn id' },
 ];
 
 /** Matches the 8-row slash menu budget in docs/tui.md. */

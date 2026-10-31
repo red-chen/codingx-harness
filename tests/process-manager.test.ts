@@ -117,3 +117,28 @@ describe('ProcessManager', () => {
     await expect(pm.close()).rejects.toThrow('disk failed');
   });
 });
+
+it('supports pipe stdin and EOF with input metadata only', async()=>{
+  const audit:unknown[]=[]; const pm=manager({onInput:async e=>{audit.push(e);}});
+  const started=await pm.start({...node(`process.stdin.setEncoding('utf8'); let text=''; process.stdin.on('data',s=>text+=s); process.stdin.on('end',()=>console.log('RECEIVED:'+text));`),stdin:true});
+  await pm.write(started.processId,{text:'hello input'});await pm.write(started.processId,{eof:true});
+  expect((await pm.read(started.processId,0,8000,3000)).output).toContain('RECEIVED:hello input');
+  expect(JSON.stringify(audit)).not.toContain('hello input');expect(audit).toMatchObject([{operation:'text',bytes:11},{operation:'eof',bytes:0}]);
+});
+it.skipIf(process.platform!=='darwin')('real PTY supports input, resize, interrupt and EOF',async()=>{
+  const pm=manager();
+  const started=await pm.start({command:`stty -echo; printf 'READY\\n'; read value; printf 'GOT:%s\\n' "$value"; stty size; cat`,cwd:process.cwd(),env:buildChildEnv(['PATH','HOME'],process.env),pty:true});
+  expect(started.state,started.error).toBe('running');await outputContaining(pm,started.processId,/READY/);
+  await pm.write(started.processId,{cols:120,rows:40});await pm.write(started.processId,{text:'hello\n'});
+  await outputContaining(pm,started.processId,/GOT:hello[\s\S]*40 120/);
+  await pm.write(started.processId,{eof:true});await expect.poll(async()=> (await pm.read(started.processId)).process.state).toBe('exited');
+  const second=await pm.start({command:'stty -echo; printf READY; sleep 30',cwd:process.cwd(),env:buildChildEnv(['PATH','HOME'],process.env),pty:true});
+  await outputContaining(pm,second.processId,/READY/);await pm.write(second.processId,{interrupt:true});
+  await expect.poll(async()=> (await pm.read(second.processId)).process.state).toBe('exited');
+});
+it('filters terminal controls across chunks and rejects recognized credentials',async()=>{
+  const pm=manager();
+  const started=await pm.start({...node(`process.stdout.write('safe\\x1b]52;c;');setTimeout(()=>{process.stdout.write('evil\\x07done\\x1b[2J');},10);process.stdin.resume();`),stdin:true});
+  const output=await outputContaining(pm,started.processId,/safedone/);expect(output).not.toContain('evil');expect(output).not.toContain('\x1b');
+  await expect(pm.write(started.processId,{text:'sk-ant-'+'x'.repeat(30)})).rejects.toThrow(/credentials/);
+});

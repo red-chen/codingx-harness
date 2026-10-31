@@ -20,6 +20,7 @@ import type { StyledTextLine, WelcomeCardOptions } from './welcome.js';
 import { drawStyledLine, welcomeCardStyledLines } from './welcome.js';
 import { renderMarkdown } from './markdown.js';
 import { formatElapsed, formatTokenCount } from './status.js';
+import { appendPluginText } from './plugin-text.js';
 
 /**
  * Virtualized transcript viewport.
@@ -337,13 +338,17 @@ export function buildTurnSummaryLines(cell: TurnSummaryCell, width: number): Sty
     + ' ↓' + formatTokenCount(cell.usage.outputTokens)
     + ' C' + formatTokenCount(cell.usage.cacheReadTokens + cell.usage.cacheCreationTokens)
     + ' · ' + outputTokenRate(cell);
-  return wrapText(summary, Math.max(1, width - 4)).map((text, index) => ({
+  const lines = wrapText(summary, Math.max(1, width - 4)).map((text, index) => ({
     segments: [
       { text: '  ', style: MUTED },
       { text: index === 0 ? icon + ' ' : '  ', style },
       { text, style: MUTED },
     ],
   }));
+  if (!cell.pluginView) return lines;
+  const decorated = appendPluginText(lines, cell.pluginView.segments, width);
+  for (const detail of cell.pluginView.details ?? []) decorated.push(...appendPluginText([], detail.segments, width));
+  return decorated;
 }
 
 const PLAN_MARKERS: Record<string, string> = {

@@ -273,6 +273,8 @@ describe('codingx exec end-to-end', () => {
       'ProcessStop',
       'Skill',
       'AskUserQuestion',
+      'WebFetch',
+      'ProcessWrite',
     ]);
     expect((firstBody.system as Array<{ cache_control?: unknown }>)[0]?.cache_control).toBeDefined();
     const lastMessages = server.bodies[3]?.messages as Array<{ role: string; content: unknown[] }>;
@@ -790,6 +792,7 @@ command = "printf ended > hook-end.txt"
       'turn.started',
       'context.updated',
       'text.delta',
+      'usage.recorded',
       'llm.finished',
       'usage.updated',
       'turn.finished',
@@ -855,6 +858,53 @@ describe('CLI parsing', () => {
 
 
 describe('managed process CLI lifecycle', () => {
+  it.skipIf(process.platform !== 'darwin')('retries a sandbox denial with scoped approval and records the full lifecycle', async () => {
+    const responses: string[] = [];
+    const server = await startServer(responses);
+    const { home, workspace } = await setupWorkspace(server.url);
+    const command = 'printf retried > ./scoped-output.txt';
+    responses.push(toolResponse('first', 'Shell', { command }),
+      toolResponse('retry', 'Shell', { command, sandbox_permissions: 'require_escalated', justification: 'Write only this workspace output.', additional_permissions: { filesystem: { write: [workspace] } } }),
+      textResponse('Completed after scoped approval.'));
+    const stdin = new PassThrough(); stdin.end('write the output\na\na\n/quit\n');
+    const stdout = new MemorySink(); const stderr = new MemorySink();
+    expect(await runCli(['--cd', workspace, '--sandbox', 'read-only', '--plain'], { stdin, env: envFor(home, workspace), stdout, stderr })).toBe(0);
+    expect(await readFile(path.join(workspace, 'scoped-output.txt'), 'utf8')).toBe('retried');
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const sessions = await store.listSessions();
+    const events = await store.replaySession(sessions[0]!.id);
+    expect(events.some((e) => e.type === 'sandbox.denied')).toBe(true);
+    expect(events.filter((e) => e.type === 'approval.requested')).toHaveLength(2);
+    expect(events.find((e) => e.type === 'approval.requested' && e.callId === 'retry')).toMatchObject({ action: { additionalPermissions: { filesystem: { write: [await realpath(workspace)] } } } });
+    expect(events.find((e) => e.type === 'permission.decision' && e.callId === 'retry')).toMatchObject({ verdict: 'allow' });
+    expect(events.some((e) => e.type === 'permission.granted')).toBe(false);
+    expect(JSON.stringify(server.bodies[1])).toContain('SANDBOX_DENIED');
+  });
+
+  it.each(['a', 'd'])('asks for local networking in the default plain CLI and honors %s', async (answer) => {
+    const server = await startServer([
+      toolResponse('start', 'ProcessStart', { command: '/usr/bin/python3 -u -m http.server 0 --bind 127.0.0.1' }),
+      textResponse('Done.'),
+    ]);
+    const { home, workspace } = await setupWorkspace(server.url);
+    const stdin = new PassThrough();
+    stdin.end('start a local server\n' + answer + '\n/quit\n');
+    const stdout = new MemorySink();
+    const stderr = new MemorySink();
+    expect(await runCli(['--cd', workspace], { stdin, env: envFor(home, workspace), stdout, stderr })).toBe(0);
+    expect(stdout.value + stderr.value).toContain('Allow local networking');
+    expect(stdout.value + stderr.value).not.toContain('[s]ession');
+    const store = new EmbeddedSessionStore({ directory: path.join(home, 'sessions') });
+    const sessions = await store.listSessions();
+    const events = await store.replaySession(sessions[0]!.id);
+    expect(events.find((event) => event.type === 'approval.requested')).toMatchObject({ action: { networkScope: 'local' } });
+    const states = events.filter((event) => event.type === 'process.state');
+    if (answer === 'a') expect(states.find((event) => (event.process as { state: string }).state === 'running'))
+      .toMatchObject({ process: { sandbox: { network: 'local', kind: 'seatbelt' } } });
+    else expect(states).toHaveLength(0);
+    expect(events.some((event) => event.type === 'permission.granted' || event.type === 'permission.profile_changed')).toBe(false);
+  });
+
   it('cleans processes before ending a non-interactive session', async () => {
     const server = await startServer([
       toolResponse('start', 'ProcessStart', { command: 'sleep 60' }),

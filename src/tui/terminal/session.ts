@@ -273,6 +273,8 @@ export function createProcessTerminalIO(options: ProcessTerminalIOOptions = {}):
     onData(listener: (chunk: string | Uint8Array) => void): Disposer {
       const handler = (chunk: Buffer): void => listener(chunk);
       stdin.on('data', handler);
+      // Switching sessions reuses a stream paused by the previous runtime.
+      stdin.resume();
       return () => {
         stdin.off('data', handler);
         // A resumed TTY stream otherwise keeps the process alive after the TUI exits.

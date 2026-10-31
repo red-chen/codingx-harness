@@ -72,7 +72,7 @@ export async function createSandboxBackend(options: SandboxBackendOptions = {}):
 export function sandboxSummary(status: SandboxStatus, policy: SandboxPolicy): {
   kind: string;
   active: boolean;
-  network: 'deny' | 'allow' | 'none' | 'local';
+  network: 'deny' | 'allow' | 'none' | 'local' | 'proxy';
   required: boolean;
   reason?: string;
 } {
@@ -80,7 +80,7 @@ export function sandboxSummary(status: SandboxStatus, policy: SandboxPolicy): {
   return {
     kind: status.kind,
     active,
-    network: !active ? 'none' : networkMode(policy.network) === 'local' ? 'local' : networkMode(policy.network) === 'all' ? 'allow' : 'deny',
+    network: !active ? 'none' : networkMode(policy.network) !== 'none' && Object.keys(policy.network.domains).length > 0 ? 'proxy' : networkMode(policy.network) === 'local' ? 'local' : networkMode(policy.network) === 'all' ? 'allow' : 'deny',
     required: status.required,
     ...(active ? {} : { reason: status.reason ?? 'the selected profile disables OS sandboxing' }),
   };

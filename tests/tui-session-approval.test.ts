@@ -75,6 +75,27 @@ function notices(app: TuiApp): string[] {
 }
 
 describe('TuiSession approval and grants', () => {
+  it.each(['session', 'prefix'] as const)('does not reuse a %s command grant for a local-network exception', async (scope) => {
+    const { app, controller, session } = makeController();
+    const request = shellRequest('python3 -m http.server');
+    const ordinary = controller.approve(request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.handleCommand({ type: 'approval', decision: { decision: 'allow', scope } });
+    await ordinary;
+    const local = { ...request, action: { ...request.action, networkScope: 'local' as const } };
+    const pending = controller.approve(local);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(app.state.approval?.request).toMatchObject({ onceOnly: true, allowPrefix: false });
+    controller.handleCommand({ type: 'approval', decision: { decision: 'allow', scope: 'once' } });
+    await pending;
+    const again = controller.approve(local);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(app.mode).toBe('approval');
+    controller.handleCommand({ type: 'approval', decision: { decision: 'deny' } });
+    await again;
+    expect(session.events.filter((event) => event.type === 'permission.granted')).toHaveLength(1);
+  });
+
   it('shows the panel, records audit events, and grants the session scope', async () => {
     const { app, controller, session } = makeController();
     const pending = controller.approve(shellRequest());

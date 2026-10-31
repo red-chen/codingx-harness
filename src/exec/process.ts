@@ -193,6 +193,7 @@ export async function runShellCommand(request: ExecRequest): Promise<ExecResult>
     });
 
     child.on('close', (code, signal) => {
+      if (request.cleanupProcessGroup) terminate(child, 'SIGKILL');
       stdout.push(stdoutDecoder.end());
       stderr.push(stderrDecoder.end());
       finish({

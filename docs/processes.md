@@ -2,7 +2,7 @@
 
 本次将 M5 的长驻进程管理提前拆出实现，采用 `ProcessManager` 与
 `ProcessStart / ProcessList / ProcessRead / ProcessStop`，替代原计划的
-`ShellInteractive` 基础能力。PTY、stdin 交互、自动重启和跨 CLI 托管仍不在本次范围。
+`ShellInteractive` 基础能力。PTY 与 stdin 已由 P0–P2 增量实现；自动重启和跨 CLI 托管仍不在本次范围。
 
 ## 接入任务
 
@@ -46,7 +46,7 @@ TUI 支持 `/pro` + Tab 补全，并可在模型执行期间查看或停止已�
 
 | 工具 | 入参 | 返回 |
 | --- | --- | --- |
-| ProcessStart | command、可选 cwd / description | processId、state、pid 等快照 |
+| ProcessStart | command、可选 cwd / description / network（inherit 或 local） | processId、state、pid 等快照 |
 | ProcessList | 无 | 当前 CLI 会话中的进程快照 |
 | ProcessRead | process_id、可选 cursor / max_chars / wait_ms | process、output、nextCursor、truncated |
 | ProcessStop | process_id | 进程组回收后的快照；重复停止安全 |
@@ -62,8 +62,14 @@ stdout/stderr 按接收顺序合并；truncated 表示游标之前的日志已�
 停止先向进程组发 SIGTERM，1 秒后对仍存活的组升级为 SIGKILL。
 shell 主进程自然退出时也回收组内后代，即使后代已重定向 stdout/stderr。
 
-网络权限沿用当前 profile；默认网络 deny 时，HTTP server 可能无法监听，
-需使用允许网络的 profile。ProcessStart 返回 running 后应读取日志并验证服务就绪。
+默认配置下，Python HTTP server、Vite、`npm run dev` 等常见服务会自动请求本机网络审批；
+用户同意后启动，无需切换 profile。其他服务可用 `network: "local"` 显式申请；
+`network: "inherit"` 表示只沿用 profile，不自动申请。
+审批仅允许本次执行及其进程组使用本机网络，直到进程退出；不保存为 session / prefix 授权，
+不改变文件隔离及后续命令的网络策略。拒绝、无审批入口或 approval_policy = "never" 时不启动。
+例如 `python3 -u -m http.server 8000 --bind 127.0.0.1`；`-u` 使启动日志即时可读。
+Seatbelt 的 localhost 包含本机网卡地址，并不能阻止通配监听；务必显式绑定 127.0.0.1 / ::1。
+ProcessStart 返回 running 后应读取日志并验证服务就绪。
 已有进程保留启动时的沙箱权限，切换 profile 不会动态改变它；需要停止后重新启动。
 
 生命周期事件为 `process.state`，包含进程快照，通过 SessionStore 单写者追加。
@@ -71,3 +77,19 @@ shell 主进程自然退出时也回收组内后代，即使后代已重定向 s
 plain/exec 无 SIGTERM 处理器时安装回收处理器，进程 exit 钩子提供同步强制回收。
 CLI 遭 SIGKILL、系统崩溃或子程序自行脱离进程组时无法保证回收；本版不声称提供
 跨崩溃监管，也不会在 resume 时仅凭旧 PID 杀进程。
+
+
+## PTY 与输入
+
+`ProcessStart` 可传 `pty: true`（默认 80×24）、`cols`、`rows`。非 PTY 默认 stdin 关闭，`stdin: true` 保持管道可写；也可传初始字符串。`ProcessWrite` 在 `text`、`eof`、`interrupt`、`cols`+`rows` 中选择一项。文字不自动附加换行，模型可用 `text: "hello\n"`；本地 `/process send` 在文本末尾补一个换行以提交终端输入。
+
+```text
+/process send <id> <text>
+/process eof <id>
+/process interrupt <id>
+/process resize <id> 120 40
+```
+
+管道 EOF 关闭 stdin；PTY EOF 发送 Ctrl+D，语义由终端应用决定。interrupt 向终端发送 Ctrl+C（管道为 SIGINT），区别于 stop 的 TERM→KILL 回收。PTY 合并 stdout/stderr；控制序列跨块过滤，输出仍脱敏。已识别的凭证输入被拒绝，不提供密码输入通道；输入审计只保留操作和字节数。
+
+原生依赖 `node-pty` 外置，npm 安装脚本针对其 macOS spawn-helper 修复已知执行位遗漏。原生模块/启动失败明确报错，不退回无沙箱 shell。macOS Seatbelt wrapper、按次权限和代理清理路径保持一致。resume 不重建旧进程句柄。

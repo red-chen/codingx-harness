@@ -44,7 +44,7 @@ async function loadGitignore(root: string): Promise<IgnoreMatcher | undefined> {
   }
 }
 
-export const globTool: ToolDef<typeof schema> = {
+export function createGlobTool(maxEntries = MAX_ENTRIES): ToolDef<typeof schema> { return {
   name: 'Glob',
   description:
     'Find files by file-name/path pattern inside the workspace or an --add-dir root, for example "**/*.ts" or "src/**/test-*.js". ' +
@@ -114,9 +114,9 @@ export const globTool: ToolDef<typeof schema> = {
 
     candidates.sort((left, right) => right.mtimeMs - left.mtimeMs || comparePaths(left.path, right.path));
 
-    const truncated = candidates.length > MAX_ENTRIES;
-    const shown = candidates.slice(0, MAX_ENTRIES);
-    const meta = { pattern: input.pattern, path: resolved.relative, count: shown.length, truncated };
+    const truncated = candidates.length > maxEntries;
+    const shown = candidates.slice(0, maxEntries);
+    const meta = { paths: shown.map(entry => entry.path), pattern: input.pattern, path: resolved.relative, count: shown.length, truncated };
 
     if (shown.length === 0) {
       const where = resolved.relative === '.' ? 'the workspace root' : resolved.relative;
@@ -139,3 +139,5 @@ export const globTool: ToolDef<typeof schema> = {
     };
   },
 };
+}
+export const globTool = createGlobTool();

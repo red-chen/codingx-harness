@@ -329,7 +329,7 @@ Slash 补全浮在 composer 上方，最多 8 行；命令 + 一句描述，支�
 ## 非目标
 
 - 不做登录、认证、配置、设置页、主题选择器、可配置键位；模型与 effort 切换使用 `/model` 面板。
-- 不做 pets、plugins、voice、图片、side conversation、多 Agent 面板。
+- 不做 pets、通用插件界面/市场、voice、图片、side conversation、多 Agent 面板。StatusBar Plugin 的有限扩展协议已作为增量实现，见 [plugins.md](plugins.md)。
 - 主屏幕重绘不发送 ED2（整屏清除），避免 iTerm2 将清屏前的旧视口混入历史。
 - 原生 scrollback 已接入主屏幕；历史行的重排由终端处理，当前视口由 TUI 重绘。`Ctrl+T` 仍可查看应用内完整历史。
 - `/clear` 清除应用会话与视口，不擦除终端已保存的原生 scrollback。
@@ -340,3 +340,12 @@ Slash 补全浮在 composer 上方，最多 8 行；命令 + 一句描述，支�
 连续的 `Read`、`Grep`、`Glob`、`ListDir` 聚合为一个 `Explored` 块；运行中显示 `Exploring`。每次调用展示 Read/Search/List 摘要，搜索含 pattern 与 path。写操作、Shell 与其他消息会分隔探索块。折叠时最多显示最近 3 条探索摘要，并标明隐藏数量与失败数量；展开后显示全部调用及原始结果。Shell 折叠预览移除结果信封元数据，最多显示 3 个屏幕行（包括换行），完整结果可用 Ctrl+O 查看。`Ctrl+O` 打开历史视图并展开探索结果，再按切换收起，Esc 返回主界面；详情仅影响显示，不改写 rollout。
 
 运行中提交的消息先显示在队列预览，紧接状态行，无空白行；当前 step 的模型输出和工具调用结束后，在下一次模型请求前整批移入 Transcript 与模型上下文，并逐条通过 SessionStore 记录。消费队列不会清空正在编辑的草稿。
+
+
+## P0–P2 当前交互
+
+空闲输入 `@` 打开文件搜索；输入路径片段过滤，尾部 `:10:30` 选择行段，Enter 将选择存为结构化附件，Esc 保留草稿。`/attach <path> [start:end]` 同样可用，空格路径可加引号。图片发送时显示名称和字节数，不在终端画图。读取失败保留附件和草稿；plain 可用 `/retry` 重试草稿，`/attach --clear` 只清空待发送附件。
+
+`/resume` 打开当前真实 cwd 的会话选择器，搜索标题/ID，显示状态、更新时间和最近消息；活动/ended 会话不可选。目标写租约获取失败不清理当前会话；切换成功丢弃旧草稿/附件并回收旧进程。plain 使用 `/resume <id>`。
+
+`/changes` 显示专用文件工具检查点；`/undo <turn-id> [path]` 先预览，再重复并加 `--confirm`。两者仅空闲可用。撤销追加审计并在下一轮告知模型，不回退对话。

@@ -129,6 +129,7 @@ function aborted(decision: PolicyDecision | undefined): LocalCommandOutcome {
 /** Run one '!command' through policy, optional approval, sandbox and exec. */
 export async function runLocalCommand(options: LocalCommandOptions): Promise<LocalCommandOutcome> {
   let decision: PolicyDecision | undefined;
+  let approvedNetwork: 'local' | undefined;
   if (options.policy !== undefined) {
     decision = await options.policy.evaluate('Shell', { command: options.command });
     if (decision.verdict === 'ask') {
@@ -153,6 +154,10 @@ export async function runLocalCommand(options: LocalCommandOptions): Promise<Loc
           decision,
         );
       }
+      if (decision.action.networkScope === 'local') {
+        if (answer.scope !== 'once') return failure('Local network exceptions require allow-once approval.', 'PERMISSION_DENIED', decision);
+        approvedNetwork = 'local';
+      }
       decision = { ...decision, verdict: 'allow', code: undefined, rule: 'approval.' + answer.scope };
     } else if (decision.verdict === 'deny') {
       return failure(denialMessage(decision), decision.code ?? 'PERMISSION_DENIED', decision);
@@ -167,6 +172,7 @@ export async function runLocalCommand(options: LocalCommandOptions): Promise<Loc
       timeoutMs: options.timeoutMs,
       env: options.env,
       maxOutputChars: options.maxOutputChars,
+      approvedNetwork,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(options.policy === undefined ? {} : { policy: options.policy }),
       ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),

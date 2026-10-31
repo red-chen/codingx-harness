@@ -280,6 +280,34 @@ describe('TuiRuntime', () => {
     runtime.stop();
   });
 
+  it('waits for summary decoration before archiving its rows, without duplicating later history', async () => {
+    const terminal = new xterm.Terminal({ cols: 80, rows: 24, scrollback: 10000, allowProposedApi: true });
+    const io = new FakeIO();
+    const app = makeApp();
+    app.enableTurnSummaryPlugin();
+    app.addNotice('BEFORE_SUMMARY');
+    app.handleEvent({ type: 'turn.finished', turnId: 't1', status: 'done', usage: EMPTY_USAGE, durationMs: 1 });
+    const summary = app.state.transcript.find((cell) => cell.type === 'turn')!;
+    for (let i = 0; i < 40; i++) app.addNotice('AFTER_' + String(i).padStart(3, '0'));
+    const runtime = makeRuntime(app, io, [], []);
+    const drain = async () => { await new Promise<void>((resolve) => terminal.write(io.writes.splice(0).join(''), resolve)); };
+    runtime.start();
+    await drain();
+    app.resolveTurnSummaryPlugin(summary.id, app.state.transcriptGeneration, {
+      version: 1, segments: [{ text: ' · COST_TOTAL' }], details: [{ segments: [{ text: 'FEE_BREAKDOWN' }] }],
+    });
+    runtime.render(true);
+    await drain();
+    const lines = Array.from({ length: terminal.buffer.active.length }, (_, i) => terminal.buffer.active.getLine(i)?.translateToString(true) ?? '');
+    const output = lines.join('\n');
+    expect(output.split('BEFORE_SUMMARY')).toHaveLength(2);
+    expect(output.split('COST_TOTAL')).toHaveLength(2);
+    expect(output.split('FEE_BREAKDOWN')).toHaveLength(2);
+    expect(lines.flatMap((line) => line.match(/AFTER_\d+/g) ?? [])).toEqual(Array.from({ length: 40 }, (_, i) => 'AFTER_' + String(i).padStart(3, '0')));
+    expect(app.transcriptText()).toContain('FEE_BREAKDOWN');
+    runtime.stop(); terminal.dispose();
+  });
+
   it.each([0, 40])('starts scrollback at welcome and preserves history with %i restored rows', async (restoredRows) => {
     const terminal = new xterm.Terminal({ cols: 80, rows: 24, scrollback: 10000, allowProposedApi: true });
     await new Promise<void>((resolve) => terminal.write(

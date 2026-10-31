@@ -140,7 +140,8 @@ function dropMiddle(messages: readonly Message[], keepRecentMessages: number): D
   const keep = Math.max(0, keepRecentMessages);
   const requestedTailStart = Math.max(prefixEnd, messages.length - keep);
   const tailStart = alignTailStart(messages, requestedTailStart, prefixEnd);
-  const next = [...messages.slice(0, prefixEnd), ...messages.slice(tailStart)];
+  const prefix = messages.slice(0, prefixEnd).map(message => message.content.some(block => block.type === 'image') ? ({ ...message, content: message.content.map((block): ContentBlock => block.type === 'image' ? { type: 'text', text: '[Earlier image omitted: ' + block.name + ']' } : block) }) : message);
+  const next = [...prefix, ...messages.slice(tailStart)];
   const dropped = messages.slice(prefixEnd, tailStart);
   return { messages: next, dropped, droppedMessages: dropped.length };
 }

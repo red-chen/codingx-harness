@@ -1,3 +1,4 @@
+import { OBJECT_CHUNK_BYTES, type ObjectRef } from '../session/objects.js';
 import { randomUUID } from 'node:crypto';
 import {
   deriveSessionStatus,
@@ -283,6 +284,26 @@ export class SessiondRegistry {
       clearTimeout(lease.timer);
       lease.timer = this.leaseTimer(record.id, lease.id);
       return { ok: true, expiresAt: new Date(lease.expiresAt).toISOString() };
+    });
+  }
+
+  async objectChunk(clientId: string, sessionId: string, operation: { data: string; leaseId: string } | { hash: string; size: number }): Promise<unknown> {
+    return this.runExclusive(async () => {
+      const record = await this.ensureRecord(sessionId);
+      if ('data' in operation) {
+        const writer = record.writer;
+        if (!writer || writer.clientId !== clientId || writer.id !== operation.leaseId || writer.expiresAt <= Date.now() || !record.handle || record.status === 'ended') throw new SessiondRpcError('LEASE_REVOKED', 'Object write requires the current lease.');
+        if (operation.data.length > Math.ceil(OBJECT_CHUNK_BYTES / 3) * 4) throw new SessiondRpcError('LIMIT_EXCEEDED', 'Object chunk too large.');
+        const bytes = Buffer.from(operation.data, 'base64');
+        if (bytes.length > OBJECT_CHUNK_BYTES || bytes.toString('base64') !== operation.data) throw new SessiondRpcError('INVALID_PARAMS', 'Invalid object chunk.');
+        return record.handle.putObject!(bytes);
+      }
+      if (!/^[a-f0-9]{64}$/.test(operation.hash)) throw new SessiondRpcError('INVALID_PARAMS', 'Invalid hash.');
+      const handle = record.handle ?? await this.store.attachSession(record.id, 'read');
+      try {
+        const ref: ObjectRef = { sha256: operation.hash, size: operation.size, chunks: [operation.hash] };
+        return (await handle.getObject!(ref)).toString('base64');
+      } finally { if (handle !== record.handle) await handle.close(); }
     });
   }
 

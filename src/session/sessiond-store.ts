@@ -1,3 +1,4 @@
+import { getObject, putObject, type ObjectRef } from './objects.js';
 import type {
   AppendEventInput,
   CreateSessionOptions,
@@ -74,6 +75,20 @@ class RemoteSessionHandle implements SessionHandle {
     this.leaseId = options.leaseId;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs;
     if (this.writable && this.leaseId) this.startHeartbeat();
+  }
+
+  async putObject(bytes: Uint8Array): Promise<ObjectRef> {
+    if (!this.writable || this.closed || this.ended) throw new SessionError('Object write requires an active writer.');
+    return putObject(bytes, async (_hash, chunk) => {
+      await this.client.request('session.object.put', { sessionId: this.id, leaseId: this.leaseId, data: chunk.toString('base64') });
+    });
+  }
+
+  async getObject(ref: ObjectRef): Promise<Buffer> {
+    return getObject(ref, async (hash, index) => {
+      const data = await this.client.request<string>('session.object.get', { sessionId: this.id, hash, size: Math.min(256 * 1024, ref.size - index * 256 * 1024) });
+      return Buffer.from(data, 'base64');
+    });
   }
 
   async append(events: AppendEventInput | AppendEventInput[]): Promise<RolloutEvent[]> {

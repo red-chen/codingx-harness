@@ -66,7 +66,9 @@ export async function resolveWorkspacePath(
   const access = options.access ?? 'read';
   const { workspaceRoot, roots } = await allowedRoots(ctx, access);
   const absolute = path.resolve(ctx.cwd, expandHome(input));
+  if (access === 'write') ctx.readTracker.assertUnchanged(absolute);
   const canonical = await canonicalizePath(absolute);
+  if (access === 'write') ctx.readTracker.assertUnchanged(canonical);
 
   if (ctx.policy?.isPathDenied(canonical) === true) {
     throw new ToolError('Path is denied by the permission profile: ' + input + '.');

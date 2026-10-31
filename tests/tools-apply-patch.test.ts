@@ -274,7 +274,7 @@ describe('ApplyPatch', () => {
     expect(await readFile(escaped, 'utf8')).toBe('escaped\n');
   });
 
-  it('rejects renames, deletions and no-newline markers', async () => {
+  it('rejects renames and no-newline markers, supports deletion', async () => {
     await put('old.txt', 'old\n');
     await read('old.txt');
 
@@ -306,8 +306,10 @@ describe('ApplyPatch', () => {
       },
       ctx,
     );
-    expect(deletion.isError).toBe(true);
-    expect(deletion.content).toMatch(/delet/i);
+    expect(deletion.isError).toBeUndefined();
+    await expect(readText('old.txt')).rejects.toThrow();
+    await put('old.txt', 'old\n');
+    await read('old.txt');
 
     const noNewline = await registry.execute(
       'ApplyPatch',

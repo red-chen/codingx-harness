@@ -1,3 +1,6 @@
+import path from 'node:path';
+import { fileVersion } from './read-tracker.js';
+import { expandHome } from '../util/paths.js';
 import { readFile, stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { ToolError } from '../util/errors.js';
@@ -43,7 +46,9 @@ export const readFileTool: ToolDef<typeof schema> = {
       );
     }
 
+    const version = fileVersion(path.resolve(ctx.cwd, expandHome(input.path)));
     const buffer = await readFile(resolved.absolute);
+    if (fileVersion(resolved.absolute, buffer).sha256 !== version.sha256) throw new ToolError('File changed while reading; retry Read.');
     if (buffer.subarray(0, 8192).includes(0)) {
       throw new ToolError('File appears to be binary: ' + input.path + '.');
     }
@@ -64,12 +69,12 @@ export const readFileTool: ToolDef<typeof schema> = {
       }
     }
 
-    ctx.readTracker.markRead(resolved.absolute);
+    ctx.readTracker.markRead(path.resolve(ctx.cwd, expandHome(input.path)), version);
 
     if (lines.length === 0) {
       return {
         content: 'File ' + rel + ' is empty (0 lines).',
-        meta: { path: rel, totalLines: 0, offset, returnedLines: 0 },
+        meta: { version, path: rel, totalLines: 0, offset, returnedLines: 0 },
       };
     }
 
@@ -77,7 +82,7 @@ export const readFileTool: ToolDef<typeof schema> = {
       return {
         content:
           'File ' + rel + ' has ' + lines.length + ' line(s); offset ' + offset + ' is past the end of the file.',
-        meta: { path: rel, totalLines: lines.length, offset, returnedLines: 0 },
+        meta: { version, path: rel, totalLines: lines.length, offset, returnedLines: 0 },
       };
     }
 
@@ -94,6 +99,7 @@ export const readFileTool: ToolDef<typeof schema> = {
     return {
       content: body + more,
       meta: {
+        version,
         path: rel,
         totalLines: lines.length,
         offset,

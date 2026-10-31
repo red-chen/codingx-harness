@@ -79,7 +79,20 @@ export function buildApprovalPanel(state: TuiApprovalState, width: number): Appr
   if (request.action.cwd !== undefined && request.action.cwd.length > 0) {
     lines.push({ text: truncateToWidth('cwd: ' + request.action.cwd, inner), style: MUTED_STYLE });
   }
-  if (request.action.network === true) {
+  if (request.action.additionalPermissions !== undefined) {
+    for (const line of limitedWrap('Once only: ' + JSON.stringify(request.action.additionalPermissions), inner, 6)) {
+      lines.push({ text: line, style: WARNING_STYLE });
+    }
+  }
+  if (request.action.prefixRule !== undefined) {
+    for (const line of limitedWrap('Proposed prefix: ' + JSON.stringify(request.action.prefixRule), inner, 3)) lines.push({ text: line, style: WARNING_STYLE });
+  }
+  if (request.action.networkScope === 'local') {
+    for (const line of limitedWrap('Local network for this execution/process group only. File isolation stays active. ' +
+      'Includes host interface addresses; bind to 127.0.0.1 / ::1 to avoid LAN exposure.', inner, 5)) {
+      lines.push({ text: line, style: WARNING_STYLE });
+    }
+  } else if (request.action.network === true) {
     lines.push({ text: 'network access requested', style: WARNING_STYLE });
   }
   if (request.reason !== undefined && request.reason.trim().length > 0) {
@@ -90,7 +103,7 @@ export function buildApprovalPanel(state: TuiApprovalState, width: number): Appr
   }
   lines.push({ text: '', style: ACTION_STYLE });
 
-  const choices = approvalChoices(request.allowPrefix);
+  const choices = approvalChoices(request.allowPrefix, request.onceOnly);
   choices.forEach((choice, index) => {
     const prefix = state.choiceIndex === index && !state.editingReason ? '› ' : '  ';
     lines.push({
@@ -144,7 +157,9 @@ export function renderApprovalPanel(
     const request = state.request;
     const text = [request.tool + ' · ' + riskLabel(request.risk),
       request.action.command ?? request.action.path ?? '',
-      'cwd: ' + (request.action.cwd ?? ''), request.reason ?? ''].join('\n');
+      'cwd: ' + (request.action.cwd ?? ''), request.reason ?? '',
+      request.action.additionalPermissions === undefined ? '' : 'Once only: ' + JSON.stringify(request.action.additionalPermissions, null, 2),
+      request.action.prefixRule === undefined ? '' : 'Proposed prefix: ' + JSON.stringify(request.action.prefixRule)].join('\n');
     const lines = wrapText(text, Math.max(1, width - 4));
     const rows = Math.max(1, height - 2);
     const offset = Math.min(state.detailsOffset ?? 0, Math.max(0, lines.length - rows));

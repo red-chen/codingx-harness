@@ -5,6 +5,7 @@ export default defineConfig({
   format: ['esm'],
   target: 'node20',
   platform: 'node',
+  external: ['node-pty'],
   outDir: 'dist',
   clean: true,
   sourcemap: true,

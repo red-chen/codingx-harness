@@ -162,7 +162,10 @@ interface ToolState {
 class AnthropicStreamState {
   private inputTokens = 0;
   private outputTokens = 0;
+  private hasInputTokens = false;
+  private hasOutputTokens = false;
   private cacheReadTokens = 0;
+  private hasCacheReadTokens = false;
   private cacheCreationTokens = 0;
   private readonly tools = new Map<number, ToolState>();
   private stopReason: StopReason | undefined;
@@ -224,7 +227,7 @@ class AnthropicStreamState {
           const reason = mapStopReason(asString(delta.stop_reason));
           if (reason) this.stopReason = reason;
         }
-        this.readUsage(asObject(record.usage));
+        this.readUsage(asObject(record.usage), true);
         return [];
       }
       case 'message_stop': {
@@ -249,7 +252,8 @@ class AnthropicStreamState {
       type: 'usage',
       inputTokens: this.inputTokens,
       outputTokens: this.outputTokens,
-      ...(this.cacheReadTokens > 0 ? { cacheReadTokens: this.cacheReadTokens } : {}),
+      ...(!this.hasInputTokens || !this.hasOutputTokens ? { complete: false } : {}),
+      ...(this.hasCacheReadTokens ? { cacheReadTokens: this.cacheReadTokens } : {}),
       ...(this.cacheCreationTokens > 0 ? { cacheCreationTokens: this.cacheCreationTokens } : {}),
     });
     events.push({
@@ -259,15 +263,18 @@ class AnthropicStreamState {
     return events;
   }
 
-  private readUsage(usage: Record<string, unknown> | undefined): void {
+  private readUsage(usage: Record<string, unknown> | undefined, final = false): void {
     if (!usage) return;
     const input = asNumber(usage.input_tokens);
     const output = asNumber(usage.output_tokens);
     const cacheRead = asNumber(usage.cache_read_input_tokens);
     const cacheCreation = asNumber(usage.cache_creation_input_tokens);
-    if (input !== undefined) this.inputTokens = input;
-    if (output !== undefined) this.outputTokens = output;
-    if (cacheRead !== undefined) this.cacheReadTokens = cacheRead;
+    if (input !== undefined) { this.inputTokens = input; this.hasInputTokens = true; }
+    if (output !== undefined) { this.outputTokens = output; this.hasOutputTokens ||= final; }
+    if (cacheRead !== undefined) {
+      this.cacheReadTokens = cacheRead;
+      this.hasCacheReadTokens = true;
+    }
     if (cacheCreation !== undefined) this.cacheCreationTokens = cacheCreation;
   }
 
@@ -304,6 +311,10 @@ function toWireMessages(messages: readonly Message[]): unknown[] {
   return messages.map((message) => ({
     role: message.role,
     content: message.content.map((block) => {
+      if (block.type === 'image') {
+        if (!block.data) throw new ProviderError('Image snapshot was not loaded: ' + block.name, { category: 'protocol' });
+        return { type: 'image', source: { type: 'base64', media_type: block.mediaType, data: block.data } };
+      }
       if (block.type === 'text') return { type: 'text', text: block.text };
       if (block.type === 'tool_use') {
         return { type: 'tool_use', id: block.id, name: block.name, input: block.input ?? {} };
@@ -412,7 +423,9 @@ export class AnthropicMessagesProvider implements Provider {
         } catch (error) {
           throw this.transportError(error, signal, timedOut);
         }
-        throw httpError(response.status, response.headers.get('retry-after'), text);
+        const error = httpError(response.status, response.headers.get('retry-after'), text);
+        if (req.messages.some(message => message.content.some(block => block.type === 'image'))) error.message = 'Request with image attachments rejected: ' + error.message;
+        throw error;
       }
       if (!response.body) {
         throw new ProviderError('Anthropic response has no body.', { category: 'protocol' });

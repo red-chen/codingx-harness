@@ -78,3 +78,18 @@ export function renderHelpOverlay(frame: CellBuffer, width: number, height: numb
     );
   }
 }
+
+export function renderPickerOverlay(frame: CellBuffer, width: number, height: number, picker: NonNullable<import('../state/types.js').TuiAppState['picker']>): void {
+  const x = 2, y = 1, w = Math.max(1,width-4), h = Math.max(1,height-2);
+  frame.fill(BG,x,y,w,h);
+  const draw = (row: number, text: string, selected = false): void => {
+    drawStyledLine(frame, { x:x+1, y:y+row, width:Math.max(1,w-2), height:1 }, y+row, { segments: [{ text, style:selected ? KEY : TEXT }] });
+  };
+  draw(0,picker.title,true); draw(1,'> ' + picker.query);
+  const query = (picker.purpose === 'file' ? picker.query.replace(/:\d+:\d+$/, '') : picker.query).toLowerCase();
+  const entries = picker.entries.filter(e => (e.label+' '+e.value).toLowerCase().includes(query));
+  const count = Math.max(1,h-6), start = Math.max(0,picker.index-count+1);
+  entries.slice(start,start+count).forEach((e,i) => draw(i+3,(i+start === picker.index ? '› ' : '  ') + e.label + (e.disabled ? ' [unavailable]' : ''), i+start === picker.index));
+  if (h>5) draw(h-2,entries[picker.index]?.detail ?? 'No matching entries.');
+  draw(h-1,'↑↓ select · Enter accept · Esc cancel');
+}

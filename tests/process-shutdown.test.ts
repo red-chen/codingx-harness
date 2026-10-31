@@ -21,8 +21,9 @@ async function runner(): Promise<string> {
   roots.push(root);
   for (const [source, destination] of [
     ['src/exec/process-manager.ts', 'manager.mjs'], ['src/util/errors.ts', 'errors.mjs'],
+    ['src/exec/terminal-filter.ts', 'terminal-filter.mjs'], ['src/util/redact.ts', 'redact.mjs'],
   ]) {
-    const text = (await readFile(source!, 'utf8')).replace('../util/errors.js', './errors.mjs');
+    const text = (await readFile(source!, 'utf8')).replace('../util/errors.js', './errors.mjs').replace('./terminal-filter.js', './terminal-filter.mjs').replace('../util/redact.js', './redact.mjs');
     const compiled = transpileModule(text, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } });
     await writeFile(path.join(root, destination!), compiled.outputText);
   }

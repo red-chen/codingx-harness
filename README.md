@@ -6,7 +6,7 @@
 
 **平台范围：当前 CLI 仅支持 macOS。开发、测试、验收和分发均以 macOS 为目标；Linux / Windows 属于未来可选扩展，不在当前交付范围，也不阻塞当前里程碑验收。文档中的相关平台设计或代码中的降级分支不代表已提供支持。**
 
-**状态：M1（最小可用循环）已完成；M2 核心功能与验收完成（剩余 mention/session picker/表格 holdback/慢订阅者背压列为 M2.1 增强）；M3.1 策略内核、M3.2 审批交互与 M3.3 macOS Seatbelt 沙箱已落地；Agent Harness 生命周期 hooks MVP 已接入。** 当前 macOS 默认配置下，Shell 的文件写入被限制在 permission profile 根、网络默认拒绝、敏感凭证路径由内核拦截，拒绝会以 `sandbox.denied` / `SANDBOX_DENIED` 回填。Linux Landlock（M3.4）、网络代理/域名白名单（S6）、exec policy 规则（S5）与 auto-review（S7）仍未完成。设计文档描述的是目标态；已落地范围与偏差见 [docs/implementation-plan.md](docs/implementation-plan.md)、[docs/implementation-plan-m2.md](docs/implementation-plan-m2.md) 与 [docs/roadmap.md](docs/roadmap.md)。M3 权限设计见 [docs/permissions.md](docs/permissions.md)，任务拆分见 [docs/implementation-plan-m3.md](docs/implementation-plan-m3.md)。
+**状态：M1（最小可用循环）已完成；M2 核心功能与验收完成（剩余表格 holdback/慢订阅者背压列为 M2.1 增强）；M3.1 策略内核、M3.2 审批交互与 M3.3 macOS Seatbelt 沙箱已落地；Agent Harness 生命周期 hooks MVP 已接入。** 当前 macOS 默认配置下，Shell 的文件写入被限制在 permission profile 根、网络默认拒绝、敏感凭证路径由内核拦截，拒绝会以 `sandbox.denied` / `SANDBOX_DENIED` 回填。S5 按次追加权限/重试与 exec policy 声明式规则、S6 HTTP/CONNECT 网络代理与域名白名单已落地。auto-review（S7）仍待实现；Linux/Windows 不在当前范围。设计文档描述的是目标态；已落地范围与偏差见 [docs/implementation-plan.md](docs/implementation-plan.md)、[docs/implementation-plan-m2.md](docs/implementation-plan-m2.md) 与 [docs/roadmap.md](docs/roadmap.md)。M3 权限设计见 [docs/permissions.md](docs/permissions.md)，任务拆分见 [docs/implementation-plan-m3.md](docs/implementation-plan-m3.md)。
 
 M1 已经可以完成「读文件 → 改文件 → 跑测试 / 命令」的闭环：
 
@@ -15,12 +15,19 @@ M1 已经可以完成「读文件 → 改文件 → 跑测试 / 命令」的闭�
 - 单目标 ProviderRouter（首个内容事件前重试；多目标路由留到 M5）
 - Agent 循环（串行工具、maxSteps、abort、usage、完整 rollout）
 - 工具：`Read`、`ListDir`、`Edit`（先读后写）、`Shell`（进程组 + 超时回收）
+- 本机开发服务：默认配置下启动 Python HTTP server 等常见服务会请求审批，同意后只为本次执行及进程组开放本机网络，无需切换 profile，文件沙箱保持不变。其他命令可用 `network: "local"` 申请。服务应显式绑定 `127.0.0.1` / `::1`；Seatbelt 的本机匹配包含本机网卡地址，不提供严格回环绑定限制。
 - 受管进程：`ProcessStart`、`ProcessList`、`ProcessRead`、`ProcessStop`；跨 turn 保留服务，有界日志与读取游标，`/clear` / 正常退出回收进程组。网络权限沿用 profile；不跨 CLI 托管。见 [Process 使用与边界](docs/processes.md)。
 - 直接管理进程：`/process` 查看列表，`/process logs <id>` 查看日志，`/process stop <id>` 停止；plain / TUI 均支持，无需调用模型，id 可用唯一前缀。
 - 纯文本 CLI：`codingx exec`、逐行交互模式、`--json` 事件流、`codingx log` 离线回放
 - 进程内 JSONL SessionStore（单写者文件锁、seq、去重、脱敏、未完成尾行恢复）
 
 M2 本轮已落地：
+
+- **Turn Summary 费用明细**：已启用的 Plugin 可通过 `codingx.turn-summary/v1` 装饰每轮摘要；deepseek-cost 0.2.1 展示单轮估算合计与输入/缓存命中/输出的 token 数、单价和小计，明细颜色与摘要一致，跨时段分组、窄屏换行，并支持历史恢复。
+
+- **插件安装命令**：`codingx plugin install deepseek-cost --enable` 安装并启用内置费用插件；也支持本地目录和 `plugin enable <id>`，保留已有插件文件与全局配置的其他内容。
+
+- **StatusBar Plugin**：全局配置启用 `manifest.yaml` 声明的插件，在累计 `tok` 后追加自定义内容与样式。附带 `deepseek-cost`，按请求模型、缓存命中和峰谷价格估算人民币 token 费用；支持 resume/fork，缺失部分不计入估算，不显示问号。安装与价格更新见 [Plugin 文档](docs/plugins.md)。
 
 - **编辑 Diff**：`Write`、`Edit`、`ApplyPatch` 成功后显示 `Edited N files (+新增 -删除)`；相邻编辑按文件聚合，显示行号、红绿背景与代码着色，每个文件默认预览 3 行，Ctrl+O 展开详情。变更随 rollout 保存，resume 可回放；大 Diff 明示截断。
 - **Tips**：TUI 在 StatusBar 正下方显示一条随机使用提示；`/tips` 可浏览完整提示，选中后填入输入框供编辑、发送，同时更新本次运行显示的提示。编辑 `$CODINGX_HOME/tips.json`（默认 `~/.codingx/tips.json`）可替换提示列表或关闭自动显示，首次启动自动生成。详见 [Tips 配置](docs/config.md#tips)。
@@ -34,7 +41,7 @@ M2 本轮已落地：
 - **本地 `!` 命令**：交互输入 `!pwd` 直接执行终端命令，不经过模型；输入行显示为 `› ! pwd`，输出完整展示、不做 3 行预览（模型发起的 Shell 仍是 `• Ran …`），命令与结果写入 `local.command` / `local.result` 并可在 resume 时恢复。命令仍走 Shell 的 permission profile、审批弹层与 OS 沙箱，turn 运行中拒绝执行，Esc/Ctrl+C 可中断；plain 交互模式同样支持
 - **Agent Harness hooks**：全局配置 `[[hooks]]` 支持 `session_start` / `user_prompt_submit` / `pre_tool_use` / `post_tool_use` / `stop` / `session_end` 六个生命周期事件；hook 通过 stdin 接收 JSON、按配置顺序执行、写入 `hook.finished` 审计，exit 2 可阻止 prompt 或工具调用；项目配置不能定义 hooks
 - **Git hooks**：仓库已有的 `pre-commit` 等 hooks 默认可以执行（`git commit` 会运行它们）；`.git/hooks` / `.git/config` 写入默认拒绝，防止静默安装持久化 hook。需要安装/管理 hooks 时使用 `:workspace-git-hooks` profile（或自定义 `:git_hooks` / `:git_config` 作用域），启动时会有安全告警
-- **macOS Seatbelt 沙箱（M3.3）**：Shell 通过 `sandbox-exec` 在 `(deny default)` profile 中运行；写入严格限制在 profile 根（workspace、`--add-dir`、TMPDIR、`/tmp` 等），读取限制在系统/工具链/profile 根，`~/.ssh`、`~/.aws`、`~/.gnupg`、`.env*`、私钥等敏感路径与文件名由 Seatbelt 再次拒绝；网络默认 deny，profile 启用时整网放行（域名白名单待 S6）；拒绝写入 `sandbox.denied` 并回填 `SANDBOX_DENIED`；`sandbox-exec` 能力探测失败时 Shell fail closed，`--yolo` 在必须沙箱的平台拒绝启动
+- **macOS Seatbelt 沙箱（M3.3）**：Shell 通过 `sandbox-exec` 在 `(deny default)` profile 中运行；写入严格限制在 profile 根（workspace、`--add-dir`、TMPDIR、`/tmp` 等），读取限制在系统/工具链/profile 根，`~/.ssh`、`~/.aws`、`~/.gnupg`、`.env*`、私钥等敏感路径与文件名由 Seatbelt 再次拒绝；网络默认 deny，profile 启用且无域名规则时整网放行，有域名规则时通过受控代理；拒绝写入 `sandbox.denied` 并回填 `SANDBOX_DENIED`；`sandbox-exec` 能力探测失败时 Shell fail closed，`--yolo` 在必须沙箱的平台拒绝启动
 - **绕过权限检查**：`--yolo` / `--allow-dangerously-skip-permissions` 映射到 `:danger-full-access` + `never`，关闭文件工具策略、审批与 OS 沙箱并打印醒目告警；`exec policy` 的 `forbidden` 仍是尽力而为的硬拒绝。仅建议在一次性、外部已隔离的容器中使用
 - **模型与推理强度**：通过 `--reasoning-effort`、`CODINGX_REASONING_EFFORT` 或 `[model].reasoning_effort` 设置 `low|medium|high|xhigh|max`（`default` 使用服务端默认值）；交互中 `/model --effort high` 即时切换，TUI 模型名旁显示档位。选择写入 `model.changed` 并在 resume/fork 时恢复，显式 CLI/env 可覆盖保存值。Anthropic Messages 通过 `output_config.effort` 传递（需目标模型支持该参数）。详见 [推理强度配置](docs/config.md#推理强度)
 - **输入历史**：TUI 按 cwd 各保存最近 200 条输入（`$CODINGX_HOME/input-history/<cwd-name>/`，默认在 `~/.codingx/` 下），同一目录跨会话及重启共享，不同目录独立；单行输入用 ↑/↓ 翻查，↓ 越过最新条目恢复草稿，多行输入保留上下移动光标。Ctrl+R 按内容搜索（忽略大小写），再次 Ctrl+R 查找更早匹配，Enter 放回输入框编辑，Esc/Ctrl+C 取消并恢复原草稿；历史文件中的常见凭证会脱敏，`/clear` 不清除当前 cwd 的输入历史。
@@ -44,7 +51,26 @@ M2 本轮已落地：
 - **sessiond**：JSON-RPC/NDJSON、Unix socket server、注册表/写租约/heartbeat/崩溃恢复、typed client、remote SessionStore、自动拉起、空闲退出、方法握手（升级后自动替换缺少新方法的旧 daemon）；CLI 默认通过 IPC 写入
 - **跨 CLI**：`sessions list/show/watch/prune`、`sessiond start/stop/status/restart`；首次 CLI 运行会自动拉起 detached daemon
 
-尚未实现：TUI mention、session picker（M2.1）、Linux Landlock/Windows 沙箱、网络代理与域名白名单、exec policy 规则、Shell 沙箱提权/临时放宽（S5）、自动审查、表格 holdback、慢订阅者背压、MCP、并行工具、多 Provider 路由、OpenAI Responses。权限 profile、拒绝原因与提权流程见 [docs/permissions.md](docs/permissions.md)；使用前请阅读 [当前实现边界](#当前实现边界)。
+P0–P2 八项能力已接入（[实施与验收](docs/implementation-plan-p0-p2.md)）：
+
+- 文件冲突保护：完整 SHA-256 与文件身份校验；外部修改、替换或删除后返回 `FILE_CHANGED`。旧会话无指纹时必须重新 Read。
+- 检查点与撤销：`/changes` 查看 turn；`/undo <turn-id> [path]` 预览，再加 `--confirm` 确认。仅覆盖 Write/Edit/ApplyPatch，保留用户修改前已有内容；冲突返回 `UNDO_CONFLICT`。
+- 只读工具并行：连续 Read/ListDir/Glob/Grep 默认最多 4 个，`[agent].max_parallel_tools = 1` 恢复串行；写入、执行、审批及工具 hooks 保持顺序。
+- WebFetch：`[web].enabled = true` 并配置 `allowed_domains` 后可读取公网 HTTPS 正文；默认关闭，不运行 JavaScript，不携带登录态，始终拒绝私网。
+- 文件引用：TUI 输入 `@` 搜索，查询尾部可加 `:start:end`；plain/TUI 均支持 `/attach "中文 file.ts" 10:30`。发送时检查权限和实际内容，默认最多 200 行，总正文 30,000 字符。
+- 会话切换：TUI `/resume` 搜索当前真实 cwd 的会话并预览最近消息；plain `/resume <id>`。先获取目标写租约，失败保留当前会话；成功后丢弃旧草稿/附件并停止旧受管进程。
+- 图片附件：`/attach image.png` 或 `codingx exec --image image.png "描述图片"`，`--image` 可重复。PNG/JPEG/WebP 每张最多 5 MiB、每条消息最多 4 张；对象快照可随 resume/fork 重放。
+- PTY/stdin：ProcessStart 支持 `pty`、`stdin`、`cols`、`rows`；ProcessWrite 或 `/process send|eof|interrupt|resize` 交互，继续使用原来的 Seatbelt 与网络代理。输入审计仅保存操作类型和字节数。
+
+S5/S6 本轮新增：
+
+- **按次追加权限与重试**：Shell / ProcessStart 用 `sandbox_permissions: "require_escalated"`、理由和 `additional_permissions` 申请读写目录或网络域名；仅作用于本次执行/进程组，保留沙箱与敏感路径拒绝，每 turn 最多 3 次申请。
+- **受控联网**：域名 allow/deny 经本机 HTTP/CONNECT 代理执行；DNS 检查后固定目标 IP，默认拒绝私网，退出与进程停止时关闭代理。使用支持代理的 HTTP(S) 客户端，域名授权不开放直接 SSH、套接字或监听。
+- **exec policy**：加载 `$CODINGX_HOME/rules/*.rules` 与全局 `[exec_policy].rule_files`，支持声明式 `prefix_rule`、示例自测和 `forbidden > prompt > allow`；`codingx execpolicy check --command 'git status'` 可离线诊断。规则不扩大沙箱权限。
+
+示例与边界见 [按次权限与受控联网](docs/config.md#按次权限与受控联网)。
+
+尚未实现：Linux Landlock/Windows 沙箱、自动审查、表格 holdback、慢订阅者背压、MCP、多 Provider 路由、OpenAI Responses。权限 profile、拒绝原因与提权流程见 [docs/permissions.md](docs/permissions.md)；使用前请阅读 [当前实现边界](#当前实现边界)。
 
 ## 快速开始
 
@@ -151,7 +177,7 @@ node bin/codingx.js sessiond stop
 Read(src/util.ts) → Edit(foo → bar) → Shell(grep 校验) → 最终回答
 ```
 
-测试同时断言 rollout 可回放、`--json` stdout 无人类文本、会话结束后写 `session.end`、续接/分叉历史、悬空工具调用修复与 30 轮压缩。当前 **59 个测试文件、680 项测试**全部通过；还覆盖真实 Ctrl+C 后 `--continue`、两个 CLI 的写租约互斥、TUI 帧/按键预算、slash 补全、`!` 本地命令（策略/审批/沙箱/排队/恢复）、Agent Harness hooks（六事件、exit 2 阻止、JSON stdin、session 生命周期、审计）、`/clear` 重写 JSONL、`/model` 模型与推理强度切换、`--add-dir` 额外可写目录、`--yolo` 绕过 workspace 限制（含别名与告警）、Permission profile / `--sandbox` / `--ask-for-approval` / 非交互 fail closed / `permission.decision` 审计、TUI/plain 审批与拒绝理由 / 会话与前缀授权 / `/permissions` 切换 / `approval.*` 审计、macOS Seatbelt 的越界写入/凭证读取/网络 deny/Node 工具链/git status/git hooks/`sandbox.denied`、`sessions prune`、旧 daemon 方法握手与自动替换、composer/用户消息背景与底部 meta，以及“CLI → 自动拉起 sessiond → rollout → sessions list/show → status/stop”和 80x24/120x40 TUI PTY 冒烟。真实 Provider 的冒烟需要配置 `API_KEY` 后手工执行；CI 不访问外网。
+测试同时断言 rollout 可回放、`--json` stdout 无人类文本、会话结束后写 `session.end`、续接/分叉历史、悬空工具调用修复与 30 轮压缩。当前 **81 个测试文件、964 项测试**全部通过；还覆盖真实 Ctrl+C 后 `--continue`、两个 CLI 的写租约互斥、TUI 帧/按键预算、slash 补全、`!` 本地命令（策略/审批/沙箱/排队/恢复）、Agent Harness hooks（六事件、exit 2 阻止、JSON stdin、session 生命周期、审计）、`/clear` 重写 JSONL、`/model` 模型与推理强度切换、`--add-dir` 额外可写目录、`--yolo` 绕过 workspace 限制（含别名与告警）、Permission profile / `--sandbox` / `--ask-for-approval` / 非交互 fail closed / `permission.decision` 审计、TUI/plain 审批与拒绝理由 / 会话与前缀授权 / `/permissions` 切换 / `approval.*` 审计、macOS Seatbelt 的越界写入/凭证读取/网络 deny/Node 工具链/git status/git hooks/`sandbox.denied`、`sessions prune`、旧 daemon 方法握手与自动替换、composer/用户消息背景与底部 meta，以及“CLI → 自动拉起 sessiond → rollout → sessions list/show → status/stop”和 80x24/120x40 TUI PTY 冒烟。真实 Provider 的冒烟需要配置 `API_KEY` 后手工执行；CI 不访问外网。
 
 ## 当前实现边界
 
@@ -166,8 +192,9 @@ Read(src/util.ts) → Edit(foo → bar) → Shell(grep 校验) → 最终回答
 | 权限体系 / 审批 / Permission profiles | M3.1 + M3.2 已落地：文件工具受 profile + approval policy 约束；TUI/plain 可审批并做会话/前缀授权；非交互 fail closed；权限选择器与长命令全屏查看已实现。设计见 [permissions.md](docs/permissions.md) | M3（[任务拆分](docs/implementation-plan-m3.md)） |
 | Agent Harness hooks | 全局 `[[hooks]]` 六个生命周期事件；JSON stdin、matcher、exit 2 阻止 prompt/工具、`hook.finished` 审计；项目配置不能定义 hooks | 已实现（MVP） |
 | Git hooks | 仓库 hooks 默认可执行；`.git/hooks` / `.git/config` 写入默认 deny；`:workspace-git-hooks` 或 `:git_hooks` / `:git_config` 作用域显式放开并告警 | 已实现 |
-| OS 沙箱 | **macOS Seatbelt 已落地**：Shell 默认 deny、写入限定在 profile 根、网络默认 deny、凭证路径/文件由内核拒绝；`sandbox.denied` 审计；Linux Landlock / Windows 待做，Linux 暂时显式告警并保持无沙箱 | M3.3 已完成；M3.4/M3.5 待做 |
-| MCP / WebFetch / 自定义工具 | 配置会被解析但忽略并告警 | M4 |
+| OS 沙箱 | **macOS Seatbelt 已落地**：Shell 默认 deny、写入限定在 profile 根、网络默认 deny、凭证路径/文件由内核拒绝；`sandbox.denied` 审计；Linux Landlock / Windows 待做，Linux 暂时显式告警并保持无沙箱 | M3.3 + S5/S6 已落地；其他平台暂缓 |
+| WebFetch | 已实现公网 HTTPS 正文读取，默认关闭 | P0–P2 |
+| MCP / 自定义工具 | 配置会被解析但忽略并告警 | M4 |
 | OpenAI Responses | 配置会报不支持 | M4 |
 
 安全提醒：文件工具与 Shell 受 permission profile 与 approval policy 约束（默认 `:workspace` + `on-request`）；TUI/plain 交互会弹审批，非交互没有 approver 时 fail closed。macOS 上 Shell 先经过策略再进入 Seatbelt：写入限定在 profile 根，网络默认 deny，`~/.ssh`、`.env*` 等敏感路径/文件由内核拒绝；Git hooks 默认只执行不写入，安装 hooks 需显式 `:workspace-git-hooks` 或 `:git_hooks` / `:git_config`，并会告警；Linux 目前没有 OS 沙箱（S4 待做），不能把命令级启发式当成隔离。`--yolo` / `--allow-dangerously-skip-permissions` 映射到 `:danger-full-access` + `never`，会同时关闭文件工具策略、审批与 OS 沙箱并告警；在必须沙箱的平台（macOS 缺少 `sandbox-exec`、Windows）会拒绝启动。见 [permissions.md](docs/permissions.md)。**不要在不可信仓库中运行；在 Linux 或使用 `--yolo` 时尤其要依赖外部隔离。**
@@ -289,8 +316,8 @@ codingx-harness/
 
 - **M0 设计对齐**：已完成
 - **M1 最小可用循环**：已完成（见 [implementation-plan](docs/implementation-plan.md)）
-- **M2 交互体验**：核心与验收完成（续接/fork、三级压缩、工具、TUI CLI/markdown/diff/overlay/slash/底部背景与 meta、sessiond/跨 CLI/prune、G1-G5 已完成；mention/picker/表格 holdback/背压列为 M2.1）
-- **M3 安全**：M3.1 策略、M3.2 审批、M3.3 macOS Seatbelt 已完成；Linux Landlock、网络代理/域名白名单、exec policy、auto-review 等待做（见 [implementation-plan-m3](docs/implementation-plan-m3.md)）
+- **M2 交互体验**：核心与验收完成（续接/fork、三级压缩、工具、TUI CLI/markdown/diff/overlay/slash/底部背景与 meta、sessiond/跨 CLI/prune、G1-G5 已完成；表格 holdback/背压列为 M2.1）
+- **M3 安全**：M3.1 策略、M3.2 审批、M3.3 macOS Seatbelt 已完成；S5 按次追加权限/规则与 S6 网络代理已落地；auto-review 等待做，其他平台暂缓（见 [implementation-plan-m3](docs/implementation-plan-m3.md)）
 - M4 扩展性、M5 进阶能力、M6 分发：见 [docs/roadmap.md](docs/roadmap.md)
 
 ## License

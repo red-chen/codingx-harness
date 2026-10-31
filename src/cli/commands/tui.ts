@@ -1,3 +1,4 @@
+import { acquireResumable, startSessionContext, restoreSessionHistory, sessionEntries } from '../session-switch.js';
 import { canonicalizePath } from '../../util/paths.js';
 import { runProcessCommand } from '../process-command.js';
 import { LOCAL_NETWORK_NOTICE, networkMode } from '../../policy/network.js';
@@ -26,6 +27,10 @@ import { createLoop, DEFAULT_SHELL_TIMEOUT_MS, initializeReasoningEffort } from 
 import { TuiSession, type TuiPermissionController } from '../tui-session.js';
 import { changeModelSelection, configuredModels, currentModelSelection, restoreModelSelection } from '../model-selection.js';
 import { WorkspacePreferencesStore } from '../../config/workspace-preferences.js';
+import { restoreRequestUsage, type RequestUsage } from '../../providers/usage.js';
+import { loadStatusBarPlugin, StatusBarPluginHost } from '../../plugins/status-bar.js';
+import { statusElapsedMs } from '../../tui/widgets/status.js';
+import { TurnSummaryPluginHost } from '../../plugins/turn-summary.js';
 
 async function findLatestResumable(
   store: SessionStoreApi,
@@ -77,10 +82,10 @@ async function openSession(
   };
 }
 
-function totalUsageFrom(events: readonly { type: string; usage?: unknown }[]): TokenUsage | undefined {
+export function totalUsageFrom(events: readonly { type: string; usage?: unknown }[]): TokenUsage | undefined {
   let total: TokenUsage | undefined;
   for (const event of events) {
-    if (event.type !== 'turn.end' || typeof event.usage !== 'object' || event.usage === null) continue;
+    if (!['turn.end', 'turn.aborted'].includes(event.type) || typeof event.usage !== 'object' || event.usage === null) continue;
     const usage = event.usage as Record<string, unknown>;
     const add = (key: keyof TokenUsage): number => (typeof usage[key] === 'number' ? (usage[key] as number) : 0);
     const next: TokenUsage = {
@@ -114,30 +119,15 @@ async function replayResumed(
   title?: string;
   turnCount?: number;
   usage?: TokenUsage;
+  requestUsage?: RequestUsage[];
+  usageIncomplete?: boolean;
   transcript?: ReturnType<typeof restoreTranscript>;
   model?: string;
   provider?: string;
   route?: string;
   reasoningEffort?: ReasoningEffort;
 }> {
-  const events = await session.replay();
-  const rebuilt = rebuildHistory(events);
-  if (rebuilt.syntheticResults.length > 0) {
-    await session.append(
-      rebuilt.syntheticResults.map((synthetic) => ({
-        type: 'tool.result',
-        turnId: synthetic.turnId,
-        callId: synthetic.callId,
-        name: synthetic.name,
-        content: synthetic.content,
-        isError: true,
-        synthetic: true,
-      })),
-    );
-    stderr.write(
-      'warning: repaired ' + rebuilt.syntheticResults.length + ' dangling tool call(s) with synthetic tool_result events.\n',
-    );
-  }
+  const { events, rebuilt } = await restoreSessionHistory(session);
   await restoreReadTracker(rebuilt, app.cwd, readTracker, app.additionalDirs);
   stderr.write(
     'resumed session ' + session.id + ' (' + rebuilt.messages.length + ' message(s), cwd ' + session.meta.cwd + ')\n',
@@ -150,9 +140,13 @@ async function replayResumed(
   const title = deriveSessionTitle(events);
   const turnCount = events.filter((event) => event.type === 'turn.start').length;
   const usage = totalUsageFrom(events);
+  const requestUsage = restoreRequestUsage(events);
+  const usageIncomplete = events.some((event) => ['turn.end', 'turn.aborted', 'session.interrupted'].includes(event.type) &&
+    !requestUsage.some((record) => record.turnId === event.turnId));
   const transcript = restoreTranscript(events);
   const modelSelection = latestModelSelection(events);
   return {
+    requestUsage, usageIncomplete,
     ...(rebuilt.messages.length > 0 ? { initialMessages: rebuilt.messages } : {}),
     ...(rebuilt.plan && rebuilt.plan.length > 0 ? { plan: rebuilt.plan } : {}),
     ...(title ? { title } : {}),
@@ -168,6 +162,8 @@ async function replayResumed(
 
 /** Full-screen interactive mode. Falls back to the line UI only via the caller. */
 export interface TuiResumeView {
+  readonly requestUsage?: readonly RequestUsage[];
+  readonly usageIncomplete?: boolean;
   readonly title?: string;
   readonly turnCount?: number;
   readonly usage?: TokenUsage;
@@ -196,6 +192,8 @@ export interface CreateTuiAppOptions {
 export function createTuiAppForSession(options: CreateTuiAppOptions): TuiApp {
   const resumed = options.resumed;
   return new TuiApp({
+    initialRequestUsage: resumed.requestUsage,
+    usageIncomplete: resumed.usageIncomplete,
     ...(options.tip ? { tip: options.tip } : {}),
     session: {
       sessionId: options.sessionId,
@@ -244,9 +242,14 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
   const inputHistory = await InputHistory.open(app.codingxHome, app.cwd, () => { historyWarning = true; });
   const savedInputHistory = await inputHistory.load();
   let activeLoop: ReturnType<typeof createLoop> | undefined;
+  let statusBarPlugin: StatusBarPluginHost | undefined;
+  let turnSummaryPlugin: TurnSummaryPluginHost | undefined;
   let session: SessionHandle | undefined;
   try {
-    const opened = await openSession(app, options);
+    let opened = await openSession(app, options);
+    let firstSession = true;
+    for (;;) {
+    let nextSession: SessionHandle | undefined;
     session = opened.session;
     const activeSession = opened.session;
     const readTracker = new ReadFileTracker();
@@ -256,15 +259,8 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
     await restoreModelSelection(app, resumed, env);
     const reasoningEffort = await initializeReasoningEffort(app, session, resumed);
 
-    const startHooks = await app.hooks.run(
-      'session_start',
-      { sessionId: session.id, cwd: app.cwd },
-      { session },
-    );
-    if (startHooks.context.trim().length > 0) {
-      app.sessionHookContext = startHooks.context.trim();
-      app.systemPrompt += '\n\n# Hook context (session_start)\n' + startHooks.context.trim();
-    }
+    const startHooks = await startSessionContext(app, session);
+
 
     const tuiApp = createTuiAppForSession({
       ...(tip ? { tip } : {}),
@@ -327,6 +323,7 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
           additionalDirs: app.additionalDirs,
           env,
           config: { ...app.config.permissions, defaultProfile: name },
+          execRules: app.config.execRules,
           approvalPolicy: app.config.approvalPolicy,
           reviewer: app.config.approvalsReviewer,
           alwaysAsk: app.config.approval.alwaysAsk,
@@ -405,12 +402,82 @@ export async function runTuiInteractive(options: InteractiveCommandOptions): Pro
         set: (selection) => changeModelSelection(app, activeSession, loop, selection, env),
       },
       beforeClear: () => loop.processes.clear(),
+      listFiles: () => loop.listFiles(),
+      listSessions: () => sessionEntries(app.store, app.cwd),
+      resume: async (id) => {
+        const target = await acquireResumable(app.store, app.cwd, id);
+        const oldRouter = app.router;
+        try {
+          const { events } = await restoreSessionHistory(target);
+          await restoreModelSelection(app, latestModelSelection(events), env);
+          nextSession = target;
+          controller?.exit(0);
+        } catch (error) { app.router = oldRouter; await target.close(); throw error; }
+      },
+      attach: (input) => loop.attachments.add(input),
+      runChangeCommand: (line) => loop.changeCommand(line),
       runProcessCommand: (line) => runProcessCommand(line, loop.processes),
       onClear: () => loop.clearHistory(),
-      ...(options.initialPrompt ? { initialPrompt: options.initialPrompt } : {}),
+      ...(firstSession && options.initialPrompt ? { initialPrompt: options.initialPrompt } : {}),
     });
-    return await controller.run();
+    const statusBar = app.config.statusBar;
+    if (statusBar) {
+      try {
+        const loadedPlugin = await loadStatusBarPlugin(app.codingxHome, statusBar.plugin);
+        if (loadedPlugin.manifest.capabilities.turn_summary) {
+          tuiApp.enableTurnSummaryPlugin();
+          turnSummaryPlugin = new TurnSummaryPluginHost({
+            ...loadedPlugin, app: tuiApp, timeoutMs: statusBar.timeoutMs, env: app.shellEnv,
+            onChange: () => controller?.render(),
+            warn: (message) => { tuiApp.addNotice(message, 'warning'); controller?.render(); },
+          });
+        }
+        statusBarPlugin = new StatusBarPluginHost({
+          ...loadedPlugin, timeoutMs: statusBar.timeoutMs, refreshMs: statusBar.refreshMs, env: app.shellEnv,
+          snapshot: () => {
+            const state = tuiApp.state;
+            const selection = app.router.selection;
+            const endpoint = app.config.providers[selection.providerId]?.endpoint;
+            return {
+              version: 1, sessionId: state.session.sessionId, generation: state.transcriptGeneration,
+              cwd: app.cwd, width: state.width,
+              current: { provider: selection.providerId, model: selection.model,
+                ...(endpoint ? { origin: new URL(endpoint).origin } : {}),
+                ...(state.session.reasoningEffort ? { reasoningEffort: state.session.reasoningEffort } : {}),
+              },
+              status: { state: state.status.state, elapsedMs: statusElapsedMs(state.status, Date.now()),
+                turnNumber: state.turnNumber, step: state.currentTurnSteps },
+              context: { usedTokens: state.contextUsedTokens, windowTokens: state.contextWindowTokens },
+              totalUsage: state.totalUsage,
+              usageRecords: state.requestUsage.filter((record) => state.status.state === 'idle' || record.turnId !== state.status.turnId),
+              usageIncomplete: state.usageIncomplete,
+            };
+          },
+          publish: (segments) => { tuiApp.setStatusBarSegments(segments); controller?.render(); },
+          warn: (message) => { tuiApp.addNotice(message, 'warning'); controller?.render(); },
+        });
+      } catch {
+        tuiApp.addNotice('CONFIG_ERROR: cannot load status bar plugin ' + statusBar.plugin + '; check manifest.yaml and protocol version.', 'warning');
+      }
+    }
+    const running = controller.run();
+    statusBarPlugin?.start();
+    turnSummaryPlugin?.start();
+    const exitCode = await running;
+    if (!nextSession) return exitCode;
+    await statusBarPlugin?.close(); statusBarPlugin = undefined;
+    await turnSummaryPlugin?.close(); turnSummaryPlugin = undefined;
+    await app.hooks.run('session_end', { sessionId: activeSession.id, cwd: app.cwd }, { session: activeSession }).catch(() => undefined);
+    await loop.processes.close().catch(error => stderr.write('warning: process cleanup: ' + String(error) + '\n'));
+    await activeSession.close().catch(error => stderr.write('warning: session cleanup: ' + String(error) + '\n'));
+    stderr.write('Session switched. Previous draft and attachments discarded; managed processes stopped.\n');
+    opened = { session: nextSession, resumed: true };
+    firstSession = false;
+    }
+
   } finally {
+    await statusBarPlugin?.close();
+    await turnSummaryPlugin?.close();
     await inputHistory.flush();
     try { await activeLoop?.processes.close(); } catch (error) {
       stderr.write('warning: process cleanup: ' + (error instanceof Error ? error.message : String(error)) + '\n');

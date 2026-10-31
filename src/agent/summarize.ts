@@ -55,6 +55,7 @@ function blockText(block: Message['content'][number]): string {
   if (block.type === 'text') {
     return 'text:\n' + truncateMiddle(block.text, 4_000, '\n[... text truncated ...]\n');
   }
+  if (block.type === 'image') return '[Image omitted: ' + block.name + ']';
   if (block.type === 'tool_use') {
     let input: string;
     try {

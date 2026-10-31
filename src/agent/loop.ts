@@ -1,3 +1,8 @@
+import { approvalRequestFor } from '../policy/index.js';
+import { resolveWorkspacePath } from '../tools/paths.js';
+import { createGlobTool } from '../tools/glob.js';
+import { Attachments, attachmentBlocks, hydrateImages } from './attachments.js';
+import { FileChanges } from '../session/changes.js';
 import { createHash } from 'node:crypto';
 import { ProcessManager } from '../exec/process-manager.js';
 import { generateTurnId } from '../util/ids.js';
@@ -19,7 +24,7 @@ import type { RouterSelection } from '../routing/router.js';
 import type { SandboxBackend } from '../sandbox/types.js';
 import type { HookRunner } from '../hooks/index.js';
 import type { HookEvent, HookPayloadContext, HookRunOptions, HookRunResult } from '../hooks/types.js';
-import type { ToolRegistry } from '../tools/registry.js';
+import { ToolRegistry } from '../tools/registry.js';
 import { ReadFileTracker } from '../tools/read-tracker.js';
 import type {
   AskHandler,
@@ -36,6 +41,7 @@ import { compactMessages, type CompressionOptions, type CompressionResult } from
 import { serializeMessagesForSummary, summarizeDroppedMessages } from './summarize.js';
 import type { TurnErrorInfo, UiEvent } from './events.js';
 import { TurnState } from './turn.js';
+import { recordUsageStream } from '../providers/usage.js';
 
 export interface AgentModelClient extends ModelClient {
   readonly selection?: RouterSelection;
@@ -51,17 +57,21 @@ export type AgentCompressionOptions = Omit<CompressionOptions, 'contextWindow'> 
 };
 
 export interface AgentLoopOptions {
+  /** Public service origin only; credentials and endpoint query strings never enter usage records. */
+  providerOrigin?: () => string | undefined;
   session: SessionHandle;
   router: AgentModelClient;
   tools: ToolRegistry;
   systemPrompt: string;
   model: string;
   maxSteps: number;
+  maxParallelTools?: number;
   maxOutputTokens: number;
   temperature?: number;
   /** Provider reasoning level; absent uses the provider default. */
   reasoningEffort?: ReasoningEffort;
   sessionId: string;
+  web?: import('../config/types.js').WebConfig;
   cwd: string;
   maxOutputChars: number;
   shell: ShellToolContext;
@@ -123,6 +133,8 @@ export interface TurnResult {
  */
 export class AgentLoop {
   readonly processes: ProcessManager;
+  readonly changes: FileChanges;
+  readonly attachments: Attachments;
   private readonly options: AgentLoopOptions;
   private readonly messages: Message[];
   private readonly toolSchemas: ToolSchema[];
@@ -143,9 +155,21 @@ export class AgentLoop {
     if (options.maxSteps < 1) throw new Error('maxSteps must be at least 1.');
     this.options = options;
     this.processes = new ProcessManager({
+      onInput: async (event) => { await options.session.append({ type: 'process.input', ...event }); },
       onState: async (process) => { await options.session.append({ type: 'process.state', process }); },
     });
     this.readTracker = options.readTracker ?? new ReadFileTracker();
+    this.attachments = new Attachments(options.session);
+    this.changes = new FileChanges(options.session, options.cwd, this.readTracker, async target => {
+      const context = { ...this.toolContextBase, signal: new AbortController().signal };
+      if (context.policy) {
+        const decision = await context.policy.evaluate('Write', { path: target });
+        if (decision.verdict === 'deny') throw new CodingxError('PERMISSION_DENIED', decision.reason ?? 'Undo write denied.');
+        if (decision.verdict === 'ask' && (await context.approve?.(approvalRequestFor(decision), context.signal))?.decision !== 'allow') throw new CodingxError('PERMISSION_DENIED', 'Undo write not approved.');
+      }
+      // Conflict checks use checkpoint versions, not stale read-tracker state.
+      await resolveWorkspacePath({ ...context, readTracker: new ReadFileTracker() }, target, { access: 'write' });
+    });
     this.messages = options.initialMessages ? [...options.initialMessages] : [];
     this.planSteps = options.initialPlan ? options.initialPlan.map((step) => ({ ...step })) : [];
     this.toolSchemas = options.tools.toJsonSchemas();
@@ -157,6 +181,7 @@ export class AgentLoop {
       estimateTokens(options.systemPrompt) + estimateToolsTokens(this.toolSchemas) + options.maxOutputTokens;
     this.toolContextBase = {
       cwd: options.cwd,
+      web: options.web,
       readTracker: this.readTracker,
       maxOutputChars: options.maxOutputChars,
       shell: options.shell,
@@ -173,6 +198,21 @@ export class AgentLoop {
     };
   }
 
+  async listFiles(): Promise<readonly import('../tui/state/types.js').PickerEntry[]> {
+    const result = await new ToolRegistry([createGlobTool(Number.MAX_SAFE_INTEGER)]).execute('Glob', { pattern: '**/*' }, { ...this.toolContextBase, signal: new AbortController().signal });
+    if (result.isError) throw new CodingxError('ATTACHMENT_ERROR', result.content);
+    return ((result.meta?.paths ?? []) as string[]).map(value => ({ value, label: value, detail: 'Enter attaches this file; add :start:end to the search for a line range.' }));
+  }
+
+  async changeCommand(line: string): Promise<string> {
+    const before = (await this.options.session.replay()).length;
+    const result = await this.changes.command(line);
+    for (const event of (await this.options.session.replay()).slice(before)) {
+      if (event.type === 'file.undo') this.messages.push({ role: 'user', content: [{ type: 'text', text: String(event.text) }] });
+    }
+    return result;
+  }
+
   get history(): readonly Message[] {
     return this.messages;
   }
@@ -186,6 +226,7 @@ export class AgentLoop {
     this.messages.length = 0;
     this.planSteps = [];
     this.readTracker.clear();
+    this.attachments.clear();
     this.compactionSummary = undefined;
     this.summarizedHashes.clear();
     this.summaryFailedHashes.clear();
@@ -245,17 +286,25 @@ export class AgentLoop {
     };
     const toolContext: ToolContext = {
       ...this.toolContextBase,
+      escalationBudget: { remaining: 3 },
+      fileChanges: this.changes.forTurn(turnId),
       signal: signal ?? new AbortController().signal,
       plan: planController,
     };
 
+    const attachments = await this.attachments.prepare(toolContext);
+    if (attachments.length) this.emit({ type: 'attachments.prepared', items: attachments.map(a => ({ name: a.type === 'image' ? a.name : a.path, bytes: a.type === 'image' ? a.object.size : Buffer.byteLength(a.text), kind: a.type })) });
+    let firstPrompt = true;
     const appendPrompt = async (input: string, merge = false): Promise<void> => {
       const promptHooks = await this.runHooks(
         'user_prompt_submit',
         { sessionId: this.options.sessionId, cwd: this.options.cwd, prompt: input },
         { turnId, ...(signal === undefined ? {} : { signal }) },
       );
-      await this.options.session.append({ type: 'user.message', text: input });
+      const attached = firstPrompt ? attachments : [];
+      await this.options.session.append({ type: 'user.message', text: input, ...(attached.length ? { attachments: attached } : {}) });
+      if (firstPrompt) this.attachments.clear();
+      firstPrompt = false;
       if (promptHooks?.blocked === true) {
         throw new CodingxError(
           'HOOK_BLOCKED',
@@ -269,7 +318,7 @@ export class AgentLoop {
           : input + '\n\n[Hook context: user_prompt_submit]\n' + promptContext;
       const last = this.messages.at(-1);
       if (merge && last?.role === 'user') last.content.push({ type: 'text', text: modelInput });
-      else this.messages.push({ role: 'user', content: [{ type: 'text', text: modelInput }] });
+      else this.messages.push({ role: 'user', content: [{ type: 'text', text: modelInput }, ...attachmentBlocks(attached)] });
     };
     const consumeQueuedPrompts = async (): Promise<boolean> => {
       const prompts = runOptions.takeQueuedPrompts?.() ?? [];
@@ -351,14 +400,24 @@ export class AgentLoop {
                 for (const message of fresh) this.summarizedHashes.add(messageFingerprint(message));
               } else {
                 const outcome = await summarizeDroppedMessages({
-                  router: this.options.router,
+                  router: {
+                    countTokens: (messages) => this.options.router.countTokens(messages),
+                    stream: (request, summarySignal) => recordUsageStream({
+                      client: this.options.router, request, session: this.options.session, turnId,
+                      provider: this.options.router.selection?.providerId ?? '',
+                      origin: this.options.providerOrigin?.(), purpose: 'compaction', signal: summarySignal,
+                      emit: (record) => {
+                        state.addUsage(record.usage);
+                        this.emit({ type: 'usage.recorded', record });
+                      },
+                    }),
+                  },
                   messages: fresh,
                   model: this.options.model,
                   sessionId: this.options.sessionId,
                   maxOutputTokens: this.summaryMaxTokens,
                   ...(signal ? { signal } : {}),
                 });
-                state.addUsage(outcome.usage);
                 if (outcome.summary) {
                   this.compactionSummary = truncateMiddle(
                     this.compactionSummary
@@ -401,7 +460,7 @@ export class AgentLoop {
           const request = buildModelRequest({
             model: this.options.model,
             system: requestSystem,
-            messages: compaction.messages,
+            messages: await hydrateImages(compaction.messages, this.options.session),
             tools: this.toolSchemas,
             maxOutputTokens: this.options.maxOutputTokens,
             ...(this.options.temperature === undefined ? {} : { temperature: this.options.temperature }),
@@ -416,7 +475,15 @@ export class AgentLoop {
           stopReason = 'end_turn';
           const llmStartedAt = Date.now();
           try {
-            for await (const event of this.options.router.stream(request, signal)) {
+            for await (const event of recordUsageStream({
+              client: this.options.router, request, session: this.options.session, turnId,
+              provider: this.options.router.selection?.providerId ?? '',
+              origin: this.options.providerOrigin?.(), purpose: 'turn', signal,
+              emit: (record) => {
+                state.addUsage(record.usage);
+                this.emit({ type: 'usage.recorded', record });
+              },
+            })) {
               if (signal?.aborted) throw abortError();
               switch (event.type) {
                 case 'text.delta':
@@ -425,9 +492,6 @@ export class AgentLoop {
                   break;
                 case 'tool.call':
                   calls.push({ id: event.id, name: event.name, input: event.input });
-                  break;
-                case 'usage':
-                  state.addUsage(event);
                   break;
                 case 'stop':
                   stopReason = event.reason;
@@ -477,7 +541,7 @@ export class AgentLoop {
           type: 'assistant.message',
           turnId,
           text,
-          calls,
+          calls: calls.map(auditCall),
           stopReason,
         });
 
@@ -495,16 +559,10 @@ export class AgentLoop {
         await this.options.session.append({ type: 'turn.status', turnId, status: 'executing' });
 
         const results: Array<{ id: string; content: string; isError?: boolean }> = [];
-        for (const call of calls) {
+        const executeCall = async (call: ToolCall): Promise<{ id: string; content: string; isError?: boolean }> => {
           if (signal?.aborted) throw abortError();
-          this.emit({ type: 'tool.started', turnId, call });
-          await this.options.session.append({
-            type: 'tool.call',
-            turnId,
-            callId: call.id,
-            name: call.name,
-            input: call.input,
-          });
+          this.emit({ type: 'tool.started', turnId, call: auditCall(call) });
+
 
           const startedAt = Date.now();
           const approve = this.options.approve;
@@ -539,7 +597,7 @@ export class AgentLoop {
               sessionId: this.options.sessionId,
               cwd: this.options.cwd,
               toolName: call.name,
-              toolInput: call.input,
+              toolInput: auditCall(call).input,
             },
             { turnId, callId: call.id, ...(signal === undefined ? {} : { signal }) },
           );
@@ -563,7 +621,7 @@ export class AgentLoop {
                 sessionId: this.options.sessionId,
                 cwd: this.options.cwd,
                 toolName: call.name,
-                toolInput: call.input,
+                toolInput: auditCall(call).input,
                 toolResult: { content: result.content, isError: result.isError === true },
               },
               { turnId, callId: call.id, ...(signal === undefined ? {} : { signal }) },
@@ -635,7 +693,32 @@ export class AgentLoop {
               steps: result.meta.plan,
             });
           }
-          results.push({ id: call.id, content: result.content, isError: result.isError });
+          return { id: call.id, content: result.content, isError: result.isError };
+        };
+        // Persist calls in model order before any concurrent execution. Missing results
+        // retain the existing crash/interruption repair semantics.
+        for (const call of calls) await this.options.session.append({ type: 'tool.call', turnId, callId: call.id, name: call.name, input: auditCall(call).input });
+        const hooks = this.options.hooks;
+        const limit = hooks?.has('pre_tool_use') || hooks?.has('post_tool_use') ? 1 : (this.options.maxParallelTools ?? 4);
+        const parallel = async (call: ToolCall): Promise<boolean> => {
+          if (limit === 1 || !['Read', 'ListDir', 'Glob', 'Grep'].includes(call.name) || !this.options.tools.get(call.name)?.parallelSafe) return false;
+          if (!this.options.policy) return true;
+          const parsed = this.options.tools.get(call.name)!.schema.safeParse(call.input);
+          if (!parsed.success) return false;
+          try { return (await this.options.policy.evaluate(call.name, parsed.data)).verdict === 'allow'; }
+          catch { return false; }
+        };
+        for (let index = 0; index < calls.length;) {
+          if (signal?.aborted) throw abortError();
+          const group: ToolCall[] = [calls[index++]!];
+          if (await parallel(group[0]!)) {
+            while (index < calls.length && group.length < limit && await parallel(calls[index]!)) group.push(calls[index++]!);
+          }
+          const outcomes = await Promise.allSettled(group.map(executeCall));
+          for (const outcome of outcomes) {
+            if (outcome.status === 'rejected') throw outcome.reason;
+            results.push(outcome.value);
+          }
         }
         this.messages.push(toolResultsMessage(results));
 
@@ -780,4 +863,11 @@ export class AgentLoop {
       // A UI renderer bug must not fail the turn.
     }
   }
+}
+
+function auditCall(call: ToolCall): ToolCall {
+  if (!['ProcessWrite', 'ProcessStart'].includes(call.name) || !call.input || typeof call.input !== 'object') return call;
+  const input = { ...call.input as Record<string, unknown> };
+  for (const field of ['text','stdin']) if (typeof input[field] === 'string') { input[field + 'Bytes'] = Buffer.byteLength(input[field] as string); input[field] = '[input omitted]'; }
+  return { ...call, input };
 }

@@ -1,4 +1,8 @@
 import os from 'node:os';
+import { checkExecRules } from './rules/index.js';
+import { canonicalPermissions, hasPermissions } from './escalation.js';
+import { domainMatches, domainDecision, normalizeDomainPattern } from './domains.js';
+import type { AdditionalPermissions, ExecRule } from './types.js';
 import path from 'node:path';
 import { ConfigError } from '../util/errors.js';
 import { canonicalizePath, expandHome, isPathInside } from '../util/paths.js';
@@ -10,6 +14,7 @@ import {
 } from './profile.js';
 import { parseShellCommand } from './shell-parse.js';
 import { isLocalHost, networkMode } from './network.js';
+import { LOCAL_NETWORK_APPROVAL_REASON, requestsLocalNetwork } from './local-network.js';
 import type {
   ApprovalPolicy,
   ApprovalRequest,
@@ -27,7 +32,7 @@ import type {
 
 const READ_TOOLS = new Set(['Read', 'ListDir', 'Glob', 'Grep']);
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'ApplyPatch']);
-const PASSIVE_TOOLS = new Set(['AskUserQuestion', 'UpdatePlan', 'Skill', 'ProcessList', 'ProcessRead', 'ProcessStop']);
+const PASSIVE_TOOLS = new Set(['WebFetch', 'ProcessWrite', 'AskUserQuestion', 'UpdatePlan', 'Skill', 'ProcessList', 'ProcessRead', 'ProcessStop']);
 
 const FORBIDDEN_PROGRAMS = new Set([
   'sudo',
@@ -83,32 +88,6 @@ function isPathLikeArg(value: string): boolean {
     value.includes('/') ||
     value.includes(path.sep)
   );
-}
-
-function domainMatches(pattern: string, host: string): boolean {
-  const normalized = host.toLowerCase();
-  const rule = pattern.toLowerCase();
-  if (rule.startsWith('**.')) {
-    const suffix = rule.slice(2);
-    return normalized === suffix.slice(1) || normalized.endsWith(suffix);
-  }
-  if (rule.startsWith('*.')) {
-    return normalized.endsWith(rule.slice(1));
-  }
-  return normalized === rule;
-}
-
-function networkAllowed(domains: Record<string, 'allow' | 'deny'>, host: string | undefined): boolean {
-  const entries = Object.entries(domains);
-  if (entries.length === 0) return true;
-  if (host === undefined) return false;
-  let allowed = false;
-  for (const [pattern, decision] of entries) {
-    if (!domainMatches(pattern, host)) continue;
-    if (decision === 'deny') return false;
-    allowed = true;
-  }
-  return allowed;
 }
 
 function hostFromSegment(segment: ShellSegment): string | undefined {
@@ -234,6 +213,7 @@ class Runtime implements PolicyRuntime {
   readonly writeRoots: readonly string[];
   readonly sandboxPolicy: SandboxPolicy;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly execRules: readonly ExecRule[];
   private readonly allowAll: boolean;
   private readonly denyRoots: readonly string[];
   private readonly denyGlobs: ReadonlyArray<{ base: string | null; pattern: string }>;
@@ -264,6 +244,7 @@ class Runtime implements PolicyRuntime {
     this.readRoots = resolved.readRoots;
     this.writeRoots = resolved.writeRoots;
     this.env = options.env;
+    this.execRules = structuredClone(options.execRules ?? []);
     this.allowAll = resolved.allowAll;
     this.denyRoots = resolved.denyRoots;
     this.denyGlobs = resolved.denyGlobs;
@@ -378,13 +359,28 @@ class Runtime implements PolicyRuntime {
     return strictest ?? this.allow({ kind: access === 'write' ? 'file.write' : 'file.read', tool }, 'low', 'profile.allow');
   }
 
-  private async evaluateShell(input: unknown, tool = 'Shell'): Promise<PolicyDecision> {
+  private async evaluateShell(input: unknown, tool = 'Shell', network = this.network, extra?: AdditionalPermissions): Promise<PolicyDecision> {
     const record = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {};
     const command = typeof record.command === 'string' ? record.command : '';
     const requestedCwd = typeof record.cwd === 'string' ? record.cwd : '.';
     const cwd = path.resolve(this.cwd, expandHome(requestedCwd, homeOf(this.env)));
     const action: PolicyAction = { kind: 'exec', tool, command, cwd, network: false };
     const parsed = parseShellCommand(command, cwd);
+    if (record.prefix_rule !== undefined) {
+      const prefix = record.prefix_rule as string[];
+      const segment = parsed.segments[0];
+      const tokens = segment ? [segment.program, ...segment.args] : [];
+      if (extra !== undefined || !Array.isArray(prefix) || prefix.length === 0 || parsed.hasUnsafeConstruct || parsed.segments.length !== 1 ||
+          segment!.redirects.length > 0 || /(?:^|\s)[A-Za-z_][A-Za-z0-9_]*=|[$*?{}~]/u.test(command) ||
+          !prefix.every((word, index) => typeof word === 'string' && word === tokens[index])) {
+        return denied(action, 'prefix_rule must be a literal token prefix of one simple command, without escalation.', 'exec.prefix-invalid', 'PERMISSION_DENIED', 'high');
+      }
+      action.prefixRule = [...prefix];
+    }
+    const readRoots = [...this.readRoots, ...(extra?.filesystem?.read ?? []), ...(extra?.filesystem?.write ?? [])];
+    const writeRoots = [...this.writeRoots, ...(extra?.filesystem?.write ?? [])];
+    const rules = checkExecRules(this.execRules, parsed);
+    if (rules.decision === 'forbidden') return denied(action, 'Command is forbidden by exec policy.', 'execpolicy.forbidden', 'POLICY_FORBIDDEN', 'high');
     if (pipelinePipesToShell(parsed.segments)) {
       return denied(action, 'Piping a download directly into a shell is forbidden.', 'exec.forbidden', 'POLICY_FORBIDDEN', 'high');
     }
@@ -394,7 +390,9 @@ class Runtime implements PolicyRuntime {
         return denied(action, forbidden + ' (segment: ' + segment.raw + ').', 'exec.forbidden', 'POLICY_FORBIDDEN', 'high');
       }
     }
-    if (this.allowAll) return this.allow(action, 'high', 'profile.danger-full-access');
+    if (this.allowAll) return rules.decision === 'prompt'
+      ? this.askOrDeny(action, 'Exec policy requires approval.', 'execpolicy.prompt', 'high')
+      : this.allow(action, 'high', 'profile.danger-full-access');
     if (parsed.hasUnsafeConstruct) {
       return this.askOrDeny(
         action,
@@ -411,7 +409,7 @@ class Runtime implements PolicyRuntime {
 
     for (const segment of parsed.segments) {
       const segmentCwd = await canonicalizePath(segment.cwd);
-      if (!isInsideAny(this.readRoots, segmentCwd)) {
+      if (!isInsideAny(readRoots, segmentCwd)) {
         consider(
           this.askOrDeny(
             action,
@@ -433,7 +431,7 @@ class Runtime implements PolicyRuntime {
           deniedArg = arg;
           break;
         }
-        if (!isInsideAny(this.readRoots, candidate)) {
+        if (!isInsideAny(readRoots, candidate)) {
           outsideArg = arg;
         }
       }
@@ -462,7 +460,7 @@ class Runtime implements PolicyRuntime {
       }
       if (isNetworkSegment(segment)) {
         action.network = true;
-        if (networkMode(this.network) === 'none') {
+        if (networkMode(network) === 'none') {
           consider(
             this.askOrDeny(
               action,
@@ -473,25 +471,26 @@ class Runtime implements PolicyRuntime {
           );
           continue;
         }
-        if (networkMode(this.network) === 'local' && !isLocalHost(hostFromSegment(segment))) {
+        if (networkMode(network) === 'local' && !isLocalHost(hostFromSegment(segment))) {
           consider(this.askOrDeny(action,
             'This profile only permits connections to this host; command approval does not widen the OS sandbox.',
             'network.local', 'high'));
           continue;
         }
-        if (!networkAllowed(this.network.domains, hostFromSegment(segment))) {
+        if (Object.keys(network.domains).length > 0 && hostFromSegment(segment) !== undefined && domainDecision(network.domains, hostFromSegment(segment)!) === 'deny') {
           consider(
-            this.askOrDeny(
+            denied(
               action,
               'Network target is not allowed by the permission profile.',
               'network.domain',
+              'PERMISSION_DENIED',
               'high',
             ),
           );
           continue;
         }
       }
-      if (this.readOnly && !isReadOnlyProgram(basenameOf(segment.program), segment.args)) {
+      if (this.readOnly && !extra?.filesystem?.write?.length && !isReadOnlyProgram(basenameOf(segment.program), segment.args)) {
         consider(
           this.askOrDeny(
             action,
@@ -504,7 +503,7 @@ class Runtime implements PolicyRuntime {
       }
       if (segment.program === 'cd' && segment.args.length > 0 && !segment.args[0]?.startsWith('-')) {
         const target = await canonicalizePath(normalizeCommandPath(segment.args[0] as string, segmentCwd, this.env));
-        if (!isInsideAny(this.readRoots, target)) {
+        if (!isInsideAny(readRoots, target)) {
           consider(
             this.askOrDeny(
               action,
@@ -534,7 +533,7 @@ class Runtime implements PolicyRuntime {
           continue;
         }
         if (redirect.operator === '<') {
-          if (!isInsideAny(this.readRoots, target)) {
+          if (!isInsideAny(readRoots, target)) {
             consider(
               this.askOrDeny(
                 action,
@@ -546,7 +545,7 @@ class Runtime implements PolicyRuntime {
           }
           continue;
         }
-        if (!isInsideAny(this.writeRoots, target)) {
+        if (!isInsideAny(writeRoots, target)) {
           consider(
             this.askOrDeny(
               action,
@@ -559,8 +558,9 @@ class Runtime implements PolicyRuntime {
       }
     }
 
+    if (rules.decision === 'prompt') consider(this.askOrDeny(action, 'Exec policy requires approval.', 'execpolicy.prompt', 'high'));
     if (strictest === undefined) {
-      consider(this.allow(action, 'high', 'profile.allow'));
+      consider(rules.decision === 'allow' ? { verdict: 'allow', action, risk: 'high', rule: 'execpolicy.allow' } : this.allow(action, 'high', 'profile.allow'));
     }
     return strictest as PolicyDecision;
   }
@@ -570,7 +570,47 @@ class Runtime implements PolicyRuntime {
       const action: PolicyAction = { kind: 'tool', tool };
       return this.allow(action, 'low', 'profile.passive');
     }
-    if (tool === 'Shell' || tool === 'ProcessStart') return this.evaluateShell(input, tool);
+    if (tool === 'Shell' || tool === 'ProcessStart') {
+      const record = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
+      const extraInput = record.additional_permissions as AdditionalPermissions | undefined;
+      if (record.sandbox_permissions === 'require_escalated' || extraInput !== undefined) {
+        const baseAction: PolicyAction = { kind: 'exec', tool, command: String(record.command ?? ''), cwd: this.cwd };
+        if (record.sandbox_permissions !== 'require_escalated' || typeof record.justification !== 'string' || !record.justification.trim() || !hasPermissions(extraInput)) {
+          return denied(baseAction, 'Scoped escalation requires require_escalated, justification and non-empty additional_permissions.', 'exec.escalation-invalid', 'PERMISSION_DENIED', 'high');
+        }
+        if (record.network === 'local') return denied(baseAction, 'Request local networking separately from scoped escalation.', 'exec.escalation-invalid', 'PERMISSION_DENIED', 'high');
+        const extra = await canonicalPermissions(extraInput!, this.cwd, homeOf(this.env));
+        for (const root of [...(extra.filesystem?.read ?? []), ...(extra.filesystem?.write ?? [])]) {
+          if (this.isPathDenied(root)) return denied(baseAction, 'Additional permission references a denied path: ' + root, 'profile.deny', 'PERMISSION_DENIED', 'high');
+        }
+        const network = { ...this.network, domains: { ...this.network.domains } };
+        if (extra.network) {
+          network.enabled = true; network.mode = 'all';
+          for (const host of extra.network.domains) {
+            // Preserve all configured denies; proxy enforces overlaps, including wildcard requests.
+            if (!host.includes('*') && Object.entries(network.domains).some(([p, d]) => d === 'deny' && domainMatches(p, host))) {
+              return denied(baseAction, 'Additional domain is explicitly denied: ' + host, 'network.domain', 'PERMISSION_DENIED', 'high');
+            }
+            if (network.domains[host] !== 'deny') network.domains[host] = 'allow';
+          }
+        }
+        const decision = await this.evaluateShell(input, tool, network, extra);
+        if (decision.verdict === 'deny') return decision;
+        return this.askOrDeny({ ...decision.action, additionalPermissions: extra },
+          record.justification + '\nPermissions for this execution/process group only: ' + JSON.stringify(extra) +
+          '\nSensitive paths remain denied. This does not disable the sandbox.', 'exec.escalation', 'high');
+      }
+      const requestLocal = !this.allowAll && networkMode(this.network) === 'none' && requestsLocalNetwork(input, this.cwd);
+      const decision = await this.evaluateShell(input, tool, requestLocal
+        ? { ...this.network, enabled: true, mode: 'local' }
+        : this.network);
+      if (!requestLocal || decision.verdict === 'deny') return decision;
+      return this.askOrDeny(
+        { ...decision.action, network: true, networkScope: 'local' },
+        LOCAL_NETWORK_APPROVAL_REASON + (decision.reason === undefined ? '' : '\nAlso: ' + decision.reason),
+        'network.local-approval', 'high',
+      );
+    }
     if (READ_TOOLS.has(tool) || WRITE_TOOLS.has(tool)) return this.evaluateFile(tool, input);
     const action: PolicyAction = { kind: 'tool', tool };
     return this.askOrDeny(action, 'Tool "' + tool + '" has no declared permission action.', 'tool.unknown', 'medium');
@@ -588,6 +628,8 @@ export async function createPolicyRuntime(options: PolicyRuntimeOptions): Promis
       details: { code: 'PERMISSION_PROFILE_UNKNOWN' },
     });
   }
+  try { for (const domain of Object.keys(profile.network.domains)) normalizeDomainPattern(domain); }
+  catch (error) { throw new ConfigError('Invalid network domain pattern.', { cause: error }); }
   const canonicalCwd = await canonicalizePath(options.cwd);
   const additionalDirs = await Promise.all(options.additionalDirs.map((directory) => canonicalizePath(directory)));
   const resolved = await resolveProfileRoots(profile, {
@@ -596,6 +638,9 @@ export async function createPolicyRuntime(options: PolicyRuntimeOptions): Promis
     env: options.env,
     ...(options.sessionDir === undefined ? {} : { sessionDir: options.sessionDir }),
   });
+  for (const rule of options.execRules ?? []) {
+    if (rule.source && path.isAbsolute(rule.source)) resolved.denyRoots.push(await canonicalizePath(rule.source));
+  }
   return new Runtime(
     { ...options, cwd: canonicalCwd, additionalDirs },
     resolved,

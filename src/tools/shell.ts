@@ -1,5 +1,6 @@
 import { stat } from 'node:fs/promises';
 import { z } from 'zod';
+import { escalationFields } from '../policy/escalation.js';
 import { abortError, ToolError } from '../util/errors.js';
 import { resolveWorkspacePath } from './paths.js';
 import { runSandboxedShell } from './shell-exec.js';
@@ -8,7 +9,9 @@ import type { ToolDef } from './types.js';
 const MAX_TIMEOUT_MS = 10 * 60 * 1000;
 
 const schema = z.object({
+  ...escalationFields,
   command: z.string().min(1).describe('Shell command to run via bash -lc (cmd.exe on Windows).'),
+  network: z.enum(['inherit', 'local']).optional().describe('Request local networking for this execution with user approval. Omit to auto-detect common local services/clients; inherit uses the profile unchanged.'),
   cwd: z
     .string()
     .optional()
@@ -36,6 +39,11 @@ export const shellTool: ToolDef<typeof schema> = {
     'follow the selected permission profile. ' +
     'Use this to run tests, builds, linters and git commands. Long output is truncated with an explicit marker. ' +
     'Use ProcessStart for long-running services or watchers; do not background them with & or nohup. ' +
+    'For local networking use network: "local" to request one-execution approval without switching profiles. ' +
+    'For necessary filesystem or HTTP(S) access beyond the profile, request sandbox_permissions: "require_escalated", justification, ' +
+    'and additional_permissions with filesystem.read/write paths and/or network.domains. Approval applies only to this execution; secrets remain denied. ' +
+    'Domain-scoped networking uses HTTP_PROXY/HTTPS_PROXY; use proxy-aware clients. Direct sockets and SSH are not supported by domain grants. ' +
+    'After SANDBOX_DENIED inspect partial effects, then request the minimum additional permissions before retrying. ' +
     'A non-zero exit code is reported as an error result; read the output before deciding what to do next. ' +
     'Do not use Shell to read, search or edit files when Read, Grep, Glob or Edit fits. ' +
     'Do not run commands that wait for input (editors, pagers, prompts); they block until the timeout. ' +
@@ -57,6 +65,8 @@ export const shellTool: ToolDef<typeof schema> = {
       env: ctx.shell.env,
       maxOutputChars: ctx.maxOutputChars,
       signal: ctx.signal,
+      approvedNetwork: ctx.approvedNetwork,
+      approvedPermissions: ctx.approvedPermissions,
       ...(ctx.policy === undefined ? {} : { policy: ctx.policy }),
       ...(ctx.sandbox === undefined ? {} : { sandbox: ctx.sandbox }),
       ...(ctx.yolo === true ? { yolo: true } : {}),
@@ -96,6 +106,7 @@ export const shellTool: ToolDef<typeof schema> = {
       parts.push('Command timed out after ' + timeoutMs + 'ms and was terminated.');
     }
     if (hint !== undefined) parts.push(hint);
+    if (sandboxDenied) parts.push('For a necessary retry, use sandbox_permissions: "require_escalated", justification, and additional_permissions: { filesystem: { read: [paths], write: [paths] }, network: { domains: [hosts] } }. Request only needed scopes. Approval lasts for this execution only. Inspect partial effects before retrying; never replay blindly.');
     parts.push('exit_code: ' + (result.exitCode === null ? 'none' : result.exitCode));
     parts.push('duration_ms: ' + result.durationMs);
     if (input.description) parts.push('description: ' + input.description);

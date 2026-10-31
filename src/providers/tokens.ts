@@ -7,7 +7,8 @@ export function estimateMessagesTokens(messages: readonly Message[]): number {
   for (const message of messages) {
     total += 8;
     for (const block of message.content) {
-      if (block.type === 'text') total += estimateTokens(block.text);
+      if (block.type === 'image') total += 1600;
+      else if (block.type === 'text') total += estimateTokens(block.text);
       else if (block.type === 'tool_use') total += 16 + estimateJsonTokens(block.input) + estimateTokens(block.name);
       else if (block.type === 'tool_result') total += 16 + estimateTokens(block.content);
     }

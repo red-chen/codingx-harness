@@ -1,6 +1,6 @@
 # 工具系统
 
-当前文件工具名称为 `Read`、`Write`、`Edit`（旧会话中的 `ReadFile` 仍可恢复已读状态）。
+当前文件工具名称为 `Read`、`Write`、`Edit`（旧会话中的 `ReadFile` 只有保存了完整版本指纹才恢复可信已读状态）。
 `Write`、`Edit` 和 `ApplyPatch` 的成功结果在 `meta.fileDiffs` 中附带有界的文件变更快照，
 供 TUI 的 `Edited` 视图和会话回放使用，不回传模型。每个文件包含路径、增删行数、
 带原/新行号的变更行以及截断/粗略替换标记；计数聚合的是各次编辑操作，非整个 turn 的净 Git Diff。
@@ -85,26 +85,31 @@ export interface ToolContext {
 
 | 工具 | 入参 | 说明 |
 | --- | --- | --- |
-| `Write` | `path`, `content` | 整文件写入；写入前检查是否已存在并提示覆盖 |
+| `Write` | `path`, `content` | 整文件写入；覆盖已有文件必须先读并通过版本检查 |
 | `Edit` | `path`, `old_string`, `new_string`, `replace_all?` | 精确字符串替换；`old_string` 必须唯一匹配，否则报错让模型重试 |
 | `ApplyPatch` | `patch` | unified diff 形式的多文件补丁，用于批量改动 |
 
-`Edit` 与 `ApplyPatch` 都要求**先读后写**：工具会检查该文件在本会话中是否被读取过，未读取则拒绝并提示先调用 `Read`。这条约束显著降低了模型凭想象改文件的情况。
+覆盖已有文件的 `Write`、`Edit` 与 `ApplyPatch` 都要求**先读后写**。`Read` 即使只返回部分行也记录完整文件 SHA-256、身份与权限；写前发现外部修改、替换、删除或符号链接替换时返回 `FILE_CHANGED`，必须重新读取。无指纹的旧历史不恢复可信已读状态。文件指纹与检查点单对象上限为 16 MiB。
+
+`ApplyPatch` 支持创建、修改和通过 `/dev/null` 删除文件；不支持重命名、带引号的 diff 路径及 EOF 标记。它先验证全部目标，再逐文件复查并替换；临时文件保留原权限，不承诺跨文件操作系统事务。成功写入会更新已读版本。
+
+专用文件工具在修改前通过 SessionStore 持久化原始内容与目标快照，存储失败则停止修改。`/changes` 列出按 turn 聚合的检查点；`/undo <turn-id> [path]` 先预览，再用相同命令追加 `--confirm` 执行。当前文件必须仍等于修改后的版本，否则返回 `UNDO_CONFLICT`。新建文件撤销为删除，删除文件撤销为恢复；用户当时已有的未提交修改也会恢复。撤销追加审计与下一轮模型提示，不回退对话；不追踪 Shell 修改。
 
 ### 执行
 
 | 工具 | 入参 | 说明 |
 | --- | --- | --- |
 | `Shell` | `command`, `cwd?`, `timeout_ms?`, `description?` | 执行命令，返回 stdout / stderr / 退出码 |
-| `ProcessStart` | `command`, `cwd?`, `description?` | 启动会话内受管进程，返回 processId；复用 Shell 权限/沙箱 |
+| `ProcessStart` | `command`, `cwd?`, `description?`, `pty?`, `stdin?`, `cols?`, `rows?` | 启动会话内受管进程，返回 processId；复用 Shell 权限/沙箱 |
 | `ProcessList` | 无 | 查询当前 CLI 会话进程及最近退出状态 |
 | `ProcessRead` | `process_id`, `cursor?`, `max_chars?`, `wait_ms?` | 读取有界合并日志与状态，按 nextCursor 增量读取 |
+| `ProcessWrite` | `process_id`, `text?`, `eof?`, `interrupt?`, `cols?`, `rows?` | 输入文本、EOF、中断或调整 PTY 尺寸；每次选择一种操作 |
 | `ProcessStop` | `process_id` | TERM → KILL 回收进程组，可重复调用 |
 
 Process 跨 turn 存活，在 `/clear` 和正常退出时清理；不会从历史 PID 恢复监管。
 用户可通过 `/process`、`/process logs <id>`、`/process stop <id>` 直接管理，无需模型调用。
 running 不等于服务已就绪；HTTP server 需要 profile 允许网络。详见 [受管进程](processes.md)。
-PTY / stdin 交互与跨 CLI 托管仍待后续实现。
+PTY 与管道 stdin 已实现；PTY 默认 80×24，stdout/stderr 合并，控制序列过滤后才显示。`/process send` 自动追加换行，`ProcessWrite.text` 原样输入；PTY EOF 发送终端 EOF 字符，管道 EOF 关闭 stdin。interrupt 与停止进程不同。输入审计只记录操作和字节数，不提供凭证输入通道。node-pty 加载失败明确报错，不降级为无沙箱执行。跨 CLI 托管仍未实现。
 
 `Shell` 的默认超时 120s，超时后向整个进程组发 `SIGTERM`，再等 5s 后 `SIGKILL`。工作目录受 Permission profile 约束；策略层会解析命令、拦截已知网络命令/重定向/硬拒绝，macOS 上再交给 Seatbelt（默认 deny、写入限 profile 根、网络默认 deny）。Linux 目前没有 OS 级沙箱，任意程序仍可绕过命令启发式；`--yolo` 在 macOS 上也跳过 Seatbelt。
 
@@ -112,21 +117,21 @@ Git hooks 不受 `Shell` 工具额外拦截：仓库已安装的 hooks 会由 gi
 
 交互模式还可以直接输入 `!command`（例如 `!pwd`）。这条路径不经过模型，但复用同一套 Shell 策略、审批与沙箱执行逻辑（`src/tools/shell-exec.ts`），输出只写 `local.command` / `local.result`，不会进入模型消息历史。
 
-S5 起 `Shell` 增加提权字段（仅在沙箱拒绝后由模型重试时使用；S1 尚未实现）：
+S5 已为 `Shell` / `ProcessStart` 接入按次追加权限字段，可在拒绝后重试或已知需要额外权限时主动申请：
 
 ```ts
 interface ShellExtras {
-  sandbox_permissions?: 'use_default' | 'with_additional_permissions' | 'require_escalated';
+  sandbox_permissions?: 'use_default' | 'require_escalated';
   justification?: string;          // 给用户看的理由，不是授权凭证
   additional_permissions?: {
-    file_system?: { read?: string[]; write?: string[] };
-    network?: { enabled?: boolean; domains?: string[] };
+    filesystem?: { read?: string[]; write?: string[] };
+    network?: { domains: string[] };
   };
-  prefix_rule?: string[];          // 请求会话级命令前缀批准
+  prefix_rule?: string[];          // 普通审批时建议 token 前缀；不能与按次追加权限同时使用
 }
 ```
 
-沙箱拒绝 → 结构化 `SANDBOX_DENIED` → 模型带理由重试 → 用户批准 → 本次调用放宽/无沙箱执行。详见 [permissions.md](permissions.md) 的提权章节。
+沙箱拒绝 → 结构化 `SANDBOX_DENIED` → 模型检查部分执行结果、带理由申请重试 → 用户批准 → 本次调用仅增加列出的目录/域名，仍在沙箱内执行。每 turn 最多 3 次申请，超限返回 `ESCALATION_LIMIT`；拒绝、取消、无交互审批器或 `never` 均不执行。详见 [permissions.md](permissions.md) 的提权章节。
 
 ### 其他
 
@@ -135,9 +140,15 @@ interface ShellExtras {
 | `UpdatePlan` | 维护任务清单，模型用它显式记录多步计划，TUI 实时展示 |
 | `AskUserQuestion` | 向用户提 1–4 个问题并等待回答；TUI 弹出选择面板，无交互运行时返回 `is_error` |
 | `Skill` | 按名字加载本地技能（`SKILL.md`）的完整说明，系统提示只放目录 |
-| `WebFetch` | 抓取 URL 并转 markdown；默认关闭，受 `[web]` 域名白名单与网络策略约束（M4） |
+| `WebFetch` | 读取公网 HTTPS URL 正文，保留标题和链接；默认关闭，受 `[web].allowed_domains` 约束 |
 | `Task` | 派发子 Agent（M5） |
-| `mcp__<server>__<tool>` | 从 MCP Server 动态注册的外部工具 |
+| `mcp__<server>__<tool>` | 规划中的 MCP 外部工具（M4，未实现） |
+
+### 并行与网页读取
+
+连续 Read/ListDir/Glob/Grep 按 `[agent].max_parallel_tools` 并发（默认 4，设为 1 串行）；其他工具、需审批调用及工具生命周期 hooks 保持顺序。调用先按模型顺序持久化，结果可实时显示，回填模型仍按原顺序；取消停止新调度并取消在途调用。
+
+WebFetch 只执行 HTTPS GET，不执行 JavaScript、不携带登录态、不搜索。HTML 通过解析器抽取正文，同时支持纯文本、Markdown、JSON；返回最终 URL、标题、正文和截断标记，并明确标为不可信数据。每次跳转重新校验域名与 DNS，固定公网 IP 连接并保留 TLS 主机名验证，最多 5 次跳转、总超时 30 秒、解压后 2 MiB；私网、回环和二进制响应始终拒绝。本机服务继续使用 Shell/Process。
 
 ## 用户提问（`AskUserQuestion`）
 

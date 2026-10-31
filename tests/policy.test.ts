@@ -100,6 +100,24 @@ describe('permission profiles', () => {
 });
 
 describe('policy evaluation', () => {
+  it('requests local networking for servers while retaining hard denials and approval-never', async () => {
+    const policy = await runtime();
+    for (const input of [
+      { command: 'python3 -u -m http.server 8000 --bind 127.0.0.1' },
+      { command: 'npm run dev' },
+      { command: 'curl http://127.0.0.1:8000' },
+      { command: 'node app.js', network: 'local' },
+    ]) {
+      expect(await policy.evaluate('ProcessStart', input)).toMatchObject({ verdict: 'ask', action: { networkScope: 'local' } });
+      expect(await (await runtime(':workspace', 'never')).evaluate('ProcessStart', input)).toMatchObject({ verdict: 'deny' });
+    }
+    expect(await policy.evaluate('ProcessStart', { command: 'python3 -m http.server', network: 'inherit' }))
+      .toMatchObject({ verdict: 'allow' });
+    expect(await policy.evaluate('Shell', { command: 'rm -rf /', network: 'local' }))
+      .toMatchObject({ verdict: 'deny', code: 'POLICY_FORBIDDEN' });
+    expect(policy.sandboxPolicy.network.enabled).toBe(false);
+  });
+
   it('gates git hook and config writes behind explicit scopes', async () => {
     await mkdir(path.join(cwd, '.git', 'hooks'), { recursive: true });
     await writeFile(path.join(cwd, '.git', 'config'), '[core]\n');

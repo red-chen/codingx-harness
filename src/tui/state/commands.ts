@@ -9,6 +9,8 @@ export type UiApprovalDecision =
   | { decision: 'deny'; reason?: string };
 
 export type UiCommand =
+  | { type: 'files' }
+  | { type: 'pick'; purpose: 'file' | 'session'; value: string; range?: string }
   | { type: 'submit'; text: string }
   | { type: 'interrupt' }
   | { type: 'answer'; answers: readonly AskAnswer[] }

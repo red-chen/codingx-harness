@@ -12,7 +12,7 @@ import { ansiColor, color256, rgbColor } from '../terminal/buffer.js';
  * UiEvent; the TUI answers with UiCommand.
  */
 
-export type TuiMode = 'main' | 'transcript' | 'help' | 'ask' | 'approval' | 'tips';
+export type TuiMode = 'main' | 'transcript' | 'help' | 'ask' | 'approval' | 'tips' | 'picker';
 
 export type TuiStatusState = 'idle' | 'working' | 'awaiting';
 export type TuiTurnOutcome = 'done' | 'error' | 'aborted';
@@ -81,6 +81,9 @@ export interface LocalCommandCell {
 }
 
 export interface TurnSummaryCell {
+  readonly turnId?: string;
+  readonly pluginPending?: boolean;
+  readonly pluginView?: import('../../plugins/types.js').TurnSummaryView;
   readonly type: 'turn';
   readonly id: string;
   readonly outcome: TuiTurnOutcome;
@@ -206,6 +209,9 @@ export interface TuiApprovalAction {
   readonly command?: string;
   readonly cwd?: string;
   readonly network?: boolean;
+  readonly networkScope?: 'local';
+  readonly additionalPermissions?: import('../../policy/types.js').AdditionalPermissions;
+  readonly prefixRule?: string[];
 }
 
 export interface TuiApprovalRequest {
@@ -216,6 +222,7 @@ export interface TuiApprovalRequest {
   readonly risk: 'low' | 'medium' | 'high';
   /** True when this action can be approved as a reusable exec prefix. */
   readonly allowPrefix: boolean;
+  readonly onceOnly?: boolean;
 }
 
 /** Modal approval state. Choices are fixed by the app; model output cannot add or reorder them. */
@@ -237,9 +244,13 @@ export interface TuiTipsState {
 }
 
 export interface TuiAppState {
+  readonly requestUsage: readonly import('../../providers/usage.js').RequestUsage[];
+  readonly usageIncomplete: boolean;
+  readonly statusBarSegments?: readonly import('../../plugins/types.js').StatusBarSegment[];
   /** Startup tip, replaceable through /tips for this TUI instance. */
   readonly tip?: string;
   readonly tips?: TuiTipsState;
+  readonly picker?: { purpose: 'file' | 'session'; title: string; query: string; index: number; entries: readonly PickerEntry[] };
   readonly mode: TuiMode;
   readonly session: TuiSessionState;
   readonly version: string;
@@ -333,3 +344,5 @@ export const TUI_COLORS: TuiColors = Object.freeze({
   diffDelBg: rgbColor(77, 30, 26),
   border: ansiColor(8),
 });
+
+export interface PickerEntry { value: string; label: string; detail: string; disabled?: boolean }

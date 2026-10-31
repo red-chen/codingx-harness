@@ -306,7 +306,7 @@ describe('interactive mode', () => {
     });
 
     expect(code).toBe(0);
-    expect(stdout.value).toContain('Commands: /help, /session, /model, /process [list|logs <id> [cursor]|stop <id>], /clear, /quit');
+    expect(stdout.value).toContain('Commands: /help, /session, /model, /attach <path> [start:end], /retry, /resume <id>, /changes, /undo <turn-id> [path], /process (list/logs/stop/send/eof/interrupt/resize), /clear, /quit');
     expect(stdout.value).toContain('session: ');
     expect(stdout.value).toContain('No managed processes in this CLI session.');
     expect(server.requests).toBe(0);
@@ -621,7 +621,7 @@ api_key_env = "SECONDARY_TEST_KEY"
     const lines = stdout.value.trimEnd().split('\n').map((line) => JSON.parse(line));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ type: 'session.info' });
-    expect(stderr.value).toContain('Commands: /help, /session, /model, /process [list|logs <id> [cursor]|stop <id>], /clear, /quit');
+    expect(stderr.value).toContain('Commands: /help, /session, /model, /attach <path> [start:end], /retry, /resume <id>, /changes, /undo <turn-id> [path], /process (list/logs/stop/send/eof/interrupt/resize), /clear, /quit');
     expect(stderr.value).toContain('session: ');
     expect(stderr.value).toContain('No managed processes in this CLI session.');
   });
@@ -652,6 +652,7 @@ api_key_env = "SECONDARY_TEST_KEY"
       'turn.started',
       'context.updated',
       'text.delta',
+      'usage.recorded',
       'llm.finished',
       'usage.updated',
       'turn.finished',

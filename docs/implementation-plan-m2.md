@@ -2,6 +2,8 @@
 
 依据 [roadmap.md](roadmap.md) 的 M2 范围，在 M1 的可运行循环之上继续拆分。M1 计划与结果见 [implementation-plan.md](implementation-plan.md)。
 
+> P0–P2 更新：E4 session picker、E5 文件引用已完成，见 [增量计划](implementation-plan-p0-p2.md)。下文保留 M2 原阶段记录。
+
 > 状态：G1-G5 验收全部 DONE。E3 的表格 holdback、E4 的 session picker、E5 的 mention，以及 F4 的慢订阅者背压，列为 M2.1 增强，不影响 M2 验收结论；审批 overlay 移至 M3（见 [implementation-plan-m3.md](implementation-plan-m3.md)）。E4 的 AskUserQuestion 提问面板已完成，Skills 按需加载已接入。
 
 ## 目标

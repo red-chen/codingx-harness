@@ -1,0 +1,23 @@
+manifest_version: 1
+id: deepseek-cost
+name: DeepSeek Cost
+version: 0.2.1
+capabilities:
+  status_bar:
+    protocol: codingx.status-bar/v1
+    mode: decorate
+    placement:
+      after: total_tokens
+    execution:
+      type: command
+      command: node
+      args: [./index.mjs]
+  turn_summary:
+    protocol: codingx.turn-summary/v1
+    mode: decorate
+    placement:
+      after: output_rate
+    execution:
+      type: command
+      command: node
+      args: [./index.mjs]

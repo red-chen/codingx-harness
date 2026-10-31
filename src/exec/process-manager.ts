@@ -1,3 +1,7 @@
+import type { IPty } from 'node-pty';
+import { TerminalFilter } from './terminal-filter.js';
+import { redactProcessOutput, redactString } from '../util/redact.js';
+import type { ProcessWriteRequest } from './types.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
@@ -7,8 +11,12 @@ import type {
 } from './types.js';
 
 interface Entry {
+  cleanup?: () => Promise<void>;
+  networkDenials?: readonly string[];
   info: ManagedProcess;
   child?: ChildProcess;
+  pty?: IPty;
+  stdinClosed?: boolean;
   output: string;
   total: number;
   done: Promise<void>;
@@ -125,6 +133,7 @@ export class ProcessManager {
       }
       entry.child?.stdout?.destroy();
       entry.child?.stderr?.destroy();
+      try { await entry.cleanup?.(); } catch (error) { this.eventError ??= error; }
       entry.info.state = entry.info.state === 'failed' ? 'failed' : 'exited';
       entry.info.exitCode = code;
       entry.info.signal = signal;
@@ -140,6 +149,8 @@ export class ProcessManager {
   async start(request: ProcessStartRequest): Promise<ManagedProcess> {
     if (this.closed || this.resetting) throw new CodingxError('PROCESS_UNAVAILABLE', 'Process manager is closing or clearing.');
     if (request.signal?.aborted) throw abortError();
+    if (typeof request.stdin === 'string' && (Buffer.byteLength(request.stdin) > 65536 || redactString(request.stdin).redacted)) throw new CodingxError('TOOL_ERROR', 'Process input is limited to 64 KiB and cannot contain recognized credentials.');
+    for (const size of [request.cols ?? 80, request.rows ?? 24]) if (!Number.isSafeInteger(size) || size < 1 || size > 1000) throw new CodingxError('TOOL_ERROR', 'Invalid terminal dimensions.');
     if (!request.command.trim()) throw new CodingxError('TOOL_ERROR', 'Command must not be empty.');
     if (this.list().filter((entry) => entry.state !== 'exited' && entry.state !== 'failed').length >= this.maxProcesses) {
       throw new CodingxError('PROCESS_LIMIT', 'Too many running processes; stop one before starting another.');
@@ -150,8 +161,11 @@ export class ProcessManager {
     }
     let resolve!: () => void;
     const entry: Entry = {
+      cleanup: request.cleanup,
+      networkDenials: request.networkDenials,
       info: {
         processId: randomUUID(), command: request.command, cwd: request.cwd,
+        pty: request.pty ?? false, stdin: request.pty === true || request.stdin !== undefined && request.stdin !== false,
         state: 'starting', startedAt: new Date().toISOString(), exitCode: null, signal: null,
         ...(request.sandbox === undefined ? {} : { sandbox: { ...request.sandbox } }),
       },
@@ -160,7 +174,9 @@ export class ProcessManager {
     this.entries.set(entry.info.processId, entry);
     this.watchExit();
     this.record(entry);
+    const filter = new TerminalFilter();
     const append = (text: string): void => {
+      text = filter.push(text);
       entry.total += text.length;
       entry.output = (entry.output + text).slice(-this.maxOutputChars);
     };
@@ -170,10 +186,24 @@ export class ProcessManager {
       await this.flush();
       if (request.signal?.aborted || this.closed || this.resetting || entry.info.state !== 'starting') throw abortError();
       const invocation = request.invocation ?? { file: '/bin/bash', args: ['-lc', request.command] };
+      if (request.pty) {
+        let ptyModule: typeof import('node-pty');
+        try { ptyModule = await import('node-pty'); }
+        catch (error) { throw new CodingxError('PROCESS_UNAVAILABLE', 'PTY native module could not load; reinstall node-pty for this Node/macOS version.', { cause: error }); }
+        if (request.signal?.aborted || this.closed || this.resetting) throw abortError();
+        let pty: IPty;
+        try { pty = ptyModule.spawn(invocation.file, invocation.args, { cwd: request.cwd, env: request.env, name: 'xterm-256color', cols: request.cols ?? 80, rows: request.rows ?? 24 }); }
+        catch (error) { throw new CodingxError('PROCESS_UNAVAILABLE', 'PTY launch failed. Check node-pty native module and spawn-helper executable permissions: ' + String(error), { cause: error }); }
+        entry.pty = pty; entry.info.pid = pty.pid;
+        pty.onData(append);
+        pty.onExit(event => { void this.finish(entry, event.exitCode, event.signal ? 'SIGTERM' : null); });
+        request.signal?.addEventListener('abort', onAbort, { once: true });
+      } else {
       const child = spawn(invocation.file, invocation.args, {
-        cwd: request.cwd, env: request.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: request.cwd, env: request.env, detached: true, stdio: [request.stdin === undefined || request.stdin === false ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       });
       entry.child = child;
+      child.stdin?.on('error', () => { entry.stdinClosed = true; });
       if (child.pid !== undefined) entry.info.pid = child.pid;
       for (const stream of [child.stdout, child.stderr]) {
         const decoder = new StringDecoder('utf8');
@@ -186,6 +216,8 @@ export class ProcessManager {
         child.once('spawn', resolveSpawn);
         child.once('error', reject);
       });
+      }
+      if (typeof request.stdin === 'string') await this.write(entry.info.processId, { text: request.stdin });
       if (request.signal?.aborted) throw abortError();
       if (entry.info.state === 'starting') {
         entry.info.state = 'running';
@@ -196,7 +228,7 @@ export class ProcessManager {
       return { ...entry.info };
     } catch (error) {
       if (terminal(entry)) throw error;
-      if (entry.child?.pid !== undefined) {
+      if (entry.info.pid !== undefined) {
         await this.stop(entry.info.processId, 'aborted').catch(() => {});
         throw error;
       }
@@ -209,6 +241,25 @@ export class ProcessManager {
     } finally {
       request.signal?.removeEventListener('abort', onAbort);
     }
+  }
+
+  async write(processId: string, input: ProcessWriteRequest): Promise<ManagedProcess> {
+    const entry = this.require(processId);
+    if (terminal(entry) || entry.info.state === 'stopping') throw new CodingxError('PROCESS_UNAVAILABLE', 'Process is not running.');
+    const resize = input.cols !== undefined || input.rows !== undefined;
+    const count = Number(input.text !== undefined) + Number(input.eof === true) + Number(input.interrupt === true) + Number(resize);
+    if (count !== 1) throw new CodingxError('TOOL_ERROR', 'Choose exactly one operation: text, eof, interrupt or resize.');
+    const bytes = Buffer.byteLength(input.text ?? '');
+    if (bytes > 65536 || redactString(input.text ?? '').redacted) throw new CodingxError('TOOL_ERROR', 'Input is limited to 64 KiB; recognized credentials are rejected.');
+    if (resize && (!entry.pty || !Number.isSafeInteger(input.cols) || !Number.isSafeInteger(input.rows) || input.cols! < 1 || input.rows! < 1 || input.cols! > 1000 || input.rows! > 1000)) throw new CodingxError('TOOL_ERROR', 'Resize requires a PTY and dimensions 1–1000.');
+    if (!entry.pty && !input.interrupt && (!entry.child?.stdin || entry.stdinClosed)) throw new CodingxError('PROCESS_UNAVAILABLE', 'Process stdin is closed or was not enabled.');
+    await this.options.onInput?.({ processId, operation: resize ? 'resize' : input.eof ? 'eof' : input.interrupt ? 'interrupt' : 'text', bytes });
+    if (resize) entry.pty!.resize(input.cols!, input.rows!);
+    else if (input.interrupt) { if (entry.pty) entry.pty.write('\x03'); else this.signal(entry, 'SIGINT'); }
+    else if (input.eof) { if (entry.pty) entry.pty.write('\x04'); else { entry.stdinClosed = true; entry.child!.stdin!.end(); } }
+    else if (entry.pty) entry.pty.write(input.text!);
+    else await new Promise<void>((resolve, reject) => entry.child!.stdin!.write(input.text!, error => error ? reject(error) : resolve()));
+    return { ...entry.info };
   }
 
   async read(processId: string, cursor = 0, maxChars = 8_000, waitMs = 0, signal?: AbortSignal): Promise<ProcessOutput> {
@@ -232,8 +283,10 @@ export class ProcessManager {
     await this.flush();
     const oldest = entry.total - entry.output.length;
     const start = Math.max(cursor, oldest);
-    const output = entry.output.slice(start - oldest, start - oldest + maxChars);
-    return { process: { ...entry.info }, output, nextCursor: start + output.length, truncated: cursor < oldest };
+    const rawOutput = redactProcessOutput(entry.output).slice(start - oldest, start - oldest + maxChars);
+    const output = redactString(rawOutput).value;
+    return { process: { ...entry.info }, output, nextCursor: start + rawOutput.length, truncated: cursor < oldest,
+      ...(entry.networkDenials?.length ? { networkDenials: [...entry.networkDenials] } : {}) };
   }
 
   async stop(processId: string, reason: ProcessStopReason = 'requested'): Promise<ManagedProcess> {
@@ -243,7 +296,7 @@ export class ProcessManager {
       entry.info.stopReason = reason;
       this.record(entry);
       this.signal(entry, 'SIGTERM');
-      if (entry.child?.pid === undefined) {
+      if (entry.info.pid === undefined) {
         await this.finish(entry, null, null);
       } else {
         entry.stopTimer = setTimeout(() => this.signal(entry, 'SIGKILL'), this.killGraceMs);

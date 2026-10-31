@@ -232,7 +232,7 @@ export class SessiondClient {
     this.peer.close();
   }
 
-  private request<T>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
+  request<T>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
     if (this.closed) return Promise.reject(new Error('sessiond client is closed.'));
     return this.peer.request(method, params, timeoutMs) as Promise<T>;
   }

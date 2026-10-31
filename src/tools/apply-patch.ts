@@ -1,3 +1,4 @@
+import { assertVersion, prepareWrite } from './file-mutation.js';
 import { lstat, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import type { Stats } from 'node:fs';
 import path from 'node:path';
@@ -31,6 +32,8 @@ interface Hunk {
 interface FilePatch {
   /** null when the old side is /dev/null (new file). */
   oldPath: string | null;
+  deleted?: boolean;
+  source?: string;
   created: boolean;
   newPath: string;
   hunks: Hunk[];
@@ -42,6 +45,8 @@ interface FilePlan {
   root: string;
   absolute: string;
   relative: string;
+  deleted?: boolean;
+  source?: string;
   created: boolean;
   content: string;
   additions: number;
@@ -261,9 +266,7 @@ function parseUnifiedDiff(patch: string): FilePatch[] {
           ': file renames are not supported. Delete + create is also rejected; edit the destination file in place instead.',
       );
     }
-    if (line.startsWith('deleted file mode ')) {
-      throw new ToolError('Invalid patch at line ' + lineNumber + ': file deletions are not supported.');
-    }
+    if (line.startsWith('deleted file mode ')) { index += 1; continue; }
     if (isMetadataLine(line)) {
       index += 1;
       continue;
@@ -294,15 +297,9 @@ function parseUnifiedDiff(patch: string): FilePatch[] {
     const newPath = parseDiffPath(plusLine, 'new', plusLineNumber);
     index += 1;
 
-    if (newPath === '/dev/null') {
-      throw new ToolError(
-        'Invalid patch at line ' +
-          plusLineNumber +
-          ': deleting files by patching to /dev/null is not supported. ApplyPatch only modifies existing files or creates new ones.',
-      );
-    }
+    const deleted = newPath === '/dev/null';
     const created = oldPath === '/dev/null';
-    if (!created && oldPath !== newPath) {
+    if (!created && !deleted && oldPath !== newPath) {
       throw new ToolError(
         'Invalid patch at line ' +
           plusLineNumber +
@@ -317,7 +314,8 @@ function parseUnifiedDiff(patch: string): FilePatch[] {
     const file: FilePatch = {
       oldPath: created ? null : oldPath,
       created,
-      newPath,
+      newPath: deleted ? oldPath : newPath,
+      deleted,
       hunks: [],
       headerLine: lineNumber,
     };
@@ -541,7 +539,7 @@ export const applyPatchTool: ToolDef<typeof schema> = {
     'and multiple "@@ -oldStart,oldCount +newStart,newCount @@" hunks per file. Paths are unquoted; a/ and b/ ' +
     'header prefixes are stripped and tab-separated timestamps are ignored. Create a new file with "--- /dev/null" ' +
     'and "+++ b/path"; the target must not already exist and parent directories are created. ' +
-    'Every existing target must have been read with Read in this session first. Renames, deletions, quoted ' +
+    'Every existing target must have been read with Read in this session first. Deletion uses +++ /dev/null with hunks removing all lines. Renames, quoted ' +
     'paths, and "\\ No newline at end of file" markers are rejected. All hunks are parsed, validated and applied in ' +
     'memory before anything is written, so a validation failure leaves every file unchanged. Existing file modes and ' +
     'final-newline behavior are preserved. Use Edit for a single targeted replacement and Write for a full rewrite.',
@@ -621,12 +619,15 @@ export const applyPatchTool: ToolDef<typeof schema> = {
 
       const before = splitText(text);
       const applied = applyHunks(filePatch, resolved.relative, before.lines);
+      if (filePatch.deleted && applied.lines.length) throw new ToolError('Deletion patch must remove the entire file.');
       const trailingNewline = text.length === 0 ? applied.lines.length > 0 : before.trailingNewline;
       plans.push({
         root: resolved.root,
         absolute: resolved.absolute,
         relative: resolved.relative,
         created: false,
+        deleted: filePatch.deleted,
+        source: path.resolve(ctx.cwd, filePatch.newPath),
         content: joinText(applied.lines, trailingNewline),
         diff: createFileDiff(resolved.relative, text, joinText(applied.lines, trailingNewline)),
         additions: applied.additions,
@@ -659,28 +660,22 @@ export const applyPatchTool: ToolDef<typeof schema> = {
       }
     }
 
+    // Snapshot every target and persist every checkpoint before the first mutation.
+    const writes = [];
+    for (const plan of plans) writes.push(await prepareWrite(ctx, plan.absolute, plan.deleted ? undefined : plan.content, plan.source));
     for (const plan of plans) {
-      try {
-        if (plan.created) {
-          await writeFile(plan.absolute, plan.content, { encoding: 'utf8', flag: 'wx' });
-        } else {
-          await writeFile(plan.absolute, plan.content, 'utf8');
-        }
-      } catch (error) {
-        throw new ToolError(
-          'Cannot write ' + plan.relative + ': ' + (error instanceof Error ? error.message : String(error)),
-          { cause: error },
-        );
-      }
-      ctx.readTracker.markRead(plan.absolute);
+      ctx.readTracker.assertUnchanged(plan.absolute);
+      if (plan.created) assertVersion(plan.absolute, undefined);
     }
+    const versions = [];
+    for (const write of writes) versions.push(await write());
 
     const totalAdditions = plans.reduce((sum, plan) => sum + plan.additions, 0);
     const totalDeletions = plans.reduce((sum, plan) => sum + plan.deletions, 0);
     const details = plans
       .map(
         (plan) =>
-          (plan.created ? 'created ' : 'updated ') +
+          (plan.deleted ? 'deleted ' : plan.created ? 'created ' : 'updated ') +
           plan.relative +
           ' (+' +
           plan.additions +
@@ -707,10 +702,12 @@ export const applyPatchTool: ToolDef<typeof schema> = {
         details +
         '.',
       meta: {
+        versions,
         fileDiffs: plans.map((plan) => plan.diff),
         files: plans.map((plan) => ({
           path: plan.relative,
           created: plan.created,
+          deleted: plan.deleted ?? false,
           additions: plan.additions,
           deletions: plan.deletions,
         })),

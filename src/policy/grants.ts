@@ -26,12 +26,14 @@ export class SessionGrants {
   }
 
   permits(action: PolicyAction): boolean {
+    if (action.networkScope !== undefined || action.additionalPermissions !== undefined) return false;
     if (this.exact.has(this.key(action))) return true;
     if (action.kind !== 'exec' || action.command === undefined) return false;
     const parsed = parseShellCommand(action.command, action.cwd ?? this.cwd);
     if (parsed.hasUnsafeConstruct || parsed.segments.length !== 1) return false;
     const segment = parsed.segments[0];
     if (segment === undefined || segment.redirects.length > 0) return false;
+    if (/(?:^|\s)[A-Za-z_][A-Za-z0-9_]*=|[$*?{}~]/u.test(segment.raw)) return false;
     const tokens = [segment.program, ...segment.args];
     return this.prefixes.some(
       (grant) =>
@@ -46,6 +48,7 @@ export class SessionGrants {
    * only apply to a single, parseable command with no redirections.
    */
   grant(action: PolicyAction, scope: 'session' | 'prefix'): boolean {
+    if (action.networkScope !== undefined || action.additionalPermissions !== undefined) return false;
     if (scope === 'session') {
       this.exact.add(this.key(action));
       return true;
@@ -68,10 +71,16 @@ export class SessionGrants {
 
 /** Token prefix offered by the approval panel; undefined for non-exec actions. */
 export function approvalPrefixFor(action: PolicyAction, fallbackCwd: string): string[] | undefined {
+  if (action.networkScope !== undefined || action.additionalPermissions !== undefined) return undefined;
   if (action.kind !== 'exec' || action.command === undefined) return undefined;
   const parsed = parseShellCommand(action.command, action.cwd ?? fallbackCwd);
   if (parsed.hasUnsafeConstruct || parsed.segments.length !== 1) return undefined;
   const segment = parsed.segments[0];
   if (segment === undefined || segment.redirects.length > 0) return undefined;
-  return [segment.program, ...segment.args];
+  const tokens = [segment.program, ...segment.args];
+  if (/(?:^|\s)[A-Za-z_][A-Za-z0-9_]*=|[$*?{}~]/u.test(segment.raw)) return undefined;
+  if (action.prefixRule !== undefined) {
+    return action.prefixRule.length > 0 && action.prefixRule.every((token, index) => tokens[index] === token) ? [...action.prefixRule] : undefined;
+  }
+  return tokens;
 }

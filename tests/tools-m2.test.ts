@@ -61,7 +61,7 @@ describe('Glob', () => {
     const result = await registry.execute('Glob', { pattern: '**/*.txt' }, ctx);
     expect(result.isError).toBeUndefined();
     expect(result.content).toBe('new.txt\nnested/mid.txt\nold.txt');
-    expect(result.meta).toEqual({ pattern: '**/*.txt', path: '.', count: 3, truncated: false });
+    expect(result.meta).toMatchObject({ pattern: '**/*.txt', path: '.', count: 3, truncated: false });
   });
 
   it('breaks modification-time ties by path ascending', async () => {

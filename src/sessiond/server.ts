@@ -301,6 +301,10 @@ export class SessiondServer {
         };
         return this.registry.heartbeat(state.clientId, heartbeatParams);
       }
+      case METHOD.objectPut:
+        return this.registry.objectChunk(state.clientId, requireString(params, 'sessionId'), { data: requireString(params, 'data'), leaseId: requireString(params, 'leaseId') });
+      case METHOD.objectGet:
+        return this.registry.objectChunk(state.clientId, requireString(params, 'sessionId'), { hash: requireString(params, 'hash'), size: optionalNumber(params, 'size') ?? -1 });
       case METHOD.sessionAppend: {
         const events = params.events;
         if (!Array.isArray(events)) {

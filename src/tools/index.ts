@@ -1,3 +1,4 @@
+import { webFetchTool } from './web-fetch.js';
 import { readFileTool } from './read-file.js';
 import { listDirTool } from './list-dir.js';
 import { globTool } from './glob.js';
@@ -7,7 +8,7 @@ import { editFileTool } from './edit-file.js';
 import { updatePlanTool } from './plan.js';
 import { applyPatchTool } from './apply-patch.js';
 import { shellTool } from './shell.js';
-import { processStartTool, processListTool, processReadTool, processStopTool } from './process.js';
+import { processWriteTool, processStartTool, processListTool, processReadTool, processStopTool } from './process.js';
 import { askUserQuestionTool } from './ask-user.js';
 import { skillTool } from './skill.js';
 import type { ToolDef } from './types.js';
@@ -61,5 +62,7 @@ export function createBuiltinTools(): ToolDef[] {
     processStopTool,
     skillTool,
     askUserQuestionTool,
+    webFetchTool,
+    processWriteTool,
   ];
 }

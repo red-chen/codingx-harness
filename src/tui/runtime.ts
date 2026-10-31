@@ -172,7 +172,7 @@ export class TuiRuntime {
       const composerText = this.app.composer.text;
       if (composerText.trimStart().startsWith('/')) {
         const text = composerText.trim();
-        this.app.clearComposer(true);
+        this.app.clearComposer(!/^\/process\s+send(?:\s|$)/.test(text));
         this.options.onLocalCommand?.(text);
         this.render();
         return;
@@ -273,7 +273,14 @@ export class TuiRuntime {
     };
     const total = transcriptHeight(options, width);
     const visible = computeFrameLayout(state, width, height).transcript.height;
-    const hidden = Math.max(0, total - visible);
+    let hidden = Math.max(0, total - visible);
+    // Native scrollback cannot be edited. Keep undecorated summaries (and later
+    // rows) application-owned until their async plugin result or fallback arrives.
+    const pendingIndex = state.transcript.findIndex((cell) => cell.type === 'turn' && cell.pluginPending);
+    if (pendingIndex >= 0) {
+      const stable = transcriptHeight({ ...options, cells: state.transcript.slice(0, pendingIndex), active: null }, width);
+      hidden = Math.min(hidden, stable);
+    }
     const reset = this.archiveSession !== state.session.sessionId
       || this.archiveGeneration !== state.transcriptGeneration;
     if (reset) {
@@ -296,7 +303,7 @@ export class TuiRuntime {
     this.archiveGeneration = state.transcriptGeneration;
     if (hidden <= this.archivedRows) return;
     const count = hidden - this.archivedRows;
-    const lines = layoutTranscript({ ...options, scrollOffset: visible }, width, count).lines;
+    const lines = layoutTranscript({ ...options, scrollOffset: total - hidden }, width, count).lines;
     let archivedOutput = '';
     for (const line of lines) {
       const row = new CellBuffer(width, 1);

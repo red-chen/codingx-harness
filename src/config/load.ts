@@ -5,6 +5,7 @@ import { parse as parseToml } from 'smol-toml';
 import { z } from 'zod';
 import { ConfigError } from '../util/errors.js';
 import { WorkspacePreferencesStore } from './workspace-preferences.js';
+import { loadExecRules } from '../policy/rules/index.js';
 import { REASONING_EFFORTS } from '../providers/types.js';
 import { expandHome } from '../util/paths.js';
 import type {
@@ -93,6 +94,12 @@ const permissionProfileSchema = z.object({
 });
 
 const rawConfigSchema = z.object({
+  status_bar: z.object({
+    plugin: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/),
+    timeout_ms: z.number().int().min(100).max(10000).default(1000),
+    refresh_ms: z.number().int().min(250).max(60000).default(1000),
+  }).optional(),
+  exec_policy: z.object({ rule_files: z.array(z.string().min(1)).default([]) }).default({}),
   approval_policy: z.enum(['on-request', 'never']).optional(),
   approvals_reviewer: z.enum(['user', 'auto_review']).optional(),
   default_permissions: z.string().min(1).optional(),
@@ -109,6 +116,7 @@ const rawConfigSchema = z.object({
   agent: z
     .object({
       max_steps: z.number().int().positive().default(64),
+      max_parallel_tools: z.number().int().min(1).max(32).default(4),
     })
     .default({}),
   provider: z.record(providerSchema).default({}),
@@ -245,7 +253,7 @@ function sanitizeProjectConfig(raw: Record<string, unknown>, warnings: string[])
     delete raw.sandbox;
     warnings.push('Project config cannot override [sandbox]; the section was ignored.');
   }
-  for (const key of ['permissions', 'default_permissions', 'approval_policy', 'approvals_reviewer', 'projects', 'hooks']) {
+  for (const key of ['permissions', 'default_permissions', 'approval_policy', 'approvals_reviewer', 'projects', 'hooks', 'exec_policy', 'status_bar']) {
     if (raw[key] !== undefined) {
       delete raw[key];
       warnings.push('Project config cannot override ' + key + '; the value was ignored.');
@@ -590,6 +598,7 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
   const raw = parseRaw(merged, globalPath, projectRaw ? projectPath : undefined);
 
   const config: Config = {
+    execRules: await loadExecRules(codingxHome, raw.exec_policy.rule_files.map((file) => normalizeConfigPath(file, codingxHome, env))),
     model: {
       route: raw.model.route,
       ...(raw.model.reasoning_effort === undefined || raw.model.reasoning_effort === 'default'
@@ -598,7 +607,7 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
       temperature: raw.model.temperature,
       ...(raw.model.context_window === undefined ? {} : { contextWindow: raw.model.context_window }),
     },
-    agent: { maxSteps: raw.agent.max_steps },
+    agent: { maxSteps: raw.agent.max_steps, maxParallelTools: raw.agent.max_parallel_tools },
     providers: normalizeProviders(raw),
     routes: normalizeRoutes(raw),
     approval: {
@@ -632,6 +641,9 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
     },
     mcp: { servers: normalizeMcpServers(raw) },
     hooks: normalizeHooks(raw),
+    ...(raw.status_bar ? { statusBar: {
+      plugin: raw.status_bar.plugin, timeoutMs: raw.status_bar.timeout_ms, refreshMs: raw.status_bar.refresh_ms,
+    } } : {}),
     approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
     permissions: parsePermissions({}, WORKSPACE_PROFILE),

@@ -6,7 +6,8 @@ import type {
 
 export const MAX_APPROVAL_REASON_CHARS = 2_000;
 
-export function approvalChoices(allowPrefix: boolean): readonly TuiApprovalChoice[] {
+export function approvalChoices(allowPrefix: boolean, onceOnly = false): readonly TuiApprovalChoice[] {
+  if (onceOnly) return ['once', 'deny', 'deny-reason'];
   return allowPrefix
     ? ['once', 'session', 'prefix', 'deny', 'deny-reason']
     : ['once', 'session', 'deny', 'deny-reason'];
@@ -23,11 +24,11 @@ export function createApprovalState(request: TuiApprovalRequest): TuiApprovalSta
 }
 
 export function currentApprovalChoice(state: TuiApprovalState): TuiApprovalChoice | undefined {
-  return approvalChoices(state.request.allowPrefix)[state.choiceIndex];
+  return approvalChoices(state.request.allowPrefix, state.request.onceOnly)[state.choiceIndex];
 }
 
 export function moveApprovalChoice(state: TuiApprovalState, delta: number): TuiApprovalState {
-  const count = approvalChoices(state.request.allowPrefix).length;
+  const count = approvalChoices(state.request.allowPrefix, state.request.onceOnly).length;
   if (count === 0 || delta === 0) return state;
   const current = Number.isFinite(state.choiceIndex) ? state.choiceIndex : 0;
   const next = ((current + Math.trunc(delta)) % count + count) % count;
@@ -35,13 +36,13 @@ export function moveApprovalChoice(state: TuiApprovalState, delta: number): TuiA
 }
 
 export function selectApprovalChoiceAt(state: TuiApprovalState, index: number): TuiApprovalState {
-  const count = approvalChoices(state.request.allowPrefix).length;
+  const count = approvalChoices(state.request.allowPrefix, state.request.onceOnly).length;
   if (index < 0 || index >= count) return state;
   return { ...state, choiceIndex: index };
 }
 
 export function beginApprovalReason(state: TuiApprovalState): TuiApprovalState {
-  const choices = approvalChoices(state.request.allowPrefix);
+  const choices = approvalChoices(state.request.allowPrefix, state.request.onceOnly);
   const index = choices.indexOf('deny-reason');
   return {
     ...state,

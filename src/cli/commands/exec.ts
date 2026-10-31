@@ -9,6 +9,7 @@ import { createLoop, initializeReasoningEffort } from '../runtime.js';
 
 export interface ExecCommandOptions {
   prompt: string;
+  images?: readonly string[];
   cwd: string;
   /** Extra writable directories alongside cwd. */
   addDirs?: readonly string[];
@@ -89,6 +90,7 @@ export async function runExec(options: ExecCommandOptions): Promise<number> {
     });
 
     const loop = activeLoop = createLoop(app, session, (event) => renderer.render(event));
+    for (const image of options.images ?? []) loop.attachments.add(image, true);
     result = await loop.runTurn(options.prompt, { signal: controller.signal });
   } finally {
     process.removeListener('SIGINT', onSigint);

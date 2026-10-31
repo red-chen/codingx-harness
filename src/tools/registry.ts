@@ -4,7 +4,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { approvalRequestFor } from '../policy/index.js';
 import type { PolicyDecision } from '../policy/types.js';
 import type { ToolSchema } from '../providers/types.js';
-import { abortError, isAbortError, ToolError } from '../util/errors.js';
+import { abortError, CodingxError, isAbortError, ToolError } from '../util/errors.js';
 import { truncateMiddle } from '../util/tokens.js';
 import type { ToolContext, ToolDef, ToolResult } from './types.js';
 
@@ -33,6 +33,9 @@ function policyMeta(decision: PolicyDecision, ctx: ToolContext): Record<string, 
       ...(decision.action.command === undefined ? {} : { command: decision.action.command }),
       ...(decision.action.cwd === undefined ? {} : { cwd: decision.action.cwd }),
       ...(decision.action.network === undefined ? {} : { network: decision.action.network }),
+      ...(decision.action.networkScope === undefined ? {} : { networkScope: decision.action.networkScope }),
+      ...(decision.action.additionalPermissions === undefined ? {} : { additionalPermissions: decision.action.additionalPermissions }),
+      ...(decision.action.prefixRule === undefined ? {} : { prefixRule: decision.action.prefixRule }),
     },
   };
 }
@@ -131,8 +134,20 @@ export class ToolRegistry {
 
     let decision: PolicyDecision | undefined;
     let executeCtx = ctx;
+    if ((parsed.data as Record<string, unknown>)?.sandbox_permissions === 'require_escalated') {
+      if (!ctx.policy || (ctx.escalationBudget && ctx.escalationBudget.remaining <= 0)) {
+        return { content: 'Scoped escalation requires a policy runtime and is limited to 3 requests per turn.', isError: true,
+          meta: { code: ctx.policy ? 'ESCALATION_LIMIT' : 'PERMISSION_DENIED' } };
+      }
+      if (ctx.escalationBudget) ctx.escalationBudget.remaining--;
+    }
     if (ctx.policy) {
-      decision = await ctx.policy.evaluate(name, parsed.data);
+      try { decision = await ctx.policy.evaluate(name, parsed.data); }
+      catch (error) {
+        if (isAbortError(error) || ctx.signal.aborted) throw error;
+        return { content: 'Permission evaluation failed: ' + (error instanceof Error ? error.message : String(error)), isError: true,
+          meta: { code: error instanceof CodingxError ? error.code : 'PERMISSION_DENIED' } };
+      }
       if (decision.verdict === 'ask') {
         if (ctx.approve === undefined) {
           decision = {
@@ -146,14 +161,21 @@ export class ToolRegistry {
         } else {
           try {
             const answer = await ctx.approve(approvalRequestFor(decision), ctx.signal);
-            if (answer.decision === 'allow') {
+            if (answer.decision === 'allow' && (decision.action.networkScope === 'local' || decision.action.additionalPermissions !== undefined) && answer.scope !== 'once') {
+              decision = { ...decision, verdict: 'deny', code: 'PERMISSION_DENIED', reason: 'Permission exceptions require allow-once approval.' };
+            } else if (answer.decision === 'allow') {
               decision = { ...decision, verdict: 'allow', code: undefined, rule: 'approval.' + answer.scope };
+              if (decision.action.networkScope === 'local') executeCtx = { ...executeCtx, approvedNetwork: 'local' };
+              if (decision.action.additionalPermissions !== undefined) {
+                executeCtx = { ...executeCtx, approvedPermissions: decision.action.additionalPermissions,
+                  additionalDirs: [...(ctx.additionalDirs ?? []), ...(decision.action.additionalPermissions.filesystem?.read ?? []), ...(decision.action.additionalPermissions.filesystem?.write ?? [])] };
+              }
               const root = decision.action.path;
               if (root !== undefined) {
                 const extra = new Set(ctx.additionalDirs ?? []);
                 extra.add(path.dirname(root));
                 extra.add(root);
-                executeCtx = { ...ctx, additionalDirs: [...extra] };
+                executeCtx = { ...executeCtx, additionalDirs: [...extra] };
               }
             } else {
               decision = {
@@ -184,7 +206,9 @@ export class ToolRegistry {
     }
 
     try {
+      if (ctx.signal.aborted) throw abortError('Tool "' + name + '" aborted.');
       const result = await definition.execute(parsed.data, executeCtx);
+      if (ctx.signal.aborted) throw abortError('Tool "' + name + '" aborted.');
       const bounded = this.bound(result, ctx);
       return decision === undefined
         ? bounded
@@ -196,6 +220,7 @@ export class ToolRegistry {
         {
           content: 'Tool "' + name + '" failed: ' + (error instanceof Error ? error.message : String(error)),
           isError: true,
+          meta: { code: error instanceof CodingxError ? error.code : 'TOOL_ERROR' },
         },
         ctx,
       );

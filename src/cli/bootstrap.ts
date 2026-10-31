@@ -120,6 +120,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
     additionalDirs,
     env,
     config: loaded.config.permissions,
+    execRules: loaded.config.execRules,
     approvalPolicy: loaded.config.approvalPolicy,
     reviewer: loaded.config.approvalsReviewer,
     alwaysAsk: loaded.config.approval.alwaysAsk,
@@ -160,7 +161,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
       warnings.push(
         'M3.1 enforces the permission profile for file tools and Shell. macOS Seatbelt is active: ' +
           'file writes are limited to the profile roots and network access is ' +
-          (networkMode(policy.sandboxPolicy.network) === 'local' ? 'limited to this host (including its interface addresses)' : policy.sandboxPolicy.network.enabled ? 'allowed wholesale' : 'denied') + '.',
+          (Object.keys(policy.sandboxPolicy.network.domains).length > 0 && networkMode(policy.sandboxPolicy.network) !== 'none' ? 'restricted to the managed domain proxy' : networkMode(policy.sandboxPolicy.network) === 'local' ? 'limited to this host (including its interface addresses)' : policy.sandboxPolicy.network.enabled ? 'allowed wholesale' : 'denied') + '.',
       );
       warnings.push(
         'OS sandbox: Seatbelt (sandbox-exec). Interactive approvals are available in TUI/plain mode; ' +
@@ -173,12 +174,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
       warnings.push(...sandboxStatus.warnings);
       if (networkMode(policy.sandboxPolicy.network) === 'local') warnings.push(LOCAL_NETWORK_NOTICE);
       if (networkMode(policy.sandboxPolicy.network) !== 'none' && Object.keys(policy.sandboxPolicy.network.domains).length > 0) {
-        warnings.push(
-          'The permission profile configures a network domain allowlist, but Seatbelt cannot enforce per-domain rules; ' +
-            (networkMode(policy.sandboxPolicy.network) === 'local'
-              ? 'host-local OS enforcement remains active, but domain rules need the local proxy (S6).'
-              : 'outbound network is allowed wholesale until the local proxy (S6) lands.'),
-        );
+        warnings.push('Domain-restricted HTTP(S) proxy enabled per execution. Direct connections are blocked; private destinations require an exact IP allow.');
       }
     } else {
       warnings.push(
@@ -206,9 +202,6 @@ export async function bootstrap(options: BootstrapOptions): Promise<CliApp> {
   }
   if (loaded.config.mcp.servers.length > 0) {
     warnings.push('MCP servers are configured but MCP tools are not implemented in M1; the servers are ignored.');
-  }
-  if (loaded.config.web.enabled) {
-    warnings.push('WebFetch is not implemented in M1; [web] settings are ignored.');
   }
   if (loaded.config.tools.allowCustom) {
     warnings.push('Custom tools are not loaded in M1; tools.allow_custom is ignored.');

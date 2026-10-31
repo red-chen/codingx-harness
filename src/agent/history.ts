@@ -1,3 +1,4 @@
+import { attachmentBlocks, type StoredAttachment } from './attachments.js';
 import path from 'node:path';
 import type { Message, ReasoningEffort, ToolCall } from '../providers/types.js';
 import { assistantMessage, isReasoningEffort, toolResultsMessage } from '../providers/types.js';
@@ -21,6 +22,8 @@ export interface SyntheticToolResult {
 export interface ReadFileCall {
   path: string;
   isError: boolean;
+  deleted?: boolean;
+  version?: import('../tools/read-tracker.js').FileVersion;
 }
 
 export interface RebuiltHistory {
@@ -103,8 +106,15 @@ export function rebuildHistory(events: readonly RolloutEvent[]): RebuiltHistory 
       if (turnId) lastTurnId = turnId;
       continue;
     }
+    if (event.type === 'file.undo') { appendUserText(messages, String(event.text)); readFileCalls.length = 0; continue; }
     if (event.type === 'user.message') {
       appendUserText(messages, asString(event.text) ?? '');
+      if (Array.isArray(event.attachments)) {
+        const attachments = event.attachments as StoredAttachment[];
+        const last = messages.at(-1);
+        if (last?.role === 'user') last.content.push(...attachmentBlocks(attachments));
+        for (const a of attachments) if (a.type === 'file') readFileCalls.push({ path: a.path, isError: false, version: a.version });
+      }
       continue;
     }
     if (event.type === 'plan.updated') {
@@ -149,7 +159,24 @@ export function rebuildHistory(events: readonly RolloutEvent[]): RebuiltHistory 
       }
       if ((call.name === 'Read' || call.name === 'ReadFile') && isObject(call.input)) {
         const rawPath = asString(call.input.path);
-        if (rawPath) readFileCalls.push({ path: rawPath, isError });
+        if (rawPath) {
+          const resultEvent = events.find((e) => e.type === 'tool.result' && e.callId === call.id);
+          const meta = resultEvent?.meta as Record<string, unknown> | undefined;
+          const version = meta?.version as import('../tools/read-tracker.js').FileVersion | undefined;
+          readFileCalls.push({ path: rawPath, isError, ...(version ? { version } : {}) });
+        }
+      }
+      if (!isError && ['Write', 'Edit', 'ApplyPatch'].includes(call.name)) {
+        const resultEvent = events.find(e => e.type === 'tool.result' && e.callId === call.id);
+        const meta = resultEvent?.meta as Record<string, unknown> | undefined;
+        const versions = Array.isArray(meta?.versions) ? meta.versions : meta?.version ? [meta.version] : [];
+        for (const raw of versions) {
+          const version = raw as import('../tools/read-tracker.js').FileVersion | null;
+          if (version?.path) readFileCalls.push({ path: version.path, isError: false, version });
+        }
+        if (Array.isArray(meta?.files)) for (const file of meta.files as { path: string; deleted?: boolean }[]) {
+          if (file.deleted) readFileCalls.push({ path: file.path, isError: false, deleted: true });
+        }
       }
       orderedResults.push({ id: call.id, content, isError });
     }
@@ -207,12 +234,14 @@ export async function restoreReadTracker(
   }
   let marked = 0;
   for (const call of rebuilt.readFileCalls) {
-    if (call.isError) continue;
+    // Legacy reads have no trustworthy fingerprint: require a fresh Read.
+    if (call.deleted) { tracker.forget(await canonicalizePath(path.resolve(cwd, call.path))); continue; }
+    if (call.isError || !call.version) continue;
     try {
       const expanded = expandHome(call.path);
       const absolute = await canonicalizePath(path.resolve(cwd, expanded));
       if (!roots.some((root) => isPathInside(root, absolute))) continue;
-      tracker.markRead(absolute);
+      tracker.markRead(path.resolve(cwd, expanded), call.version);
       marked += 1;
     } catch {
       // A path that no longer exists must not prevent resume.

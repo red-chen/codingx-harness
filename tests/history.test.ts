@@ -1,3 +1,4 @@
+import { fileVersion } from '../src/tools/read-tracker.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -213,7 +214,7 @@ describe('restoreReadTracker', () => {
           { id: 'c3', name: 'Read', input: { path: 'missing.ts' } },
         ],
       }),
-      ev('tool.result', { callId: 'c1', name: 'Read', content: 'a', isError: false }),
+      ev('tool.result', { callId: 'c1', name: 'Read', content: 'a', isError: false, meta: { version: fileVersion(path.join(cwd, 'a.ts')) } }),
       ev('tool.result', { callId: 'c2', name: 'Read', content: 'outside', isError: false }),
       ev('tool.result', { callId: 'c3', name: 'Read', content: 'missing', isError: true }),
     ];
@@ -247,7 +248,7 @@ describe('restoreReadTracker', () => {
           { id: 'c2', name: 'Read', input: { path: outsideFile } },
         ],
       }),
-      ev('tool.result', { callId: 'c1', name: 'Read', content: 'shared', isError: false }),
+      ev('tool.result', { callId: 'c1', name: 'Read', content: 'shared', isError: false, meta: { version: fileVersion(extraFile) } }),
       ev('tool.result', { callId: 'c2', name: 'Read', content: 'outside', isError: false }),
     ];
 

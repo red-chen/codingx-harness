@@ -1,6 +1,6 @@
 # 权限体系（M3 设计）
 
-> 状态：**M3.0 设计完成；M3.1 策略内核、M3.2 审批交互与 M3.3 macOS Seatbelt 已落地**。文件工具与 Shell 都已接入 Permission profile / approval policy；TUI 与 plain 交互都可审批，支持允许一次 / 本会话 / 命令前缀 / 拒绝并说明原因，会话授权只存在内存并写入审计。macOS 上 Shell 在 Seatbelt 中运行：文件写入限制在 profile 根、网络默认 deny、凭证路径/文件名由内核拒绝；Linux Landlock、网络代理/域名白名单、自动审查与可配置 exec policy 仍未完成，Linux Shell 仍是显式降级状态。当前实现边界见 [README](../README.md)，实施拆分见 [implementation-plan-m3.md](implementation-plan-m3.md)。
+> 状态：**M3.0 设计完成；M3.1 策略内核、M3.2 审批交互与 M3.3 macOS Seatbelt 已落地**。文件工具与 Shell 都已接入 Permission profile / approval policy；TUI 与 plain 交互都可审批，支持允许一次 / 本会话 / 命令前缀 / 拒绝并说明原因，会话授权只存在内存并写入审计。macOS 上 Shell 在 Seatbelt 中运行：文件写入限制在 profile 根、网络默认 deny、凭证路径/文件名由内核拒绝；S5 按次追加权限与声明式 exec policy、S6 域名代理已落地；Linux Landlock与自动审查仍未实现，Linux Shell 仍是显式降级状态。当前实现边界见 [README](../README.md)，实施拆分见 [implementation-plan-m3.md](implementation-plan-m3.md)。
 
 设计对照的是 **Codex CLI 0.153.x** 的权限模型（Permission profiles + Approval policy + Approvals reviewer + sandbox backend）。Codex 已移除旧的 `--full-auto`，批准策略在 CLI 上收敛为 `on-request` / `never`，并新增 `--approve-for-me` 与命名 Permission profiles；codingx 不照抄旧文档，而是采用当前模型，同时保留用户要求的 `--yolo` / `--allow-dangerously-skip-permissions` 别名。
 
@@ -18,9 +18,12 @@
 | 本地 `!` 命令 | 不经过模型；复用 Shell 的 Action、审批与沙箱，输出写 `local.command` / `local.result` |
 | Git hooks | 仓库已有 hooks 默认可以执行；`.git/hooks` / `.git/config` 写入默认拒绝。`:git_hooks` / `:git_config` 作用域或 `:workspace-git-hooks` profile 可显式放开，并产生启动告警 |
 | OS 沙箱（macOS） | `sandbox-exec` + 生成 profile：默认 deny，写入限定 profile 根，网络默认 deny，凭证目录与 `.env*`/私钥文件名由内核拒绝；Shell 结果带 `sandbox` meta 与 `SANDBOX_DENIED` |
+| 按次权限（S5） | Shell / ProcessStart 指定额外读写路径或域名；审批只允许一次；每 turn 最多 3 次；保留敏感路径 deny，执行/进程结束回收 |
+| exec policy（S5） | 全局声明式 `.rules`、prefix_rule、match/not_match 自测、离线 check；forbidden > prompt > allow，不扩大沙箱权限 |
+| 受控网络（S6） | HTTP/CONNECT 回环代理、域名 allow/deny、DNS 固定 IP 与私网保护；代理随执行/进程生命周期回收 |
 | 沙箱降级 | macOS 探测失败时 Shell 返回 `SANDBOX_UNAVAILABLE`，`--yolo` 拒绝启动；Linux 在 S4 前显式告警并保持无沙箱 |
 | 审计 | `approval.requested/decided`、`permission.granted`、`permission.decision`、`profile.changed`、`sandbox.denied` |
-| 未实现 | 自动审查、Linux Landlock、Windows 沙箱、网络代理/域名白名单、exec policy 规则、审批全屏视图 |
+| 未实现 | 自动审查、Linux Landlock、Windows 沙箱、完整 Starlark 规则解释器 |
 
 
 ## 1. 目标与不变量
@@ -96,14 +99,22 @@ type Action =
 
 ## 3. Permission profiles
 
-Permission profile 是一组命名、可复用的文件系统与网络权限。名字与 Codex 对齐，内置四个：
+Permission profile 是一组命名、可复用的文件系统与网络权限。内置如下：
 
 | 名称 | 语义 | 对应 TUI 预设 |
 | --- | --- | --- |
 | `:read-only` | 只读 workspace 与必要系统路径；命令在只读沙箱内执行，写与联网要审批 | Read Only |
 | `:workspace` | 可读写 workspace 与临时目录、可执行命令；workspace 外写入与联网要审批 | Default / Agent |
 | `:workspace-git-hooks` | 在 `:workspace` 基础上显式允许写 `.git/hooks` 与 `.git/config`，用于安装/管理 Git hooks；启动时告警 | Custom |
+| `:workspace-local` | workspace 文件隔离 + 本机通信；显式绑定 127.0.0.1 / ::1，避免通配监听向局域网开放 | Local network |
 | `:danger-full-access` | 无文件系统沙箱、无网络限制；仍受 exec policy 硬拒绝约束 | Full Access |
+
+默认 `:workspace` + `on-request` 无需切换 profile 即可启动本机服务：Shell / ProcessStart
+通过 `network: "local"` 请求审批，常见 Python HTTP server、开发服务命令及回环 HTTP 请求也会自动识别。
+审批明确展示本机网络范围，只支持 allow once；同意后仅对该次执行及其进程组生效，直到退出。
+文件隔离、后续命令与会话 profile 不变，既有 session / prefix 授权不能替代这次审批。
+拒绝、无交互审批入口或 `never` 时不执行；硬拒绝规则仍不可批准。
+`:workspace-local` 仅用于主动选择持续允许本机网络的场景。
 
 自定义 profile：
 
@@ -213,21 +224,16 @@ enabled = true               # 示例：仅此 profile 需要联网；默认是 
 
 ### 4.2 Exec policy
 
-对齐 Codex 的概念，但 M3 分两步：
-
-- **S1（已完成基础版）**：内置硬拒绝 + 已知网络命令/重定向/cd 启发式；**尚未解析** `[approval.rules]`，所以还没有可配置的 allow/prompt 规则。
-- **S5**：结构化 `[approval.rules]`（allow / prompt / forbidden + 规范化前缀），满足常见「允许 `npm test` / 拒绝 `git push --force`」场景。
-- **M3.4**：兼容 Codex 的 `prefix_rule` 规则文件（`.codingx/rules/*.rules`），支持 `match` / `not_match` 自测与 `codingx execpolicy check`。Starlark 解析器作为独立依赖引入，不自己实现半套。
+S1 的内置硬拒绝/保守命令解析继续生效；S5 已加载全局 `$CODINGX_HOME/rules/*.rules` 与 `[exec_policy].rule_files`。只解析 `prefix_rule` 的数据声明，不执行 Python/Starlark 程序；支持 `match` / `not_match` 自测与 `codingx execpolicy check`。完整配置、兼容子集与诊断语义见 [配置](config.md#exec-policy-规则)。项目 rules 不自动加载，项目配置不能覆盖规则。
 
 规则也必须基于 Action：`["git","push"]` 是前缀 token，不是整条命令字符串的子串；`sudo` 不应匹配 `sudoku`。多个规则命中时 `forbidden > prompt > allow`，与 Codex 一致。
 
-M3.1 的结构化规则形如：
+当前规则格式：
 
-```toml
-[approval.rules]
-allow = [["npm", "test"], ["npm", "run", "lint"], ["git", "status"]]
-prompt = [["git", "push"], ["rm"]]
-forbidden = [["sudo"], ["rm", "-rf", "/"]]
+```python
+prefix_rule(pattern=["npm", "test"], decision="allow", match=["npm test -- --run"])
+prefix_rule(pattern=["git", "push"], decision="prompt")
+prefix_rule(pattern=["git", "push", "--force"], decision="forbidden")
 ```
 
 硬拒绝不能只匹配字面量：`rm -fr /`、`rm --recursive --force /`、命令替换与管道都要在 Action 归一化后判定；解析失败按 ask 处理（`never` 下 deny），不能当作 allow。
@@ -265,20 +271,19 @@ type ApprovalDecision =
 2. 沙箱拒绝（Seatbelt/Landlock 的 EPERM、网络代理拒绝、只读文件系统）时，返回结构化 `sandbox_denied`，而不是只给一句 "permission denied"。
 3. 模型看到原因后，可以带 `sandbox_permissions` 重试：
    - `use_default`：仍按 profile 执行（默认）。
-   - `with_additional_permissions`：请求临时追加文件根/网络目标，附 `additional_permissions`。
-   - `require_escalated`：请求一次性无沙箱执行，必须附 `justification`；可选 `prefix_rule` 请求会话级前缀批准。
-4. 策略层把请求转成审批；批准后只对本次调用（或明确的前缀/会话范围）生效。
-5. 被拒绝时回填原因，并限制每个 turn 的提权尝试次数，防止「拒绝→重试→再拒绝」死循环。
+   - `require_escalated`：请求临时增加明确的读写路径/网络域名，必须附 `justification` 和非空 `additional_permissions`；保留沙箱及 deny，不支持无沙箱执行。也可在执行前主动申请已知需要的权限。
+4. 策略层把请求转成只允许一次的审批；批准后只对本次调用/ProcessStart 进程组生效，不缓存为会话或前缀授权。
+5. 被拒绝时回填原因；每 turn 最多 3 次申请，超限返回 `ESCALATION_LIMIT`。取消、拒绝、无审批器、never 均不执行；不会自动重放可能已经产生副作用的命令。
 
-Shell 工具新增字段（M3.1 起）：
+Shell / ProcessStart 当前字段（S5）：
 
 ```ts
 interface ShellExtras {
-  sandbox_permissions?: 'use_default' | 'with_additional_permissions' | 'require_escalated';
+  sandbox_permissions?: 'use_default' | 'require_escalated';
   justification?: string;
   additional_permissions?: {
-    file_system?: { read?: string[]; write?: string[] };
-    network?: { enabled?: boolean; domains?: string[] };
+    filesystem?: { read?: string[]; write?: string[] };
+    network?: { domains: string[] };
   };
   prefix_rule?: string[];
 }
@@ -288,7 +293,7 @@ interface ShellExtras {
 
 文件工具没有「在沙箱里失败再重试」这一层（它们在 CLI 进程内执行）。路径越界时直接进入审批：批准一次 → 本次调用带临时根执行；批准会话 → 该根在本会话内有效；拒绝 → 回填 `PERMISSION_DENIED`。
 
-当前 S3 尚未接入 Shell 的 `sandbox_permissions` 提权重试：批准一个越界 Shell 命令只会解除策略层，Seatbelt 仍按 profile 拒绝，直到 S5 把批准转换成临时沙箱根/网络授权。模型会看到 `SANDBOX_DENIED`，不要原样重试。
+普通命令审批只解除策略层，不改变 Seatbelt。需要额外根或域名时必须使用上述结构化请求，批准后生成临时沙箱配置。`prefix_rule` 仅用于普通审批的简单命令，不能与按次权限同时使用。域名 deny 不可通过审批覆盖；私网目标需精确 IP 授权。HTTP/CONNECT、TLS 与 macOS localhost 原生边界见 [配置说明](config.md#按次权限与受控联网)。
 
 ## 6. 沙箱
 
@@ -327,7 +332,7 @@ interface SandboxPolicy {
 
 | 平台 | 文件系统 | 网络 | 备注 |
 | --- | --- | --- | --- |
-| macOS | **已实现**：`sandbox-exec` + Seatbelt profile，默认 `(deny default)`；读取限系统/工具链/profile 根，写入限 profile 写根 | 默认 deny；profile 启用时整网放行（域名白名单待 S6 代理） | `sandbox-exec` 已标记弃用但仍可用；需要长期方案时评估 Seatbelt 替代 |
+| macOS | **已实现**：`sandbox-exec` + Seatbelt profile，默认 `(deny default)`；读取限系统/工具链/profile 根，写入限 profile 写根 | 默认 deny；无域名规则时按 profile 放行；域名规则由 HTTP/CONNECT 代理执行 | `sandbox-exec` 已标记弃用但仍可用；需要长期方案时评估 Seatbelt 替代 |
 | Linux | Landlock（文件系统） + seccomp；内核不支持时降级 | Landlock 网络能力有限，域名过滤走代理/网络命名空间 | 不支持时**强制审批**并拒绝 `--yolo`，不能静默降级成无沙箱 |
 | Windows | 受限令牌 / 提权沙箱（后续） | 代理 | M3 暂不支持，显式提示并强制审批 |
 | 其他 | 无沙箱 | 无 | 只允许 `:read-only` 或强制审批；`--yolo` 拒绝启动 |
@@ -340,7 +345,7 @@ interface SandboxPolicy {
 - 网络代理只监听回环；不把 API Key 注入请求；拒绝私网/回环目标，除非 profile 显式允许。
 - 工具子进程不继承 `CODINGX_SESSIOND_SOCKET`、`CODINGX_HOME` 等控制面变量（按现有做法）。
 
-当前构建：文件工具由 profile 检查；macOS Shell 在命令启发式之后还会进入 Seatbelt，因此即使策略误判，越界写入、凭证读取与默认网络访问仍会被内核拒绝。Linux 尚未接入 Landlock，Shell 仍以当前用户权限运行；`--yolo` 在所有平台都关闭现有策略与沙箱。Seatbelt 无法按域名过滤，启用网络时是整网放行，直到 S6 本地代理落地。
+当前构建：文件工具由 profile 检查；macOS Shell 在命令启发式之后还会进入 Seatbelt，因此即使策略误判，越界写入、凭证读取与默认网络访问仍会被内核拒绝。Linux 尚未接入 Landlock，Shell 仍以当前用户权限运行；`--yolo` 在所有平台都关闭现有策略与沙箱。Seatbelt 本身不识别域名；有域名规则时仅允许访问本机代理端口，代理检查域名及 DNS 地址。无域名规则的 all profile 仍为整网放行。
 
 ## 7. 预设、CLI 与配置优先级
 
@@ -427,7 +432,7 @@ type PermissionEvent =
 - **项目配置更保守**：codex 允许受信任项目定义更宽 profile；codingx 先只允许收紧。
 - **`always-ask` 仅作兼容**：旧值被映射为逐工具询问（包括只读工具），不产生持久规则；新配置应使用 `on-request` / `never` + profile。
 - **自动审查后置**：Codex 的 Guardian/guardian_subagent 依赖独立模型；codingx 先把 `user` reviewer 做扎实，`auto_review` 只留接口。
-- **Starlark exec policy 后置**：M3.1 用结构化规则满足核心场景，M3.4 再兼容 `.rules`。
+- **规则格式**：已支持数据式 `.rules` 的 `prefix_rule`、列表、字符串和示例；完整 Starlark 程序仍不支持，未知语法启动报错。
 - **`on-request` 的触发点**：codingx 在策略层对已知越界动作直接发起审批，而不是先让沙箱失败再让模型重试；沙箱拒绝后的提权路径仍保留。这样文件工具也有统一的审批入口，减少一次失败往返。
 - **Windows 沙箱后置**：先显式声明不支持并强制审批，不静默降级。
 

@@ -80,6 +80,8 @@ export interface SessionHandle {
   readonly filePath: string;
   readonly meta: SessionMeta;
   readonly writable: boolean;
+  putObject?(bytes: Uint8Array): Promise<import('./objects.js').ObjectRef>;
+  getObject?(ref: import('./objects.js').ObjectRef): Promise<Buffer>;
   append(events: AppendEventInput | AppendEventInput[]): Promise<RolloutEvent[]>;
   /** Authority-only append for reserved events (session.resumed/interrupted/end). */
   appendSystem?(events: AppendEventInput | AppendEventInput[]): Promise<RolloutEvent[]>;

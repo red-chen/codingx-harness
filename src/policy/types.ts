@@ -4,6 +4,20 @@ export type ApprovalsReviewer = 'user' | 'auto_review';
 export type FileAccess = 'read' | 'write' | 'deny';
 export type PolicyVerdict = 'allow' | 'ask' | 'deny';
 
+export interface AdditionalPermissions {
+  filesystem?: { read?: string[]; write?: string[] };
+  network?: { domains: string[] };
+}
+
+export interface ExecRule {
+  pattern: Array<string | string[]>;
+  decision: 'allow' | 'prompt' | 'forbidden';
+  justification?: string;
+  match?: Array<string | string[]>;
+  not_match?: Array<string | string[]>;
+  source?: string;
+}
+
 export type PolicyActionKind = 'file.read' | 'file.write' | 'file.delete' | 'exec' | 'network' | 'tool';
 
 /** Structured description of what a tool is about to do. */
@@ -17,6 +31,11 @@ export interface PolicyAction {
   cwd?: string;
   /** True when the action may use the network. */
   network?: boolean;
+  /** Requests a one-execution OS network exception; never a reusable grant. */
+  networkScope?: 'local';
+  /** Canonical, explicitly requested permissions. Always approved once. */
+  additionalPermissions?: AdditionalPermissions;
+  prefixRule?: string[];
   /** Additional human-readable detail (for example the matched command segment). */
   detail?: string;
 }
@@ -94,6 +113,8 @@ export interface PermissionsConfig {
 
 /** Snapshot of resolved roots consumed by the OS sandbox backend. */
 export interface SandboxPolicy {
+  /** When present, outbound TCP is confined to this loopback proxy port. */
+  proxyPort?: number;
   profileName: string;
   cwd: string;
   home: string;
@@ -113,6 +134,7 @@ export interface SandboxPolicy {
 }
 
 export interface PolicyRuntimeOptions {
+  execRules?: readonly ExecRule[];
   cwd: string;
   additionalDirs: readonly string[];
   env: NodeJS.ProcessEnv;

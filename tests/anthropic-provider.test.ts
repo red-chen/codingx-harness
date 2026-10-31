@@ -536,3 +536,13 @@ describe('provider factory and endpoint resolution', () => {
     expect(estimateMessagesTokens([{ role: 'user', content: [{ type: 'text', text: 'hello world' }] }])).toBeGreaterThan(0);
   });
 });
+
+it('encodes image blocks as base64 without object metadata on the wire',async()=>{
+  const server=await startServer(async res=>{await writeChunks(res,textStream);});
+  const provider=new AnthropicMessagesProvider({id:'primary',endpoint:server.url,apiKey:'fake'});
+  const req=request();req.messages[0]!.content.push({type:'image',mediaType:'image/png',name:'photo.png',object:{sha256:'0'.repeat(64),size:3,chunks:['0'.repeat(64)]},data:'YWJj'});
+  for await(const _ of provider.stream(req)) { /* consume */ }
+  const body=JSON.parse(server.requests[0]!.body);
+  expect(body.messages[0].content[1]).toEqual({type:'image',source:{type:'base64',media_type:'image/png',data:'YWJj'}});
+  expect(server.requests[0]!.body).not.toContain('sha256');
+});

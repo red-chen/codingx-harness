@@ -35,7 +35,7 @@ function wait(ms: number): Promise<void> {
 beforeEach(async () => {
   root = await mkdtemp(path.join(os.tmpdir(), 'codingx-client-'));
   store = new EmbeddedSessionStore({ directory: path.join(root, 'sessions') });
-  registry = new SessiondRegistry({ store, leaseTtlMs: 200 });
+  registry = new SessiondRegistry({ store, leaseTtlMs: 1_000 });
   server = new SessiondServer({
     registry,
     socketPath: path.join(root, 'run', 'sessiond.sock'),
@@ -178,7 +178,7 @@ describe('SessiondStore', () => {
 
   it('keeps the lease alive with heartbeats beyond its nominal TTL', async () => {
     const handle = await remote.createSession(createParams);
-    await wait(350);
+    await wait(1_250);
     const appended = await handle.append({ type: 'user.message', text: 'still leased' });
     expect(appended[0]?.seq).toBe(2);
     await handle.close();
@@ -197,4 +197,16 @@ describe('SessiondStore', () => {
     expect(events.some((event) => event.text === 'fork')).toBe(true);
     await fork.close();
   });
+});
+
+it('transfers bounded binary chunks over IPC and retains them in forks', async () => {
+  const handle = await remote.createSession(createParams);
+  const bytes = Buffer.alloc(900_123, 85);
+  const ref = await handle.putObject!(bytes);
+  await handle.append({ type: 'image.snapshot', object: ref });
+  expect(await handle.getObject!(ref)).toEqual(bytes);
+  await handle.close();
+  const fork = await remote.forkSession(handle.id, { cliVersion: 'test' });
+  expect(await fork.getObject!(ref)).toEqual(bytes);
+  await fork.close();
 });

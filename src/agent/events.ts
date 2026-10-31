@@ -21,6 +21,8 @@ export interface SessionInfo {
  * (see tui.md); the M1 plain renderer consumes this union.
  */
 export type UiEvent =
+  | { type: 'attachments.prepared'; items: Array<{ name: string; bytes: number; kind: 'file' | 'image' }> }
+  | { type: 'usage.recorded'; record: import('../providers/usage.js').RequestUsage }
   | { type: 'session.info'; session: SessionInfo }
   | { type: 'turn.started'; turnId: string }
   | { type: 'text.delta'; turnId: string; text: string }

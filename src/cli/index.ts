@@ -11,6 +11,10 @@ import { runInteractive } from './commands/interactive.js';
 import { runLog } from './commands/log.js';
 import { runSessionsCommand } from './commands/sessions.js';
 import { runDaemonProcess, runSessiondCommand } from './commands/sessiond.js';
+import { loadConfig } from '../config/index.js';
+import { checkExecRules, loadRuleFiles } from '../policy/rules/index.js';
+import { parseShellCommand } from '../policy/shell-parse.js';
+import { enablePlugin, installPlugin, pluginHome } from '../plugins/install.js';
 
 export interface CliIo {
   stdin: NodeJS.ReadableStream;
@@ -163,11 +167,55 @@ export async function runCli(argv: string[], io: Partial<CliIo> = {}): Promise<n
       },
     });
 
+  const plugin = program.command('plugin').description('Install and enable local plugins');
+  plugin.command('install')
+    .description('Install a bundled plugin or local directory without running its code')
+    .argument('<source>', 'deepseek-cost or a local plugin directory')
+    .option('--enable', 'select this plugin in global status_bar config')
+    .action(async (source: string, options: { enable?: boolean }) => {
+      const cwd = await resolveCwd(program.opts().cd as string | undefined);
+      const result = await installPlugin({ source, cwd, home: pluginHome(cwd, env), enable: options.enable });
+      if (program.opts().json) stdout.write(JSON.stringify(result) + '\n');
+      else {
+        stdout.write((result.installed ? 'Installed ' : 'Already installed (files preserved): ') + result.id + ' at ' + result.directory + '\n');
+        stdout.write(result.enabled ? 'Enabled for the next TUI session.\n' : 'Enable with: codingx plugin enable ' + result.id + '\n');
+      }
+    });
+  plugin.command('enable')
+    .description('Select an installed status bar plugin in global config')
+    .argument('<id>', 'installed plugin id')
+    .action(async (id: string) => {
+      const cwd = await resolveCwd(program.opts().cd as string | undefined);
+      await enablePlugin(pluginHome(cwd, env), id);
+      stdout.write(program.opts().json ? JSON.stringify({ id, enabled: true }) + '\n' : 'Enabled ' + id + ' for the next TUI session.\n');
+    });
+
+  program.command('execpolicy').description('Inspect command rules without executing commands')
+    .command('check')
+    .description('Check exec rules only; this does not grant filesystem or network permissions')
+    .option('--rules <file>', 'additional .rules file (repeatable)', collectDir)
+    .option('--command <shell-command>', 'check a shell command including operators')
+    .argument('[argv...]', 'literal command tokens (use -- before flags)')
+    .action(async (argv: string[], options: { rules?: string[]; command?: string }) => {
+      const cwd = await resolveCwd(program.opts().cd as string | undefined);
+      if ((options.command === undefined && argv.length === 0) || (options.command !== undefined && argv.length > 0)) throw new ConfigError('Provide either --command or literal argv.');
+      const loaded = await loadConfig({ cwd, env });
+      const rules = [...(loaded.config.execRules ?? []), ...(options.rules ? await loadRuleFiles(options.rules.map((file) => path.resolve(cwd, file))) : [])];
+      const parsed = options.command !== undefined ? parseShellCommand(options.command, cwd) : {
+        segments: [{ program: argv[0]!, args: argv.slice(1), cwd, redirects: [], raw: '' }],
+        hasSubstitution: false, hasHeredoc: false, hasUnsafeConstruct: false,
+      };
+      const result = checkExecRules(rules, parsed);
+      stdout.write(JSON.stringify(result, null, program.opts().json ? undefined : 2) + '\n');
+      if (result.decision === 'forbidden') exitCode = 1;
+    });
+
   program
     .command('exec')
+    .option('--image <path>', 'attach PNG/JPEG/WebP image (repeatable)', collectDir)
     .description('run one non-interactive turn')
     .argument('<prompt...>', 'task for the agent')
-    .action(async (promptParts: string[]) => {
+    .action(async (promptParts: string[], execOptions: { image?: string[] }) => {
       const options = program.opts();
       if (options.continue || options.resume || options.fork) {
         throw new ConfigError('--continue, --resume and --fork are only supported in interactive mode.');
@@ -177,6 +225,7 @@ export async function runCli(argv: string[], io: Partial<CliIo> = {}): Promise<n
       const cli = configOverrides(options as Record<string, unknown>);
       exitCode = await runExec({
         prompt: promptParts.join(' '),
+        images: execOptions.image,
         cwd,
         ...(addDirs.length > 0 ? { addDirs } : {}),
         cli,

@@ -223,6 +223,7 @@ function scopedGlobRoots(policy: SandboxPolicy): string[] {
     '/private/tmp',
     '/private/var/tmp',
     ...policy.writeRoots,
+    ...policy.readRoots,
     ...policy.additionalDirs,
     ...(policy.sessionDir === undefined ? [] : [policy.sessionDir]),
   ];
@@ -272,8 +273,13 @@ export function buildSeatbeltProfile(policy: SandboxPolicy): string {
   for (const device of DEVICE_WRITE_LITERALS) addLiteral(lines, 'allow file-write*', device);
 
   const network = networkMode(policy.network);
-  if (network === 'all') lines.push('(allow network*)');
-  if (network === 'local') {
+  if (policy.proxyPort !== undefined) {
+    if (!Number.isInteger(policy.proxyPort) || policy.proxyPort < 1 || policy.proxyPort > 65535) throw new Error('Invalid proxy port.');
+    lines.push('(allow network-outbound (remote tcp "localhost:' + policy.proxyPort + '"))');
+  } else if (network !== 'none' && Object.keys(policy.network.domains).length > 0) {
+    throw new Error('A domain-restricted policy requires the managed network proxy.');
+  } else if (network === 'all') lines.push('(allow network*)');
+  if (policy.proxyPort === undefined && network === 'local' && Object.keys(policy.network.domains).length === 0) {
     // Seatbelt localhost means this host (including its interface addresses).
     lines.push('(allow network-bind (local ip "localhost:*"))');
     lines.push('(allow network-inbound (local ip "localhost:*"))');

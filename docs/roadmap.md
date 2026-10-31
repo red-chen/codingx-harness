@@ -4,6 +4,10 @@
 
 原则：每个里程碑结束时都应是**可运行、可验证**的，不做「只有骨架」的交付。
 
+## P0–P2 · 文件可靠性、输入与进程交互
+
+八项能力及逐阶段验收见 [实施计划](implementation-plan-p0-p2.md)：文件版本冲突保护、turn 检查点/撤销、有界对象及 IPC、只读并行、WebFetch、文件引用、会话选择/切换、图片快照、PTY/stdin。macOS 范围不变，未新增 MCP、其他 Provider 或自动 failover。
+
 ## M0 · 设计对齐（已完成）
 
 - [x] 架构、Agent 循环、工具、安全、配置、会话管理、TUI 文档
@@ -40,7 +44,13 @@
 - TUI、上下文压缩、resume/fork 属于 M2；M1 提供逐行纯文本与 `codingx log`。
 - MCP、WebFetch、自定义工具、OpenAI Responses 属于 M4；相关配置会被忽略并告警。
 
-## M2 · 交互体验（核心与验收完成；mention/session picker/表格 holdback/背压列为 M2.1）
+## M2 · 交互体验（核心与验收完成；表格 holdback/背压列为 M2.1）
+
+- [x] Turn Summary Plugin：逐轮费用总额与输入/缓存/输出的数量、单价、小计；恢复历史按 turnId 关联，异步装饰完成后再写入原生滚动历史，窄屏明细换行。
+
+- [x] Plugin CLI：安装内置插件/本地目录，`--enable` 写入全局选择；重复安装保留历史价格，不执行安装脚本。
+
+- [x] StatusBar Plugin：manifest.yaml + 命令 JSON 协议、tok 后样式片段、异步执行与回退；DeepSeek 费用插件和逐请求用量恢复。仅此能力，不包含插件市场或 MCP 宿主。见 [实施拆分](implementation-plan-plugins.md)。
 
 - [x] 输入历史与会话按真实 cwd 隔离存储及查找；子目录独立、符号链接共享，旧 rollout 按 cwd 兼容读取。
 
@@ -49,7 +59,7 @@
 - [x] 自研 Terminal：alt screen / raw mode、cell buffer、ANSI 差分、输入解析、resize、异常恢复
 - [x] 布局与 widgets：welcome、transcript viewport、composer、status/footer、固定键位（CLI 接入在 E6）
 - [ ] 消息单元：user/assistant、exec、diff、plan、notice；流式 markdown/diff 已完成，表格 holdback 与 30fps 节流待补
-- [ ] 交互：排队/transcript overlay/slash 补全/`/clear`/`/model`/AskUserQuestion 提问面板/`!` 本地命令已完成；mention、审批、session picker 待补
+- [x] 交互：排队/transcript overlay/slash 补全/`/clear`/`/model`/AskUserQuestion 提问面板/`!` 本地命令已完成；mention、审批、session picker 已完成（见 P0–P2 增量计划）
 - [x] 推理强度：CLI / 环境变量 / TOML 默认值、运行时 `/model --effort`、TUI 档位提示及 resume/fork 恢复
 - [x] cwd 交互偏好：模型/Provider/route/effort 与权限 profile 按目录保存，CLI/env 临时覆盖，旧会话不覆盖最新目录选择
 - [x] `/model` 手动跨 Provider 切换：所有已配置模型候选、按需加载凭证、原子保存选择、恢复 Provider/route；自动多目标路由仍属 M5
@@ -69,15 +79,15 @@
 目标：可以放心在真实项目上跑。
 
 - [x] 权限模型设计：Permission profile × Approval policy × Approvals reviewer × sandbox backend，已对照 Codex 0.153.x 校准；见 [permissions.md](permissions.md)
-- [x] Permission profiles：`:read-only` / `:workspace` / `:workspace-git-hooks` / `:danger-full-access` + 命名 profile、文件系统规则（S1 文件工具 + S3 macOS Seatbelt；域名级网络规则待 S6）
+- [x] Permission profiles：`:read-only` / `:workspace` / `:workspace-git-hooks` / `:danger-full-access` + 命名 profile、文件系统规则（S1 文件工具 + S3 macOS Seatbelt；域名级网络规则由 S6 代理执行）
 - [x] Approval policy：`on-request` / `never` + 非交互 fail closed（S1）；`approvals_reviewer` 接口保留，自动审查待 S7
 - [x] Action 规范化 + 基础硬拒绝/Shell tokenizer（S1）
-- [ ] exec policy 规则、提权重试（S5）；会话/前缀授权已由 S2 完成
+- [x] exec policy 声明式 `.rules`、离线诊断、按次追加权限与模型重试闭环（S5.1–S5.4）；会话/前缀授权已由 S2 完成
 - [x] TUI/plain 审批弹层、会话/前缀授权、`/permissions` 列表/切换、profile 状态行与断线/写租约语义（选择器 overlay 与长命令支持 v 全屏查看）
 - [x] macOS Seatbelt：默认 deny、profile 写根、凭证/密钥路径拒绝、网络默认 deny、`sandbox.denied` 审计与降级保护（S3）
 - [x] Agent Harness hooks MVP：全局 `[[hooks]]` 六个生命周期事件、JSON stdin、matcher、exit 2 阻止、`hook.finished` 审计；项目配置不能定义 hooks
 - [x] Git hooks：仓库 hooks 默认执行；`.git/hooks` / `.git/config` 写入默认 deny，`:workspace-git-hooks` 或 `:git_hooks` / `:git_config` 显式 opt in 并告警
-- [ ] 网络代理与域名白名单（S6）
+- [x] 网络代理与域名白名单（S6）：HTTP/CONNECT、DNS 固定 IP、私网保护、执行/进程生命周期回收
 - 暂缓：Linux Landlock + seccomp（S4）与 Windows 沙箱；不属于当前 macOS 交付范围
 - [x] `--yolo` / `--allow-dangerously-skip-permissions` 映射到 `:danger-full-access` + `never` 并告警；macOS 无 `sandbox-exec` 时拒绝启动（S1/S3；Linux S4 待做）
 - [ ] sessiond 本地 IPC 加固（0700 / 0600、peer UID、项目配置禁改 socket、事件二次脱敏）
@@ -86,7 +96,7 @@
 - [x] 审计视图：`codingx log --session <id>`（M1 已提前实现）
 - [x] `permission.decision` / `approval.requested` / `approval.decided` / `permission.granted` / `profile.changed` / `sandbox.denied` 审计
 
-**验收**：macOS 默认配置下，文件工具与 Shell 的越界写入、凭证读取和默认联网都已被拦截且原因对模型可见；交互审批、会话/前缀授权、非交互 fail closed 与 `sandbox.denied` 已有测试。**网络代理/域名白名单、exec policy 与自动审查仍未完成**，因此 M3 整体验收尚未达成，剩余工作见 [implementation-plan-m3.md](implementation-plan-m3.md)。
+**验收**：macOS 默认配置下，文件工具与 Shell 的越界写入、凭证读取和默认联网都已被拦截且原因对模型可见；交互审批、会话/前缀授权、非交互 fail closed 与 `sandbox.denied` 已有测试。S5 按次权限与规则、S6 域名代理已落地；**自动审查、IPC/TUI 加固等仍未完成**，因此 M3 整体验收尚未达成，剩余工作见 [implementation-plan-m3.md](implementation-plan-m3.md)。
 
 **设计**：[permissions.md](permissions.md)。**任务拆分**：[implementation-plan-m3.md](implementation-plan-m3.md)。
 
@@ -94,7 +104,7 @@
 
 - MCP 客户端（stdio + SSE），动态注册外部工具
 - 自定义工具加载（`~/.codingx/tools/`）
-- 联网工具 `WebFetch`（默认关闭，`[web]` 域名白名单 + 仅 https）
+- [x] 联网工具 `WebFetch` 已在 P0–P2 提前实现（默认关闭，公网 HTTPS、域名白名单、固定 IP）
 - 第二个 Provider：OpenAI Responses 协议
 - [x] `AGENTS.md` 多层级加载（M1 已提前实现）
 - 配置热重载（仅限非会话中）
@@ -104,8 +114,8 @@
 
 - 子 Agent（`Task` 工具，独立上下文）
 - [x] 长驻进程基础管理提前落地：`ProcessStart / ProcessList / ProcessRead / ProcessStop`，会话内跨 turn 存活、日志游标、进程组回收（见 [Process](processes.md)）
-- 长驻进程增强：PTY / stdin 交互、跨 CLI 托管（原 `ShellInteractive` 的剩余范围）
-- 并行只读工具执行
+- 长驻进程增强：跨 CLI 托管（PTY / stdin 已在 P0–P2 实现）（原 `ShellInteractive` 的剩余范围）
+- 只读工具并行已在 P0–P2 实现；更广泛并行调度仍不在当前范围
 - prompt cache 命中率优化（稳定前缀、工具定义顺序）
 - 用量与成本统计
 - Provider 路由：failover / weighted / round-robin、熔断、健康检查、会话粘性
@@ -133,3 +143,5 @@
 | 应用层 resize reflow | 已接入主屏幕原生 scrollback；已归档历史的重排由终端处理，当前视口由 TUI 重绘 |
 | Codex 逐像素复刻（pets / plugins / voice） | 先对齐信息架构与核心交互 |
 | TUI 认证 / 配置 / 主题选择器 | TUI 只做终端与交互，这些不属于核心 |
+
+本机网络增量已落地：默认 profile 下支持审批后为单次执行及进程组开放本机网络（Shell / ProcessStart）；可选 `:workspace-local` 及 `network.mode = "local"` 用于持续授权。保留文件隔离，Seatbelt 本机匹配不等同于严格回环接口隔离，见 [配置](config.md#本机开发服务器)。本机服务使用独立的 local 授权；外网域名和额外目录通过 S5 scoped permissions 申请，不关闭沙箱。
